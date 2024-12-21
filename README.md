@@ -2,21 +2,24 @@
 
 Xinle Cao, Weiqi Feng, Jian Liu, Jinjin Zhou, Wenjing Fang, Lei Wang, Quanqing Xu, Chuanhui Yang and Kui Ren.
 
-(**Abstract**) Oblivious map is a crucial component in encrypted databases (EDBs), utilized to safeguard against the
-server inferring sensitive information from client's encrypted **key-value pairs** based on access patterns. Despite its
-widespread usage and importance, existing OMAP solutions face practical challenges, including the need for a large
-number of interaction rounds between the client and server, as well as the substantial communication bandwidth
-requirements. For example, the state-of-the-art protocol named ObliDB (VLDB 2020) still requires $O(\log{n})$
-interaction rounds and $O(\log^2{n})$ communication bandwidth per access, where $n$ denotes the total number of
-key-value pairs stored.
+(**Abstract**) Oblivious map (OMAP) is an important component in encrypted databases, utilized to safeguard 
+against the server inferring sensitive information about client's encrypted key-value stores based on 
+_access patterns_. Despite its widespread usage and importance, existing OMAP solutions face practical challenges, 
+including the need for a large number of interaction rounds between the client and server, as well as the substantial 
+communication bandwidth requirements. For example, the state-of-the-art protocol named OMIX++ in VLDB 2024 still 
+requires $O(\log{n})$ interaction rounds and $O(\log^2{n})$ communication bandwidth per access, where $n$ denotes 
+the total number of key-value pairs stored.
 
-In this work, we present new OMAP constructions with the best theoretical complexity and actual performance up to now:
-only $O(\log{n}/\log{\log{n}})$ interaction rounds and $O(\log^2{n}/\log{\log{n}})$ communication bandwidth are
-required. Notably, as far as we know, they are the first **tree-based** OMAPs that overcome the $O(\log^{2}{n})$
-communication bandwidth. The new advances result from a new framework for designing OMAPs: instead of using a **search
-tree** in prior works, we propose new constructions based on **hash tables**. We implement both our proposed
-constructions and prior methods. The experimental results demonstrate that our constructions substantially outperform
-prior methods in terms of efficiency.
+In this work, we introduce more practical and efficient OMAP constructions. Consistent with all prior OMAPs, 
+our constructions also adapt only the _tree-based Oblivious RAM_ (ORAM) and _oblivious data structures_ (ODS) 
+to achieve OMAP for enhanced practicality. In complexity, our approach needs $O(\log{n}/\log{\log{n}}) +O(\log{\lambda})$
+interaction rounds and $O(\log^2{n}/\log{\log{n}}) + O(\log{\lambda}\log{n})$ communication bandwidth per data access 
+where $\lambda$ is the security parameter. This new complexity results from our two main contributions. First, unlike 
+prior works that rely solely on _search trees_, we design a novel framework for OMAP that combines _hash table_ with 
+search trees. Second, we propose a more efficient tree-based ORAM named **DAORAM**, which is of significant independent 
+interest. This newly developed ORAM noticeably accelerates our constructions as it supports obliviously accessing hash 
+tables much more efficiently. We implement both our proposed constructions and prior methods to experimentally demonstrate 
+that our constructions substantially outperform prior methods in terms of efficiency.
 
 The full version of the paper is posted [here](https://eprint.iacr.org/2024/1650).
 
