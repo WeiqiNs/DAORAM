@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 
 def parse_requirements(filename):
@@ -13,7 +13,7 @@ setup(
     version="0.1.0",
     author="Weiqi Feng, Xinle Cao",
     author_email="weltch1997@gmail.com, xinlecao72@gmail.com",
-    description="A python library for ORAMs and OMAPs",
+    description="A Python library for DAORAM and other classic ORAM and OMAP algorithm implementations.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/Weiqi97/DAORAM",
