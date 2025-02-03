@@ -36,7 +36,8 @@ The full version of the paper is posted [here](https://eprint.iacr.org/2024/1650
   implemented [here](daoram/omaps/avl_ods_omap.py). The `distinguishable_search` needs to be set to `True`.
 - [OMAP based on the B+ tree (VLDB 2020)](https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_oblidb.pdf), which is
   implemented [here](daoram/omaps/bplus_ods_omap.py).
-- The proposed OMAP framework is implemented [here](daoram/omaps/oram_ods_omap.py). It can be instantiated with any ORAM class
+- The proposed OMAP framework is implemented [here](daoram/omaps/oram_ods_omap.py). It can be instantiated with any ORAM
+  class
   contained in this repo combined with any OMAP class in this repo.
 
 The open-sourced repositories we used as reference for the OMAP based on AVL tree and OMAP based on B+ tree are

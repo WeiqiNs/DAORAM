@@ -1,68 +1,72 @@
 """This module implements a simple binary tree data structure that fits our need."""
 import math
-
 from typing import Dict, List, Union
 
-# Hard code indices to access data.
-KEY = 0
-LEAF = 1
-VALUE = 2
-# We also assume if metadata exists, it's the first value in the data block.
-META = 0
-# We simply use a list to store data or when encrypted, use some bytes.
-Data = Union[list, bytes]
-# Buckets is a list of lists of Data.
-Bucket = List[Data]
-Buckets = List[Bucket]
+from daoram.dependency.helper import Block, Buckets, Data, Storage
 
 
 class BinaryTree:
-    def __init__(self, num_data: int, bucket_size: int, storage: Buckets = None) -> None:
+    def __init__(
+            self,
+            num_data: int,
+            bucket_size: int,
+            filename: str = None,
+            data_size: int = None,
+            enc_key_size: int = None) -> None:
         """
         Initializes the binary tree based on input parameters.
 
         :param num_data: Number of data points the tree should hold.
         :param bucket_size: Size of each node/bucket in the tree.
-        :param storage: Buckets contains data or by default, emtpy.
+        :param data_size: Size of each data point in the tree.
+        :param filename: Name of the file the tree should hold.
+        :param enc_key_size: the key size for the encryption, if set to 0 it means encryption will not be used.
         """
         # Store the number of data point and bucket size.
-        self.__num_data = num_data
-        self.__bucket_size = bucket_size
+        self._num_data = num_data
+        self._bucket_size = bucket_size
 
         # Compute the level of the binary tree based on number of data we plan to store.
-        self.__level = int(math.ceil(math.log(num_data, 2))) + 1
+        self._level = int(math.ceil(math.log(num_data, 2))) + 1
         # Compute the size of the tree, which is the length of the storage list.
-        self.__size = pow(2, self.__level) - 1
+        self._size = pow(2, self._level) - 1
         # Compute the last index before actual leaves.
-        self.__start_leaf = pow(2, self.__level - 1) - 1
+        self._start_leaf = pow(2, self._level - 1) - 1
 
         # Use the input buckets to initialize storage or create empty list.
-        self.__storage = [[] for _ in range(self.__size)] if not storage else storage
+        self._storage = Storage(
+            size=self._size,
+            filename=filename,
+            data_size=data_size,
+            bucket_size=bucket_size,
+            enc_key_size=enc_key_size
+        )
 
     @property
     def size(self) -> int:
         """Returns the size of the binary tree."""
-        return self.__size
+        return self._size
 
     @property
     def level(self) -> int:
         """Returns the level of the binary tree."""
-        return self.__level
+        return self._level
 
     @property
     def start_leaf(self) -> int:
         """Returns the index of storage corresponding to leaf 0 in the binary tree."""
-        return self.__start_leaf
+        return self._start_leaf
 
     @property
-    def storage(self) -> Buckets:
+    def storage(self) -> Storage:
         """Return the current storage."""
-        return self.__storage
+        return self._storage
 
-    @storage.setter
-    def storage(self, storage: Buckets):
-        """Set the current storage to provided buckets."""
-        self.__storage = storage
+    #
+    # @storage.setter
+    # def storage(self, storage: Buckets):
+    #     """Set the current storage to provided buckets."""
+    #     self._storage.data = storage
 
     @staticmethod
     def get_parent_index(index: int) -> int:
@@ -137,7 +141,7 @@ class BinaryTree:
         """
         for bucket in buckets:
             while len(bucket) < bucket_size:
-                bucket.append([None, None, None])
+                bucket.append(Data())
 
     @staticmethod
     def get_cross_index(leaf_one: int, leaf_two: int, level: int) -> int:
@@ -187,7 +191,7 @@ class BinaryTree:
         :return: Modify the input list of lists in-place, return True if data was filled.
         """
         # Get the lowest crossed level index of the path between the data and the current path.
-        index = BinaryTree.get_cross_index_level(leaf_one=data[LEAF], leaf_two=leaf, level=level)
+        index = BinaryTree.get_cross_index_level(leaf_one=data.leaf, leaf_two=leaf, level=level)
 
         # Go backwards from bottom to up.
         for path_index in range(index, -1, -1):
@@ -213,7 +217,7 @@ class BinaryTree:
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
-        index = BinaryTree.get_cross_index(leaf_one=data[LEAF], leaf_two=leaf, level=level)
+        index = BinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level)
 
         # Go backwards from bottom to up.
         while index >= 0:
@@ -241,7 +245,7 @@ class BinaryTree:
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
-        indices = [BinaryTree.get_cross_index(leaf_one=data[LEAF], leaf_two=leaf, level=level) for leaf in leaves]
+        indices = [BinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level) for leaf in leaves]
         max_index = max(indices)
 
         # Go backwards from bottom to up.
@@ -257,16 +261,12 @@ class BinaryTree:
         # Otherwise return False.
         return False
 
-    def fill_storage_with_dummy_data(self) -> None:
-        """Fill storage binary tree with dummy data."""
-        self.fill_buckets_with_dummy_data(buckets=self.__storage, bucket_size=self.__bucket_size)
-
     def fill_data_to_storage_leaf(self, data: Data) -> bool:
         """Based on the input data, fill it to the proper path at the lowest leaf node."""
         # Go from leaf to node; check whether bucket is full.
-        for path_index in self.get_leaf_path(leaf=data[LEAF]):
-            if len(self.__storage[path_index]) < self.__bucket_size:
-                self.__storage[path_index].append(data)
+        for path_index in self.get_leaf_path(leaf=data.leaf):
+            if len(self._storage[path_index]) < self._bucket_size:
+                self._storage[path_index] = self._storage[path_index] + [data]
                 # If the data is inserted, return True.
                 return True
 
@@ -281,7 +281,7 @@ class BinaryTree:
         :param leaf: the label of a leaf.
         :return: a list of index from the leaf node to the root.
         """
-        return self.get_path_indices(index=leaf + self.__start_leaf)
+        return self.get_path_indices(index=leaf + self._start_leaf)
 
     def get_mul_leaf_path(self, leaves: List[int]) -> List[int]:
         """
@@ -290,7 +290,7 @@ class BinaryTree:
         :param leaves: a list of leaf labels.
         :return: a list of indices from multiple leaf nodes to the root.
         """
-        return self.get_mul_path_indices(indices=[leaf + self.__start_leaf for leaf in leaves])
+        return self.get_mul_path_indices(indices=[leaf + self._start_leaf for leaf in leaves])
 
     def get_leaf_block(self, leaf: int, index: int) -> int:
         """
@@ -322,7 +322,7 @@ class BinaryTree:
             raise TypeError("Leaf must be an integer or list of integers.")
 
         # Read the desired values.
-        return [self.__storage[data_index] for data_index in path_to_read]
+        return [self._storage[data_index] for data_index in path_to_read]
 
     def write_path(self, leaf: Union[int, List[int]], data: Buckets) -> None:
         """
@@ -355,9 +355,9 @@ class BinaryTree:
 
         # Write the data.
         for i, path_index in enumerate(path_to_write):
-            self.__storage[path_index] = data[i]
+            self._storage[path_index] = data[i]
 
-    def read_block(self, leaf: int, bucket_id: int, block_id: int) -> Data:
+    def read_block(self, leaf: int, bucket_id: int, block_id: int) -> Block:
         """
         Given a leaf node, a bucket index, and a block index, grab data stored in that location.
 
@@ -367,21 +367,9 @@ class BinaryTree:
         :return: one data value.
         """
         # Read the desired values.
-        return self.__storage[self.get_leaf_block(leaf=leaf, index=bucket_id)][block_id]
+        return self._storage[self.get_leaf_block(leaf=leaf, index=bucket_id)][block_id]
 
-    def read_block_meta(self, leaf: int, bucket_id: int, block_id: int) -> Data:
-        """
-        Given a leaf node, a bucket index, and a block index, grab metadata stored in that location.
-
-        :param leaf: the label of a leaf.
-        :param bucket_id: the index of the bucket of interest.
-        :param block_id: the index of the block of interest.
-        :return: one data value.
-        """
-        # Read the desired values.
-        return self.read_block(leaf=leaf, bucket_id=bucket_id, block_id=block_id)[META]
-
-    def write_block(self, leaf: int, bucket_id: int, block_id: int, data: Data) -> None:
+    def write_block(self, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
         """
         Given a leaf node, a bucket index, and a block index, write data to that location.
 
@@ -390,5 +378,11 @@ class BinaryTree:
         :param block_id: the index of the block of interest.
         :param data: the data to write.
         """
-        # Write the value to the target block.
-        self.__storage[self.get_leaf_block(leaf=leaf, index=bucket_id)][block_id] = data
+        # Compute the index to write to.
+        index_to_write = self.get_leaf_block(leaf=leaf, index=bucket_id)
+        # Get the bucket data.
+        bucket_data = self._storage[index_to_write]
+        # Update bucket data.
+        bucket_data[block_id] = data
+        # Write it back.
+        self._storage[index_to_write] = bucket_data

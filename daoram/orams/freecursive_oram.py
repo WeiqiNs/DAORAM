@@ -16,12 +16,10 @@ ratio of 1/48.
 import math
 import random
 import secrets
+from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency.binary_tree import BinaryTree, Buckets, KEY, LEAF, VALUE
-from daoram.dependency.crypto import Prf
-from daoram.dependency.helpers import Helper
-from daoram.dependency.interact_server import InteractServer
+from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
 from daoram.orams.tree_base_oram import TreeBaseOram
 
 # Reset values is a list of the following [(key, cl, nl), (key, cl, nl)]; where only cl always has a value.
@@ -37,6 +35,7 @@ class FreecursiveOram(TreeBaseOram):
                  num_ic: int = 48,
                  ic_length: int = 10,
                  gc_length: int = 32,
+                 filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  aes_key: bytes = None,
@@ -57,6 +56,7 @@ class FreecursiveOram(TreeBaseOram):
         :param num_ic: number of individual count we store per block.
         :param ic_length: length of the binary representing individual count.
         :param gc_length: length of the binary representing group count.
+        :param filename: the filename to save the oram data to.
         :param bucket_size: the number of data each bucket should have.
         :param stash_scale: the scaling scale of the stash.
         :param aes_key: the key to use for the AES instance, by default it will be randomly sampled.
@@ -74,6 +74,7 @@ class FreecursiveOram(TreeBaseOram):
         super().__init__(
             client=client,
             aes_key=aes_key,
+            filename=filename,
             num_data=num_data,
             data_size=data_size,
             bucket_size=bucket_size,
@@ -83,48 +84,48 @@ class FreecursiveOram(TreeBaseOram):
         )
 
         # Add children class attributes.
-        self.__num_ic = num_ic
-        self.__ic_length = ic_length
-        self.__gc_length = gc_length
-        self.__on_chip_size = on_chip_size
-        self.__reset_method = reset_method
-        self.__last_oram_data = last_oram_data
-        self.__last_oram_level = last_oram_level
-        self.__reset_prob = 1 / num_ic if reset_prob is None else reset_prob
+        self._num_ic = num_ic
+        self._ic_length = ic_length
+        self._gc_length = gc_length
+        self._on_chip_size = on_chip_size
+        self._reset_method = reset_method
+        self._last_oram_data = last_oram_data
+        self._last_oram_level = last_oram_level
+        self._reset_prob = 1 / num_ic if reset_prob is None else reset_prob
 
         # This attribute is used to store a leaf temporarily for reading a path without evicting it immediately.
-        self.__tmp_leaf: Optional[int] = None
+        self._tmp_leaf: Optional[int] = None
         # We also need temp leaves in case of reset and evict multiple paths.
-        self.__tmp_leaves: Optional[List[int]] = None
+        self._tmp_leaves: Optional[List[int]] = None
         # In case of reset, we also store leaves that have not been reset.
-        self.__tmp_reset_leaves: Optional[RESET_LEAVES] = None
+        self._tmp_reset_leaves: Optional[RESET_LEAVES] = None
 
         # Create the prf instance.
-        self.__prf = Prf(key=prf_key)
+        self._prf = Prf(key=prf_key)
 
         # Need to store a list of oram and the on chip storage is empty by default.
-        self.__on_chip_storage: List[bytes] = []
-        self.__pos_maps: List[FreecursiveOram] = []
+        self._on_chip_storage: List[bytes] = []
+        self._pos_maps: List[FreecursiveOram] = []
 
         # Initialize the position map upon creation.
         self._init_pos_map()
 
-    @property
-    def __count_length(self) -> int:
+    @cached_property
+    def _count_length(self) -> int:
         """Get length of the binary representation what position map oram stores."""
-        return self.__num_ic * self.__ic_length + self.__gc_length
+        return self._num_ic * self._ic_length + self._gc_length
 
-    @property
-    def __num_oram_pos_map(self) -> int:
+    @cached_property
+    def _num_oram_pos_map(self) -> int:
         """Get the number of oram pos maps needed; note that last one will be stored on chip, hence -1."""
-        return math.ceil(math.log(self._num_data / self.__on_chip_size, self.__num_ic)) - 1
+        return math.ceil(math.log(self._num_data / self._on_chip_size, self._num_ic)) - 1
 
-    @property
-    def __pos_map_oram_dummy_size(self) -> int:
+    @cached_property
+    def _pos_map_oram_dummy_size(self) -> int:
         """Get the byte size of the random dummy data to store in position maps."""
-        return math.ceil(self.__count_length / 8)
+        return math.ceil(self._count_length / 8)
 
-    def __get_pos_map_keys(self, key: int) -> List[Tuple[int, int]]:
+    def _get_pos_map_keys(self, key: int) -> List[Tuple[int, int]]:
         """
         Given a key, find what key and offset we should use for each position map oram.
 
@@ -135,15 +136,18 @@ class FreecursiveOram(TreeBaseOram):
         pos_map_keys = []
 
         # For each position map, compute which block the key should be in, and it's index in value list.
-        for i in range(self.__num_oram_pos_map + 1):
-            index = key % self.__num_ic
-            key = key // self.__num_ic
-            pos_map_keys.insert(0, (key, index))
+        for i in range(self._num_oram_pos_map + 1):
+            index = key % self._num_ic
+            key = key // self._num_ic
+            pos_map_keys.append((key, index))
+
+        # Reverse the pos map.
+        pos_map_keys.reverse()
 
         # Return the result.
         return pos_map_keys
 
-    def __get_leaf_from_prf(self, key: int, gc: int, ic: int) -> int:
+    def _get_leaf_from_prf(self, key: int, gc: int, ic: int) -> int:
         """
         Provide the key, gc, and ic, we compute what leaf they correspond to.
 
@@ -152,13 +156,13 @@ class FreecursiveOram(TreeBaseOram):
         :param ic: individual count, in binary representation.
         :return: leaf computed as PRF(KEY||GC||IC) mod 2^L.
         """
-        return self.__prf.digest_mod_n(Helper.binary_str_to_bytes(
+        return self._prf.digest_mod_n(Helper.binary_str_to_bytes(
             bin(key)[2:].zfill(self._level - 1) +  # key of the data
-            bin(gc)[2:].zfill(self.__gc_length) +  # GC of the data
-            bin(ic)[2:].zfill(self.__ic_length)  # IC of the data
+            bin(gc)[2:].zfill(self._gc_length) +  # GC of the data
+            bin(ic)[2:].zfill(self._ic_length)  # IC of the data
         ), pow(2, self._level - 1))
 
-    def __get_previous_leaf_from_prf(self, key: int, gc: int, ic: int) -> int:
+    def _get_previous_leaf_from_prf(self, key: int, gc: int, ic: int) -> int:
         """
         Provide the key, gc, and ic, we compute what leaf they correspond to in the previous oram.
 
@@ -168,49 +172,49 @@ class FreecursiveOram(TreeBaseOram):
         :return: leaf computed as PRF(KEY||LAST_GC||IC) mod 2^LAST_L.
         """
 
-        return self.__prf.digest_mod_n(Helper.binary_str_to_bytes(
-            bin(key)[2:].zfill(self.__last_oram_level - 1) +  # key of the data
-            bin(gc)[2:].zfill(self.__gc_length) +  # last GC of the data
-            bin(ic)[2:].zfill(self.__ic_length)  # IC of the data
-        ), pow(2, self.__last_oram_level - 1))
+        return self._prf.digest_mod_n(Helper.binary_str_to_bytes(
+            bin(key)[2:].zfill(self._last_oram_level - 1) +  # key of the data
+            bin(gc)[2:].zfill(self._gc_length) +  # last GC of the data
+            bin(ic)[2:].zfill(self._ic_length)  # IC of the data
+        ), pow(2, self._last_oram_level - 1))
 
     def _init_pos_map(self) -> None:
         """Use PRF values to initialize the position map and override the base class method."""
         # For each label, its leaf is computed as AES(key||GC||IC).
-        self._pos_map = {i: self.__get_leaf_from_prf(key=i, gc=0, ic=0) for i in range(self._num_data)}
+        self._pos_map = {i: self._get_leaf_from_prf(key=i, gc=0, ic=0) for i in range(self._num_data)}
 
-    def __compress_pos_map(self) -> List[BinaryTree]:
+    def _compress_pos_map(self) -> ServerStorage:
         """Compress the large position map to a list of position map orams. """
         # We first delete the inited position map as we are going to compress it.
         self._pos_map = {}
 
         # Create the list of storage server needs.
-        server_storage = []
+        server_storage = {}
 
         # We always set gc and ic to all zeros.
-        value = Helper.binary_str_to_bytes("0" * self.__count_length)
+        value = Helper.binary_str_to_bytes("0" * self._count_length)
 
         # Store the useful data about upper level oram.
         last_oram_data = self._num_data
         last_oram_level = self._level
 
-        for i in range(self.__num_oram_pos_map):
+        for i in range(self._num_oram_pos_map):
             # Compute how many blocks this position map needs to store.
-            pos_map_size = math.ceil(last_oram_data / self.__num_ic)
+            pos_map_size = math.ceil(last_oram_data / self._num_ic)
 
             # Each position map now is an oram.
             cur_pos_map_oram = FreecursiveOram(
                 aes_key=self._cipher.key if self._cipher else None,
-                prf_key=self.__prf.key,
-                num_ic=self.__num_ic,
+                prf_key=self._prf.key,
+                num_ic=self._num_ic,
                 num_data=pos_map_size,
-                ic_length=self.__ic_length,
-                gc_length=self.__gc_length,
-                data_size=self.__pos_map_oram_dummy_size,
-                reset_prob=self.__reset_prob,
+                ic_length=self._ic_length,
+                gc_length=self._gc_length,
+                data_size=self._pos_map_oram_dummy_size,
+                reset_prob=self._reset_prob,
                 bucket_size=self._bucket_size,
                 stash_scale=self._stash_scale,
-                reset_method=self.__reset_method,
+                reset_method=self._reset_method,
                 last_oram_data=last_oram_data,
                 last_oram_level=last_oram_level,
                 num_key_bytes=self._num_key_bytes,
@@ -218,35 +222,42 @@ class FreecursiveOram(TreeBaseOram):
             )
 
             # For current position map, get its corresponding binary tree.
-            tree = BinaryTree(num_data=pos_map_size, bucket_size=self._bucket_size)
+            tree = BinaryTree(
+                filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
+                num_data=pos_map_size,
+                data_size=cur_pos_map_oram._max_block_size,
+                bucket_size=self._bucket_size,
+                enc_key_size=self._num_key_bytes if self._use_encryption else None,
+            )
 
             # Since key is set to range from 0 to num_data - 1.
             for key, leaf in cur_pos_map_oram._pos_map.items():
-                tree.fill_data_to_storage_leaf([key, leaf, value])
+                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
 
-            # Before storing, fill tree with dummy data.
-            tree.fill_storage_with_dummy_data()
-
-            # Perform encryption if needed.
-            tree.storage = cur_pos_map_oram._encrypt_buckets(buckets=tree.storage)
+            # Encryption and fill with dummy data if needed.
+            if self._use_encryption:
+                tree.storage.encrypt(aes=self._cipher)
 
             # Update the last map used and last oram level.
             last_oram_data = pos_map_size
             last_oram_level = cur_pos_map_oram._level
 
             # Save the storage binary tree to server storage.
-            server_storage.insert(0, tree)
+            server_storage[f"pos_map_{self._num_oram_pos_map - i - 1}"] = tree
 
             # Clear the current pos map oram and save it.
-            cur_pos_map_oram.pos_map = {}
-            self.__pos_maps.insert(0, cur_pos_map_oram)
+            cur_pos_map_oram._pos_map = {}
+            self._pos_maps.append(cur_pos_map_oram)
 
         # The "master level" oram stores information about the smallest position map oram.
-        self.__last_oram_data = last_oram_data
-        self.__last_oram_level = last_oram_level
+        self._last_oram_data = last_oram_data
+        self._last_oram_level = last_oram_level
 
         # Get the on chip storage.
-        self.__on_chip_storage = [value for _ in range(math.ceil(last_oram_data / self.__num_ic) + 1)]
+        self._on_chip_storage = [value for _ in range(math.ceil(last_oram_data / self._num_ic) + 1)]
+
+        # Reverse the position map.
+        self._pos_maps.reverse()
 
         return server_storage
 
@@ -260,13 +271,15 @@ class FreecursiveOram(TreeBaseOram):
         storage = self._init_storage_on_pos_map(data_map=data_map)
 
         # Compress the position map.
-        pos_map_storage = self.__compress_pos_map()
+        pos_map_storage_dict = self._compress_pos_map()
+
+        # Add the oram storage to the dictionary.
+        pos_map_storage_dict["oram"] = storage
 
         # Let server hold these storages.
-        self.client.init_query(label="oram", storage=storage)
-        self.client.init_query(label="pos_map", storage=pos_map_storage)
+        self.client.init_query(storage=pos_map_storage_dict)
 
-    def __evict_stash(self, leaf: int) -> Buckets:
+    def _evict_stash(self, leaf: int) -> Buckets:
         """
         Evict data blocks in the stash while maintaining correctness.
 
@@ -290,16 +303,13 @@ class FreecursiveOram(TreeBaseOram):
             if not inserted:
                 temp_stash.append(data)
 
-        # After we are done with all real data, complete the path with dummy data.
-        BinaryTree.fill_buckets_with_dummy_data(buckets=path, bucket_size=self._bucket_size)
-
         # Update the stash.
         self._stash = temp_stash
 
         # Note that we return the path in the reversed order because we write path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
-    def __evict_stash_to_mul(self, leaves: List[int]) -> Buckets:
+    def _evict_stash_to_mul(self, leaves: List[int]) -> Buckets:
         """
         Evict data blocks in the stash to multiple paths while maintaining correctness.
 
@@ -325,15 +335,12 @@ class FreecursiveOram(TreeBaseOram):
         # After we are done with all real data, convert the dict to list of lists.
         path = [path_dict[key] for key in path_dict.keys()]
 
-        # Then complete the path with dummy data.
-        BinaryTree.fill_buckets_with_dummy_data(buckets=path, bucket_size=self._bucket_size)
-
         # Update the stash.
         self._stash = temp_stash
 
         return self._encrypt_buckets(buckets=path)
 
-    def __update_stash_leaf(self, key: int, new_leaf: int) -> None:
+    def _update_stash_leaf(self, key: int, new_leaf: int) -> None:
         """
         Look in the stash to update the leaf of the data block with key.
 
@@ -347,15 +354,14 @@ class FreecursiveOram(TreeBaseOram):
         # Look through the stash.
         for data in self._stash:
             # When we find the key, exit the function.
-            if data[KEY] == key:
-                data[LEAF] = new_leaf
+            if data.key == key:
+                data.leaf = new_leaf
                 return
 
         # If the key was never found, raise an error, since the stash is always searched after path.
         raise KeyError(f"Key {key} not found.")
 
-    def __update_stash_leaves(
-            self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int, to_index: int) -> None:
+    def _update_stash_leaves(self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int, to_index: int) -> None:
         """
         Perform a null operation for the purpose of updating leaves of a data block.
 
@@ -368,12 +374,12 @@ class FreecursiveOram(TreeBaseOram):
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
             # If we find key one, update it and set to None.
-            if data[KEY] == key_one:
-                data[LEAF] = n_leaf_one
+            if data.key == key_one:
+                data.leaf = n_leaf_one
                 key_one = None
             # If we find key two, update it and set to None.
-            elif data[KEY] == key_two:
-                data[LEAF] = n_leaf_two
+            elif data.key == key_two:
+                data.leaf = n_leaf_two
                 key_two = None
 
         # When key one or key two is not None, raise a value.
@@ -382,8 +388,7 @@ class FreecursiveOram(TreeBaseOram):
         if key_two is not None:
             raise KeyError(f"Key {key_two} not found.")
 
-    def __update_block_leaves(
-            self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int, path: Buckets) -> None:
+    def _update_block_leaves(self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int, path: Buckets) -> None:
         """
         Perform a null operation for the purpose of updating leaves of a data block.
 
@@ -403,22 +408,22 @@ class FreecursiveOram(TreeBaseOram):
         for bucket in path:
             for data in bucket:
                 # If key is None, we skip the bucket.
-                if data[KEY] is None:
+                if data.key is None:
                     continue
                 # If we find key one, update it and set to None.
-                elif data[KEY] == key_one:
-                    data[LEAF] = n_leaf_one
+                elif data.key == key_one:
+                    data.leaf = n_leaf_one
                     key_one = None
                 # If we find key two, update it and set to None.
-                elif data[KEY] == key_two:
-                    data[LEAF] = n_leaf_two
+                elif data.key == key_two:
+                    data.leaf = n_leaf_two
                     key_two = None
                 # Add to stash.
                 self._stash.append(data)
 
         # When either key one or key two is not None, we search for the stash.
         if key_one is not None or key_two is not None:
-            self.__update_stash_leaves(
+            self._update_stash_leaves(
                 key_one=key_one,
                 key_two=key_two,
                 n_leaf_one=n_leaf_one,
@@ -426,7 +431,7 @@ class FreecursiveOram(TreeBaseOram):
                 to_index=to_index
             )
 
-    def __get_reset_leaves(self, key: int, data: str, reset_size: int = 2) -> RESET_LEAVES:
+    def _get_reset_leaves(self, key: int, data: str, reset_size: int = 2) -> RESET_LEAVES:
         """
         When reset happens, return list of current and next leaves.
 
@@ -436,41 +441,41 @@ class FreecursiveOram(TreeBaseOram):
         :return: is a list of the following [(key, cl, nl), (key, cl, nl)]; where only cl always has a value.
         """
         # Get the group count.
-        gc = int(data[:self.__gc_length], 2)
+        gc = int(data[:self._gc_length], 2)
         # Get each individual count.
-        ic = data[self.__gc_length:]
-        ic = [int(ic[i * self.__ic_length: (i + 1) * self.__ic_length], 2) for i in range(self.__num_ic)]
+        ic = data[self._gc_length:]
+        ic = [int(ic[i * self._ic_length: (i + 1) * self._ic_length], 2) for i in range(self._num_ic)]
 
         # If there's an overflow in the reset.
-        if (key + 1) * self.__num_ic > self.__last_oram_data:
+        if (key + 1) * self._num_ic > self._last_oram_data:
             reset_leaves = [
                 (
-                    key * self.__num_ic + i,
-                    self.__get_previous_leaf_from_prf(key=key * self.__num_ic + i, gc=gc, ic=ic[i]),
-                    self.__get_previous_leaf_from_prf(key=key * self.__num_ic + i, gc=gc + 1, ic=0)
+                    key * self._num_ic + i,
+                    self._get_previous_leaf_from_prf(key=key * self._num_ic + i, gc=gc, ic=ic[i]),
+                    self._get_previous_leaf_from_prf(key=key * self._num_ic + i, gc=gc + 1, ic=0)
                 )
                 # When the reset doesn't overflow, just randomly select a path.
-                if key * self.__num_ic + i < self.__last_oram_data else
+                if key * self._num_ic + i < self._last_oram_data else
                 (
-                    None, secrets.randbelow(pow(2, self.__last_oram_level - 1)), None
+                    None, secrets.randbelow(pow(2, self._last_oram_level - 1)), None
                 )
-                for i in range(self.__num_ic)
+                for i in range(self._num_ic)
             ]
         # If there's no overflow in the reset, compute everything as is.
         else:
             reset_leaves = [
                 (
-                    key * self.__num_ic + i,
-                    self.__get_previous_leaf_from_prf(key=key * self.__num_ic + i, gc=gc, ic=ic[i]),
-                    self.__get_previous_leaf_from_prf(key=key * self.__num_ic + i, gc=gc + 1, ic=0)
+                    key * self._num_ic + i,
+                    self._get_previous_leaf_from_prf(key=key * self._num_ic + i, gc=gc, ic=ic[i]),
+                    self._get_previous_leaf_from_prf(key=key * self._num_ic + i, gc=gc + 1, ic=0)
                 )
-                for i in range(self.__num_ic)
+                for i in range(self._num_ic)
             ]
 
         # Break the list to chunks of reset_size.
         return [reset_leaves[i: i + reset_size] for i in range(0, len(reset_leaves), reset_size)]
 
-    def __update_on_chip_data(self, key: int, offset: int) -> PROCESSED_DATA:
+    def _update_on_chip_data(self, key: int, offset: int) -> PROCESSED_DATA:
         """
         Given a data block and offset, compute the current.
 
@@ -479,27 +484,27 @@ class FreecursiveOram(TreeBaseOram):
         :return: the computed current leaf and updated leaf, and reset leaves if reset happens.
         """
         # First convert bytes to binary string.
-        data = Helper.bytes_to_binary_str(self.__on_chip_storage[key]).zfill(self.__count_length)
+        data = Helper.bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
 
         # Get the group count.
-        gc = int(data[:self.__gc_length], 2)
+        gc = int(data[:self._gc_length], 2)
 
         # Use index to grab the individual count.
-        ic_start = self.__gc_length + offset * self.__ic_length
-        ic_end = self.__gc_length + (offset + 1) * self.__ic_length
+        ic_start = self._gc_length + offset * self._ic_length
+        ic_end = self._gc_length + (offset + 1) * self._ic_length
 
         # Convert the ic from binary representation to integer.
         ic = int(data[ic_start: ic_end], 2)
 
         # Base on the reset method, perform the desired operation.
-        if self.__reset_method == "prob":
+        if self._reset_method == "prob":
             # Let reset happen with the desired probability.
-            if random.random() <= self.__reset_prob:
+            if random.random() <= self._reset_prob:
                 # We store the leaves that should be updated to reset_leaves.
-                reset_leaves = self.__get_reset_leaves(key=key, data=data)
+                reset_leaves = self._get_reset_leaves(key=key, data=data)
                 # Now we set the new values for ic and gc.
-                self.__on_chip_storage[key] = Helper.binary_str_to_bytes(
-                    f"{bin(gc + 1)[2:].zfill(self.__gc_length)}{'0' * self.__ic_length * self.__num_ic}"
+                self._on_chip_storage[key] = Helper.binary_str_to_bytes(
+                    f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
                 )
                 # In this case we don't need cl, nl; just the reset leaves.
                 return None, None, reset_leaves
@@ -507,26 +512,26 @@ class FreecursiveOram(TreeBaseOram):
             # When reset does not happen.
             else:
                 # We check whether the overflow happens; if so we throw an error.
-                if ic + 1 >= pow(2, self.__ic_length):
+                if ic + 1 >= pow(2, self._ic_length):
                     raise ValueError("Overflow happened under probabilistic resets.")
                 # We update the counts being stored.
-                self.__on_chip_storage[key] = Helper.binary_str_to_bytes(
-                    f"{data[:ic_start]}{bin(ic + 1)[2:].zfill(self.__ic_length)}{data[ic_end:]}"
+                self._on_chip_storage[key] = Helper.binary_str_to_bytes(
+                    f"{data[:ic_start]}{bin(ic + 1)[2:].zfill(self._ic_length)}{data[ic_end:]}"
                 )
                 # Compute the leaves.
-                cur_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic)
-                new_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic + 1)
+                cur_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic)
+                new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
                 # In this case, we return the leaves and reset leaves are None.
                 return cur_leaf, new_leaf, None
 
-        elif self.__reset_method == "hard":
+        elif self._reset_method == "hard":
             # When overflow happens.
-            if ic + 1 >= pow(2, self.__ic_length):
+            if ic + 1 >= pow(2, self._ic_length):
                 # We store the leaves that should be updated to reset_leaves.
-                reset_leaves = self.__get_reset_leaves(key=key, data=data)
+                reset_leaves = self._get_reset_leaves(key=key, data=data)
                 # Now we set the new values for ic and gc.
-                self.__on_chip_storage[key] = Helper.binary_str_to_bytes(
-                    f"{bin(gc + 1)[2:].zfill(self.__gc_length)}{'0' * self.__ic_length * self.__num_ic}"
+                self._on_chip_storage[key] = Helper.binary_str_to_bytes(
+                    f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
                 )
                 # In this case we don't need cl, nl; just the reset leaves.
                 return None, None, reset_leaves
@@ -534,47 +539,47 @@ class FreecursiveOram(TreeBaseOram):
             # When overflow does not happen.
             else:
                 # We update the counts being stored.
-                self.__on_chip_storage[key] = Helper.binary_str_to_bytes(
-                    f"{data[:ic_start]}{bin(ic + 1)[2:].zfill(self.__ic_length)}{data[ic_end:]}"
+                self._on_chip_storage[key] = Helper.binary_str_to_bytes(
+                    f"{data[:ic_start]}{bin(ic + 1)[2:].zfill(self._ic_length)}{data[ic_end:]}"
                 )
                 # Compute the leaves.
-                cur_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic)
-                new_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic + 1)
+                cur_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic)
+                new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
                 # In this case, we return the leaves and reset leaves are None.
                 return cur_leaf, new_leaf, None
 
         else:
-            raise ValueError(f"Unrecognized reset method {self.__reset_method}.")
+            raise ValueError(f"Unrecognized reset method {self._reset_method}.")
 
-    def __update_data_prob_reset(self, key: int, data: list, offset: int) -> PROCESSED_DATA:
+    def _update_data_prob_reset(self, key: int, data: Data, offset: int) -> PROCESSED_DATA:
         """
         Given a data block and offset, compute the current.
 
         :param key: key to some data of interest.
-        :param data: a list contains key, index, and value.
+        :param data: a Data object.
         :param offset: the offset of where the value should be written to.
         :return: the computed current leaf and updated leaf, and reset leaves if reset happens.
         """
         # First convert bytes to binary string.
-        data[VALUE] = Helper.bytes_to_binary_str(data[VALUE]).zfill(self.__count_length)
+        data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         # Get the group count.
-        gc = int(data[VALUE][:self.__gc_length], 2)
+        gc = int(data.value[:self._gc_length], 2)
 
         # Use index to grab the individual count.
-        ic_start = self.__gc_length + offset * self.__ic_length
-        ic_end = self.__gc_length + (offset + 1) * self.__ic_length
+        ic_start = self._gc_length + offset * self._ic_length
+        ic_end = self._gc_length + (offset + 1) * self._ic_length
 
         # Convert the ic from binary representation to integer.
-        ic = int(data[VALUE][ic_start: ic_end], 2)
+        ic = int(data.value[ic_start: ic_end], 2)
 
         # When force_reset is set to True.
-        if random.random() <= self.__reset_prob:
+        if random.random() <= self._reset_prob:
             # We store the leaves that should be updated to reset_leaves.
-            reset_leaves = self.__get_reset_leaves(key=key, data=data[VALUE])
+            reset_leaves = self._get_reset_leaves(key=key, data=data.value)
             # Now we set the new values for ic and gc.
-            data[VALUE] = Helper.binary_str_to_bytes(
-                f"{bin(gc + 1)[2:].zfill(self.__gc_length)}{'0' * self.__ic_length * self.__num_ic}"
+            data.value = Helper.binary_str_to_bytes(
+                f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
             )
             # In this case we don't need cl, nl; just the reset leaves.
             return None, None, reset_leaves
@@ -582,47 +587,47 @@ class FreecursiveOram(TreeBaseOram):
         # When reset does not happen.
         else:
             # We check whether the overflow happens; if so we throw an error.
-            if ic + 1 >= pow(2, self.__ic_length):
+            if ic + 1 >= pow(2, self._ic_length):
                 raise ValueError("Overflow happened under probabilistic resets.")
             # We update the counts being stored.
-            data[VALUE] = Helper.binary_str_to_bytes(
-                f"{data[VALUE][:ic_start]}{bin(ic + 1)[2:].zfill(self.__ic_length)}{data[VALUE][ic_end:]}"
+            data.value = Helper.binary_str_to_bytes(
+                f"{data.value[:ic_start]}{bin(ic + 1)[2:].zfill(self._ic_length)}{data.value[ic_end:]}"
             )
             # Compute the leaves.
-            cur_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic)
-            new_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic + 1)
+            cur_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic)
+            new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
             # In this case, we return the leaves and reset leaves are None.
             return cur_leaf, new_leaf, None
 
-    def __update_data_hard_reset(self, key: int, data: list, offset: int) -> PROCESSED_DATA:
+    def _update_data_hard_reset(self, key: int, data: Data, offset: int) -> PROCESSED_DATA:
         """
         Given a data block and offset, compute the current.
 
         :param key: key to some data of interest.
-        :param data: a list contains key, index, and value.
+        :param data: a Data object.
         :param offset: the offset of where the value should be written to.
         :return: the computed current leaf and updated leaf, and reset leaves if reset happens.
         """
         # First convert bytes to binary string.
-        data[VALUE] = Helper.bytes_to_binary_str(data[VALUE]).zfill(self.__count_length)
+        data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         # Get the group count.
-        gc = int(data[VALUE][:self.__gc_length], 2)
+        gc = int(data.value[:self._gc_length], 2)
 
         # Use index to grab the individual count.
-        ic_start = self.__gc_length + offset * self.__ic_length
-        ic_end = self.__gc_length + (offset + 1) * self.__ic_length
+        ic_start = self._gc_length + offset * self._ic_length
+        ic_end = self._gc_length + (offset + 1) * self._ic_length
 
         # Convert the ic from binary representation to integer.
-        ic = int(data[VALUE][ic_start: ic_end], 2)
+        ic = int(data.value[ic_start: ic_end], 2)
 
         # When overflow happens.
-        if ic + 1 >= pow(2, self.__ic_length):
+        if ic + 1 >= pow(2, self._ic_length):
             # We store the leaves that should be updated to reset_leaves.
-            reset_leaves = self.__get_reset_leaves(key=key, data=data[VALUE])
+            reset_leaves = self._get_reset_leaves(key=key, data=data.value)
             # Now we set the new values for ic and gc.
-            data[VALUE] = Helper.binary_str_to_bytes(
-                f"{bin(gc + 1)[2:].zfill(self.__gc_length)}{'0' * self.__ic_length * self.__num_ic}"
+            data.value = Helper.binary_str_to_bytes(
+                f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
             )
             # In this case we don't need cl, nl; just the reset leaves.
             return None, None, reset_leaves
@@ -630,16 +635,16 @@ class FreecursiveOram(TreeBaseOram):
         # When overflow does not happen.
         else:
             # We update the counts being stored.
-            data[VALUE] = Helper.binary_str_to_bytes(
-                f"{data[VALUE][:ic_start]}{bin(ic + 1)[2:].zfill(self.__ic_length)}{data[VALUE][ic_end:]}"
+            data.value = Helper.binary_str_to_bytes(
+                f"{data.value[:ic_start]}{bin(ic + 1)[2:].zfill(self._ic_length)}{data.value[ic_end:]}"
             )
             # Compute the leaves.
-            cur_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic)
-            new_leaf = self.__get_previous_leaf_from_prf(key=key * self.__num_ic + offset, gc=gc, ic=ic + 1)
+            cur_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic)
+            new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
             # In this case, we return the leaves and reset leaves are None.
             return cur_leaf, new_leaf, None
 
-    def __retrieve_pos_map_stash(self, key: int, offset: int, new_leaf: int, to_index: int) -> PROCESSED_DATA:
+    def _retrieve_pos_map_stash(self, key: int, offset: int, new_leaf: int, to_index: int) -> PROCESSED_DATA:
         """
         Given a key and an operation, retrieve the block from stash and apply the operation to it.
 
@@ -652,21 +657,21 @@ class FreecursiveOram(TreeBaseOram):
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
             # If we find the data of interest, perform operation, otherwise just skip over.
-            if data[KEY] == key:
-                next_cur_leaf, next_new_leaf, reset_leaves = self.__update_data_prob_reset(
+            if data.key == key:
+                next_cur_leaf, next_new_leaf, reset_leaves = self._update_data_prob_reset(
                     key=key, data=data, offset=offset
-                ) if self.__reset_method == "prob" else self.__update_data_prob_reset(
+                ) if self._reset_method == "prob" else self._update_data_prob_reset(
                     key=key, data=data, offset=offset
                 )
                 # This data block should be placed to where new leaf is.
-                data[LEAF] = new_leaf
+                data.leaf = new_leaf
                 # We can just break the loop as we found the target.
                 return next_cur_leaf, next_new_leaf, reset_leaves
 
         # If the key was never found, raise an error, since the stash is always searched after path.
         raise KeyError(f"Key {key} not found.")
 
-    def __retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, path: Buckets) -> PROCESSED_DATA:
+    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, path: Buckets) -> PROCESSED_DATA:
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
@@ -687,17 +692,17 @@ class FreecursiveOram(TreeBaseOram):
         for bucket in path:
             for data in bucket:
                 # If dummy data, we skip it.
-                if data[KEY] is None:
+                if data.key is None:
                     continue
                 # If it's the data of interest, we both read and write it, and give it a new path.
-                elif data[KEY] == key:
-                    next_cur_leaf, next_new_leaf, reset_leaves = self.__update_data_prob_reset(
+                elif data.key == key:
+                    next_cur_leaf, next_new_leaf, reset_leaves = self._update_data_prob_reset(
                         key=key, data=data, offset=offset
-                    ) if self.__reset_method == "prob" else self.__update_data_hard_reset(
+                    ) if self._reset_method == "prob" else self._update_data_hard_reset(
                         key=key, data=data, offset=offset
                     )
                     # This data block should be placed to where new leaf is.
-                    data[LEAF] = new_leaf
+                    data.leaf = new_leaf
                 # And all real data to the stash.
                 self._stash.append(data)
 
@@ -707,14 +712,14 @@ class FreecursiveOram(TreeBaseOram):
 
         # If both next cur leaf and reset leaves are still None, we go search the stash.
         if next_cur_leaf is None and reset_leaves is None:
-            next_cur_leaf, next_new_leaf, reset_leaves = self.__retrieve_pos_map_stash(
+            next_cur_leaf, next_new_leaf, reset_leaves = self._retrieve_pos_map_stash(
                 key=key, offset=offset, new_leaf=new_leaf, to_index=to_index
             )
 
         # Return the desired values.
         return next_cur_leaf, next_new_leaf, reset_leaves
 
-    def __retrieve_data_stash(self, op: str, key: int, to_index: int, new_leaf: int, value: Any = None) -> int:
+    def _retrieve_data_stash(self, op: str, key: int, to_index: int, new_leaf: int, value: Any = None) -> int:
         """
         Given a key and an operation, retrieve the block from stash and apply the operation to it.
 
@@ -731,25 +736,25 @@ class FreecursiveOram(TreeBaseOram):
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
             # If we find the data of interest, perform operation, otherwise just skip over.
-            if data[KEY] == key:
+            if data.key == key:
                 if op == "r":
-                    read_value = data[VALUE]
+                    read_value = data.value
                 elif op == "w":
-                    data[VALUE] = value
+                    data.value = value
                 elif op == "rw":
-                    read_value = data[VALUE]
-                    data[VALUE] = value
+                    read_value = data.value
+                    data.value = value
                 else:
                     raise ValueError("The provided operation is not valid.")
                 # Get new path and update the position map.
-                data[LEAF] = new_leaf
+                data.leaf = new_leaf
                 # Set found to true.
                 return read_value
 
         # If the key was never found, raise an error, since the stash is always searched after path.
         raise KeyError(f"Key {key} not found.")
 
-    def __retrieve_data_block(self, op: str, key: int, new_leaf: int, path: Buckets, value: Any = None) -> Any:
+    def _retrieve_data_block(self, op: str, key: int, new_leaf: int, path: Buckets, value: Any = None) -> Any:
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
@@ -774,21 +779,21 @@ class FreecursiveOram(TreeBaseOram):
         for bucket in path:
             for data in bucket:
                 # If dummy data, we skip it.
-                if data[KEY] is None:
+                if data.key is None:
                     continue
                 # If it's the data of interest, we read/write it, and give it a new path.
-                elif data[KEY] == key:
+                elif data.key == key:
                     if op == "r":
-                        read_value = data[VALUE]
+                        read_value = data.value
                     elif op == "w":
-                        data[VALUE] = value
+                        data.value = value
                     elif op == "rw":
-                        read_value = data[VALUE]
-                        data[VALUE] = value
+                        read_value = data.value
+                        data.value = value
                     else:
                         raise ValueError("The provided operation is not valid.")
                     # Get new path and update the position map.
-                    data[LEAF] = new_leaf
+                    data.leaf = new_leaf
                     # Set found to True.
                     found = True
                 # And all real data to the stash.
@@ -800,11 +805,11 @@ class FreecursiveOram(TreeBaseOram):
 
         # If the value is not found, it might be in the stash.
         if not found:
-            read_value = self.__retrieve_data_stash(op=op, key=key, to_index=to_index, value=value, new_leaf=new_leaf)
+            read_value = self._retrieve_data_stash(op=op, key=key, to_index=to_index, value=value, new_leaf=new_leaf)
 
         return read_value
 
-    def __get_leaf_from_pos_map(self, key: int) -> PROCESSED_DATA:
+    def _get_leaf_from_pos_map(self, key: int) -> PROCESSED_DATA:
         """
         Provide a key to some data, iterate through all position map orams to find where it is stored.
 
@@ -812,10 +817,10 @@ class FreecursiveOram(TreeBaseOram):
         :return: which path the data block is on and the new path it should be stored to.
         """
         # We get the position map keys.
-        pos_map_keys = self.__get_pos_map_keys(key=key)
+        pos_map_keys = self._get_pos_map_keys(key=key)
 
         # Retrieve leaf from the on chip storage.
-        cur_leaf, new_leaf, reset_leaves = self.__update_on_chip_data(key=pos_map_keys[0][0], offset=pos_map_keys[0][1])
+        cur_leaf, new_leaf, reset_leaves = self._update_on_chip_data(key=pos_map_keys[0][0], offset=pos_map_keys[0][1])
 
         # Declare useful variables.
         next_cur_leaf, next_new_leaf = None, None
@@ -837,51 +842,51 @@ class FreecursiveOram(TreeBaseOram):
                         leaves = [cl_one]
 
                     # Read the leaves and get data.
-                    path = self.client.read_query(label="pos_map", leaf=leaves, index=pos_map_index)
+                    path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=leaves)
 
                     # Depends on which one is one we want next, compute next leaves.
                     if ck_one == cur_key:
                         next_cur_leaf, next_new_leaf, reset_leaves = (
-                            self.__pos_maps[pos_map_index].__retrieve_pos_map_block(
+                            self._pos_maps[pos_map_index]._retrieve_pos_map_block(
                                 key=ck_one, offset=cur_index, new_leaf=nl_one, path=path
                             )
                         )
-                        self.__pos_maps[pos_map_index].__update_stash_leaf(key=ck_two, new_leaf=nl_two)
+                        self._pos_maps[pos_map_index]._update_stash_leaf(key=ck_two, new_leaf=nl_two)
                     elif ck_two == cur_key:
                         next_cur_leaf, next_new_leaf, reset_leaves = (
-                            self.__pos_maps[pos_map_index].__retrieve_pos_map_block(
+                            self._pos_maps[pos_map_index]._retrieve_pos_map_block(
                                 key=ck_two, offset=cur_index, new_leaf=nl_two, path=path
                             )
                         )
-                        self.__pos_maps[pos_map_index].__update_stash_leaf(key=ck_one, new_leaf=nl_one)
+                        self._pos_maps[pos_map_index]._update_stash_leaf(key=ck_one, new_leaf=nl_one)
                     # Otherwise we just add them to stash and update leaves. (If key is not None.)
                     else:
-                        self.__pos_maps[pos_map_index].__update_block_leaves(
+                        self._pos_maps[pos_map_index]._update_block_leaves(
                             key_one=ck_one, key_two=ck_two, n_leaf_one=nl_one, n_leaf_two=nl_two, path=path
                         )
                     # Evict the stash to current leaves.
-                    path = self.__pos_maps[pos_map_index].__evict_stash_to_mul(leaves=leaves)
+                    path = self._pos_maps[pos_map_index]._evict_stash_to_mul(leaves=leaves)
 
                     # Write to the server.
-                    self.client.write_query(label="pos_map", leaf=leaves, index=pos_map_index, data=path)
+                    self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=leaves, data=path)
 
             # Otherwise proceeds as normal.
             else:
                 # Interact with server to get path.
-                path = self.client.read_query(label="pos_map", leaf=cur_leaf, index=pos_map_index)
+                path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf)
 
                 # Find what leaves for the next iteration.
                 next_cur_leaf, next_new_leaf, reset_leaves = (
-                    self.__pos_maps[pos_map_index].__retrieve_pos_map_block(
+                    self._pos_maps[pos_map_index]._retrieve_pos_map_block(
                         key=cur_key, offset=cur_index, new_leaf=new_leaf, path=path
                     )
                 )
 
                 # Evict stash to current leaf.
-                path = self.__pos_maps[pos_map_index].__evict_stash(leaf=cur_leaf)
+                path = self._pos_maps[pos_map_index]._evict_stash(leaf=cur_leaf)
 
                 # Interact with server to store path.
-                self.client.write_query(label="pos_map", leaf=cur_leaf, index=pos_map_index, data=path)
+                self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf, data=path)
 
             # Update the next values to current.
             cur_leaf, new_leaf = next_cur_leaf, next_new_leaf
@@ -898,7 +903,7 @@ class FreecursiveOram(TreeBaseOram):
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
         # Find which path the data of interest lies on.
-        cur_leaf, next_leaf, reset_leaves = self.__get_leaf_from_pos_map(key=key)
+        cur_leaf, next_leaf, reset_leaves = self._get_leaf_from_pos_map(key=key)
 
         # If reset happens at the last pos oram.
         if reset_leaves:
@@ -920,27 +925,27 @@ class FreecursiveOram(TreeBaseOram):
 
                 # Depends on which one is one we want next, compute next leaves.
                 if ck_one == key:
-                    value = self.__retrieve_data_block(
+                    value = self._retrieve_data_block(
                         op=op, key=ck_one, value=value, new_leaf=nl_one, path=path
                     )
                     # Perform reset for the other value.
-                    self.__update_stash_leaf(key=ck_two, new_leaf=nl_two)
+                    self._update_stash_leaf(key=ck_two, new_leaf=nl_two)
 
                 elif ck_two == key:
-                    value = self.__retrieve_data_block(
+                    value = self._retrieve_data_block(
                         op=op, key=ck_two, value=value, new_leaf=nl_two, path=path
                     )
                     # Perform reset for the other value.
-                    self.__update_stash_leaf(key=ck_one, new_leaf=nl_one)
+                    self._update_stash_leaf(key=ck_one, new_leaf=nl_one)
 
                 # Otherwise we just add them to stash and update leaves. (If key is not None.)
                 else:
-                    self.__update_block_leaves(
+                    self._update_block_leaves(
                         key_one=ck_one, key_two=ck_two, n_leaf_one=nl_one, n_leaf_two=nl_two, path=path
                     )
 
                 # Evict the stash to current leaves.
-                path = self.__evict_stash_to_mul(leaves=leaves)
+                path = self._evict_stash_to_mul(leaves=leaves)
 
                 # Interact with server to store path.
                 self.client.write_query(label="oram", leaf=leaves, data=path)
@@ -949,16 +954,13 @@ class FreecursiveOram(TreeBaseOram):
             path = self.client.read_query(label="oram", leaf=cur_leaf)
 
             # Generate new leaf and read value from the path and show it.
-            value = self.__retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
+            value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
 
             # Perform an eviction and get a new path.
-            path = self.__evict_stash(leaf=cur_leaf)
+            path = self._evict_stash(leaf=cur_leaf)
 
             # Interact with server to store path.
             self.client.write_query(label="oram", leaf=cur_leaf, data=path)
-
-        # TODO: this could be deleted (or commented out), it's only here for experimental purposes.
-        self.max_stash = self.get_stash_size if self.get_stash_size > self.max_stash else self.max_stash
 
         return value
 
@@ -972,7 +974,7 @@ class FreecursiveOram(TreeBaseOram):
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
         # Find which path the data of interest lies on.
-        cur_leaf, next_leaf, reset_leaves = self.__get_leaf_from_pos_map(key=key)
+        cur_leaf, next_leaf, reset_leaves = self._get_leaf_from_pos_map(key=key)
 
         # If reset happens at the last pos oram.
         if reset_leaves:
@@ -994,47 +996,47 @@ class FreecursiveOram(TreeBaseOram):
 
                 # Depends on which one is one we want next, compute next leaves.
                 if ck_one == key:
-                    value = self.__retrieve_data_block(
+                    value = self._retrieve_data_block(
                         op=op, key=ck_one, value=value, new_leaf=nl_one, path=path
                     )
                     # Perform reset for the other value.
-                    self.__update_stash_leaf(key=ck_two, new_leaf=nl_two)
+                    self._update_stash_leaf(key=ck_two, new_leaf=nl_two)
 
                     # Temporarily save the leaves and stash for future eviction.
-                    self.__tmp_leaves = leaves
+                    self._tmp_leaves = leaves
 
                     # If there are more values to reset, we temporarily store them.
                     if index < len(reset_leaves) - 1:
-                        self.__tmp_reset_leaves = reset_leaves[index + 1:]
+                        self._tmp_reset_leaves = reset_leaves[index + 1:]
 
                     # Stop the reset process.
                     return value
 
                 elif ck_two == key:
-                    value = self.__retrieve_data_block(
+                    value = self._retrieve_data_block(
                         op=op, key=ck_two, value=value, new_leaf=nl_two, path=path
                     )
                     # Perform reset for the other value.
-                    self.__update_stash_leaf(key=ck_one, new_leaf=nl_one)
+                    self._update_stash_leaf(key=ck_one, new_leaf=nl_one)
 
                     # Temporarily save the leaves and stash for future eviction.
-                    self.__tmp_leaves = leaves
+                    self._tmp_leaves = leaves
 
                     # If there are more values to reset, we temporarily store them.
                     if index < len(reset_leaves) - 1:
-                        self.__tmp_reset_leaves = reset_leaves[index + 1:]
+                        self._tmp_reset_leaves = reset_leaves[index + 1:]
 
                     # Stop the reset process.
                     return value
 
                 # Otherwise we just add them to stash and update leaves. (If key is not None.)
                 else:
-                    self.__update_block_leaves(
+                    self._update_block_leaves(
                         key_one=ck_one, key_two=ck_two, n_leaf_one=nl_one, n_leaf_two=nl_two, path=path
                     )
 
                     # In this case, we only evict data other than the one we are interested in.
-                    path = self.__evict_stash_to_mul(leaves=leaves)
+                    path = self._evict_stash_to_mul(leaves=leaves)
 
                     # Interact with server to store path.
                     self.client.write_query(label="oram", leaf=leaves, data=path)
@@ -1044,10 +1046,10 @@ class FreecursiveOram(TreeBaseOram):
             path = self.client.read_query(label="oram", leaf=cur_leaf)
 
             # Generate new leaf and read value from the path and show it.
-            value = self.__retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
+            value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
 
             # Temporarily save the leaves for future eviction.
-            self.__tmp_leaf = cur_leaf
+            self._tmp_leaf = cur_leaf
 
         return value
 
@@ -1063,8 +1065,8 @@ class FreecursiveOram(TreeBaseOram):
         # Read all buckets stored in the stash and find the desired data block of interest.
         for data in self._stash:
             # If we find the data of interest, update value and set found to True.
-            if data[KEY] == key:
-                data[VALUE] = value
+            if data.key == key:
+                data.value = value
                 found = True
 
         # If the data was never found, we raise an error.
@@ -1072,23 +1074,23 @@ class FreecursiveOram(TreeBaseOram):
             raise KeyError(f"Key {key} not found.")
 
         # Perform an eviction and get a new path depending on which temp leaf/leaves is not None.
-        if self.__tmp_leaf is not None:
+        if self._tmp_leaf is not None:
             # Perform an eviction and get a new path.
-            path = self.__evict_stash(leaf=self.__tmp_leaf)
+            path = self._evict_stash(leaf=self._tmp_leaf)
             # Interact with server to store path.
-            self.client.write_query(label="oram", leaf=self.__tmp_leaf, data=path)
+            self.client.write_query(label="oram", leaf=self._tmp_leaf, data=path)
             # Set temporary leaf to None.
-            self.__tmp_leaf = None
+            self._tmp_leaf = None
         else:
             # Perform an eviction and get a new path.
-            path = self.__evict_stash_to_mul(leaves=self.__tmp_leaves)
+            path = self._evict_stash_to_mul(leaves=self._tmp_leaves)
             # Interact with server to store path.
-            self.client.write_query(label="oram", leaf=self.__tmp_leaves, data=path)
+            self.client.write_query(label="oram", leaf=self._tmp_leaves, data=path)
             # Set temporary leaves to None.
-            self.__tmp_leaves = None
+            self._tmp_leaves = None
             # Continue reset if there are values left.
-            if self.__tmp_reset_leaves is not None:
-                for cur_reset_leaves in self.__tmp_reset_leaves:
+            if self._tmp_reset_leaves is not None:
+                for cur_reset_leaves in self._tmp_reset_leaves:
                     # If the current reset leaves length is 2, we unpack both of them.
                     if len(cur_reset_leaves) == 2:
                         ck_one, cl_one, nl_one = cur_reset_leaves[0]
@@ -1103,15 +1105,15 @@ class FreecursiveOram(TreeBaseOram):
                     # Read the leaves and get data.
                     path = self.client.read_query(label="oram", leaf=leaves)
 
-                    self.__update_block_leaves(
+                    self._update_block_leaves(
                         key_one=ck_one, key_two=ck_two, n_leaf_one=nl_one, n_leaf_two=nl_two, path=path
                     )
 
                     # In this case, we only evict data other than the one we are interested in.
-                    path = self.__evict_stash_to_mul(leaves=leaves)
+                    path = self._evict_stash_to_mul(leaves=leaves)
 
                     # Interact with server to store path.
                     self.client.write_query(label="oram", leaf=leaves, data=path)
 
             # Set temporary reset leaves to None.
-            self.__tmp_reset_leaves = None
+            self._tmp_reset_leaves = None

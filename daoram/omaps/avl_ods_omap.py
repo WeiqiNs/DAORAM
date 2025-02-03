@@ -1,24 +1,14 @@
 """Defines the OMAP constructed with the AVL tree ODS."""
-
 import copy
 import math
 import os
-import pickle
+from functools import cached_property
 from typing import Any, List, Tuple
 
 from scipy.special import lambertw
 
-from daoram.dependency.avl_tree import AVLTree, L, R
-from daoram.dependency.binary_tree import BinaryTree, KEY, LEAF, VALUE
-from daoram.dependency.interact_server import InteractServer
+from daoram.dependency import AVLData, AVLTree, BinaryTree, Buckets, Data, Helper, InteractServer
 from daoram.omaps.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
-
-# We use these codes for better readability of code. For the value stored in a data block, V retrieves the value,
-# CK retrieves children node keys, CL retrieves children node leaves, and CH retrieves children node heights.
-V = 0
-CK = 1
-CL = 2
-CH = 3
 
 
 class AVLOdsOmap(TreeOdsOmap):
@@ -27,12 +17,12 @@ class AVLOdsOmap(TreeOdsOmap):
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
-                 use_encryption: bool = True,
-                 distinguishable_search: bool = False):
+                 use_encryption: bool = True):
         """
         Initializes the OMAP based on the AVL tree ODS.
 
@@ -40,17 +30,18 @@ class AVLOdsOmap(TreeOdsOmap):
         :param key_size: the number of bytes the random dummy key should have.
         :param data_size: the number of bytes the random dummy data should have.
         :param client: the instance we use to interact with server.
+        :param filename: the filename to save the oram data to.
         :param bucket_size: the number of data each bucket should have.
         :param stash_scale: the scaling scale of the stash.
         :param aes_key: the key to use for the AES instance.
         :param num_key_bytes: the number of bytes the aes key should have.
         :param use_encryption: a boolean indicating whether to use encryption.
-        :param distinguishable_search: a boolean indicating whether fast search can be used.
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
             client=client,
             aes_key=aes_key,
+            filename=filename,
             num_data=num_data,
             key_size=key_size,
             data_size=data_size,
@@ -60,14 +51,8 @@ class AVLOdsOmap(TreeOdsOmap):
             use_encryption=use_encryption
         )
 
-        # Set whether we use the fast search.
-        self.__distinguishable_search = distinguishable_search
-
         # Compute the maximum height of the AVL tree.
-        self.__max_height = math.ceil(1.44 * math.log(self._num_data, 2))
-
-        # Update the padded block size, which depends on the max height.
-        self._padded_block_size = self._dummy_block_size
+        self._max_height: int = math.ceil(1.44 * math.log(self._num_data, 2))
 
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -78,33 +63,89 @@ class AVLOdsOmap(TreeOdsOmap):
         tree_size = math.ceil(math.e ** (lambertw(math.e ** -1 * (math.log(num_tree, 2) + 128 - 1)).real + 1))
 
         # Update the height accordingly.
-        self.__max_height = math.ceil(1.44 * math.log(tree_size, 2))
+        self._max_height = math.ceil(1.44 * math.log(tree_size, 2))
 
-        # Update the padded block size, which depends on the max height.
-        self._padded_block_size = self._dummy_block_size
+    @cached_property
+    def _max_block_size(self) -> int:
+        """Get the number of bytes equal to the size of actual data block stored in the ORAM tree."""
+        return len(
+            Data(
+                key=os.urandom(self._key_size),
+                leaf=self._num_data - 1,
+                value=AVLData(
+                    value=os.urandom(self._data_size),
+                    r_key=os.urandom(self._key_size),
+                    r_leaf=self._num_data - 1,
+                    r_height=self._max_height,
+                    l_key=os.urandom(self._key_size),
+                    l_leaf=self._num_data - 1,
+                    l_height=self._max_height
+                ).dump()
+            ).dump()
+        )
 
-    @property
-    def _dummy_block_size(self) -> int:
-        """Get the number of bytes equal to the size of actual data block stored in ORAM."""
-        return len(pickle.dumps([
-            os.urandom(self._key_size),
-            self._num_data - 1,
-            [
-                os.urandom(self._data_size),  # value in the kv pair.
-                [os.urandom(self._key_size), os.urandom(self._key_size)],  # children keys.
-                [self._num_data, self._num_data],  # children paths.
-                [self.__max_height, self.__max_height]  # children heights.
+    def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
+        """
+        Given buckets, encrypt all data in it.
+
+        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
+        bucket with desired amount of dummy data.
+        """
+
+        def _enc_bucket(bucket: List[Data]) -> List[bytes]:
+            """Helper function to add dummy data and encrypt a bucket."""
+            # First, each data's value is AVLData, we need to dump it.
+            for data in bucket:
+                data.value = data.value.dump()
+
+            # Perform encryption.
+            enc_bucket = [
+                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump(), length=self._max_block_size))
+                for data in bucket
             ]
-        ]))
 
-    def __get_avl_data(self, key: Any, value: Any) -> list:
-        """
-        From the input key and value, create the data should be stored in the AVL tree oram.
+            # Compute if dummy block is needed.
+            dummy_needed = self._bucket_size - len(bucket)
 
-        The data is of the following structure:
-            - [key, leaf, [value, [left_key, right_key], [left_path, right_path], [left_height, right_height]]]
-        """
-        return [key, self._get_new_leaf(), [value, [None, None], [None, None], [0, 0]]]
+            # If needed perform padding.
+            if dummy_needed > 0:
+                enc_bucket.extend([
+                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
+                    for _ in range(dummy_needed)
+                ])
+
+            return enc_bucket
+
+        # Return the encrypted list of lists of bytes.
+        return [_enc_bucket(bucket=bucket) for bucket in buckets] if self._use_encryption else buckets
+
+    def _decrypt_buckets(self, buckets: Buckets) -> List[List[Data]]:
+        """Given encrypted buckets, decrypt all data in it."""
+
+        # First decrypt the data and then load it as AVLData.
+        def _dec_bucket(bucket: List[bytes]) -> List[Data]:
+            """Helper function to add dummy data and encrypt a bucket."""
+            # Perform encryption.
+            dec_bucket = [
+                dec for data in bucket
+                if (dec := Data.from_pickle(
+                    Helper.unpad_pickle(data=self._cipher.dec(ciphertext=data)))
+                    ).key is not None
+            ]
+
+            # Load data.
+            for data in dec_bucket:
+                data.value = AVLData.from_pickle(data=data.value)
+
+            return dec_bucket
+
+        # Return the decrypted list of lists of Data.
+        return [_dec_bucket(bucket=bucket) for bucket in buckets] if self._use_encryption else buckets
+
+    def _get_avl_data(self, key: Any, value: Any) -> Data:
+        """From the input key and value, create the data should be stored in the AVL tree oram."""
+        # In the AVLData, only value needs to be filled.
+        return Data(key=key, leaf=self._get_new_leaf(), value=AVLData(value=value))
 
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
         """
@@ -113,35 +154,37 @@ class AVLOdsOmap(TreeOdsOmap):
         :param data: a list of key-value pairs.
         :return: the binary tree storage for the input list of key-value pairs.
         """
-        # Create an empty root, an empty position map dictionary, an AVL tree instance, and an oram tree instance.
-        root = None
-        pos_map = {}
-        avl_tree = AVLTree(leaf_range=self._leaf_range)
-        oram_tree = BinaryTree(num_data=self._num_data, bucket_size=self._bucket_size)
+        # Create the binary tree object.
+        tree = BinaryTree(
+            filename=self._filename,
+            num_data=self._num_data,
+            data_size=self._max_block_size,
+            bucket_size=self._bucket_size,
+            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+        )
 
-        # Insert all the provided KV pairs to the root.
+        # Insert all the provided KV pairs to the AVL tree.
         if data:
+            # Create an empty root and the avl tree object.
+            root = None
+            avl_tree = AVLTree(leaf_range=self._leaf_range)
+
+            # Insert the kv pairs to the AVL tree.
             for kv_pair in data:
                 root = avl_tree.recursive_insert(root=root, kv_pair=kv_pair)
 
-            # Fill the position map.
-            avl_tree.post_order(root=root, pos_map=pos_map)
-
-            # Fill the oram tree according to the position map.
-            for key, node in sorted(pos_map.items()):
-                # Node is a list containing leaf info and then details of the node.
-                oram_tree.fill_data_to_storage_leaf(data=[key, node[0], node[1]])
+            # Get node from avl tree and fill them to the oram storage.
+            for avl_data in avl_tree.get_data_list(root=root, encryption=self._use_encryption):
+                tree.fill_data_to_storage_leaf(data=avl_data)
 
             # Store the key and its path in the oram.
-            self.root = (root.key, root.path)
+            self.root = (root.key, root.leaf)
 
-        # Fill the storage with dummy data.
-        oram_tree.fill_storage_with_dummy_data()
+        # Encryption and fill with dummy data if needed.
+        if self._use_encryption:
+            tree.storage.encrypt(aes=self._cipher)
 
-        # Encrypt the tree storage if needed.
-        oram_tree.storage = self._encrypt_buckets(buckets=oram_tree.storage)
-
-        return oram_tree
+        return tree
 
     def _init_mul_tree_ods_storage(self, data_list: List[KV_LIST]) -> Tuple[BinaryTree, List[ROOT]]:
         """
@@ -150,363 +193,211 @@ class AVLOdsOmap(TreeOdsOmap):
         :param data_list: a list of lists of key-value pairs.
         :return: the binary tree storage for the input list of key-value pairs and a list of AVL tree roots.
         """
-        # In this case, we set the max height to be smaller as each subgroup is of O(log n).
-        self.__max_height = math.ceil(1.44 * math.log(math.log(self._num_data, 2), 2)) + 1
+        # Create the binary tree object.
+        tree = BinaryTree(
+            filename=self._filename,
+            num_data=self._num_data,
+            data_size=self._max_block_size,
+            bucket_size=self._bucket_size,
+            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+        )
 
-        # Create a root list, an AVL tree instance, and an oram tree instance.
+        # Create a root list for each AVL tree.
         root_list = []
-        avl_tree = AVLTree(leaf_range=self._leaf_range)
-        oram_tree = BinaryTree(num_data=self._num_data, bucket_size=self._bucket_size)
 
         # Enumerate each key-pair list in the input list.
         for index, data in enumerate(data_list):
-            # Set root to None and create an empty pos map for each key-pair list.
-            root = None
-            pos_map = {}
-
             # Insert all data to the AVL tree.
             if data:
+                # Create an empty root and the avl tree object.
+                root = None
+                avl_tree = AVLTree(leaf_range=self._leaf_range)
+
+                # Insert the kv pairs to the AVL tree.
                 for kv_pair in data:
                     root = avl_tree.recursive_insert(root=root, kv_pair=kv_pair)
 
-                # Fill the position map.
-                avl_tree.post_order(root=root, pos_map=pos_map)
-
-                # Fill the oram tree according to the position map.
-                for key, node in pos_map.items():
-                    # Node is a list containing leaf info and then details of the node.
-                    oram_tree.fill_data_to_storage_leaf(data=[key, node[0], node[1]])
+                # Get node from avl tree and fill them to the oram storage.
+                for avl_data in avl_tree.get_data_list(root=root, encryption=self._use_encryption):
+                    tree.fill_data_to_storage_leaf(data=avl_data)
 
                 # Store the key and its path to the root list.
-                root_list.append((root.key, root.path))
+                root_list.append((root.key, root.leaf))
 
             else:
                 # Otherwise just append None.
                 root_list.append(None)
 
-        # Fill the storage with dummy data.
-        oram_tree.fill_storage_with_dummy_data()
+        # Encryption and fill with dummy data if needed.
+        if self._use_encryption:
+            tree.storage.encrypt(aes=self._cipher)
 
-        # Encrypt the tree storage if needed.
-        oram_tree.storage = self._encrypt_buckets(buckets=oram_tree.storage)
+        return tree, root_list
 
-        return oram_tree, root_list
-
-    def __update_heights(self) -> None:
-        """Traverse the nodes in local and update their children heights accordingly."""
-        for i in range(len(self._local) - 2, -1, -1):
-            # Compute the new height of the node.
-            height = 1 + max(self._local[i + 1][VALUE][CH][L], self._local[i + 1][VALUE][CH][R])
-            # Update the height stored in parent nodes; check the last visited node is right or left.
-            if self._local[i][VALUE][CK][L] == self._local[i + 1][KEY]:
-                self._local[i][VALUE][CH][L] = height
-            else:
-                self._local[i][VALUE][CH][R] = height
-
-    def __update_leaves(self) -> None:
+    def _update_leaves(self) -> None:
         """Traverse the nodes in local and update their children leaves accordingly."""
-        for i in range(len(self._local) - 2, -1, -1):
-            # Sample a new leaf and store it.
-            self._local[i][LEAF] = self._get_new_leaf()
-            # Update the children path stored in parent nodes; check the last visited node is right or left.
-            if self._local[i][VALUE][CK][L] == self._local[i + 1][KEY]:
-                self._local[i][VALUE][CL][L] = self._local[i + 1][LEAF]
-            else:
-                self._local[i][VALUE][CL][R] = self._local[i + 1][LEAF]
+        # Iterate backwards from len(local) - 2 down to 0.
+        for i in range(len(self._local) - 1, -1, -1):
+            # Set the current node as child node and sample a new leaf for it.
+            child = self._local[i]
+            child.leaf = self._get_new_leaf()
 
-    def __move_stash_node_to_local(self, key: Any) -> None:
-        """Given key, move the corresponding data from stash to local."""
-        # Iterate though the stash and find the desired key.
-        for index, data in enumerate(self._stash):
-            # If found, we append the value to local and delete it from stash.
-            if data[KEY] == key:
-                self._local.append(data)
-                del self._stash[index]
-                return
+            # If parent exists, we update the parent information.
+            if i - 1 >= 0:
+                parent = self._local[i - 1]
 
-        # Since stash is checked after path, raise an error.
-        raise KeyError(f"Key {key} not found.")
-
-    def __move_remote_node_to_local(self, key: Any, leaf: int) -> None:
-        """
-        Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
-
-        :param key: search key of interest.
-        :param leaf: indicate which path the data of interest is stored in the ORAM.
-        """
-        # Set found to false.
-        found = False
-
-        # Get the desired path and perform decryption as needed.
-        path = self._decrypt_buckets(buckets=self.client.read_query(label="ods", leaf=leaf))
-
-        # Find the desired data in the path.
-        for bucket in path:
-            for data in bucket:
-                if data[KEY] == key:
-                    # When we find the desired data, we move it to local storage.
-                    self._local.append(data.copy())
-                    # Label this data as dummy data; its content will eventually be deleted/replaced.
-                    data[KEY] = None
-                    # Set found to True.
-                    found = True
-
-        # If the required data is not found, we also check the stash.
-        if not found:
-            self.__move_stash_node_to_local(key=key)
-
-        # Write the path back.
-        self.client.write_query(label="ods", leaf=leaf, data=self._encrypt_buckets(buckets=path))
-
-    def __search_move_node_to_local(self, key: Any, leaf: Any) -> None:
-        """
-        Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
-
-        This is specialized to the fast search method, where the data of interest are moved to local and the rest
-        are added to stash.
-        :param key: search key of interest.
-        :param leaf: indicate which path the data of interest is stored in the ORAM.
-        """
-        # Set found to false and get existing stash size.
-        found = False
-        to_index = len(self._stash)
-
-        # Get the desired path and perform decryption as needed.
-        path = self._decrypt_buckets(buckets=self.client.read_query(label="ods", leaf=leaf))
-
-        # Find the desired data in the path.
-        for bucket in path:
-            for data in bucket:
-                if data[KEY] is None:
-                    continue
-                elif data[KEY] == key:
-                    # We append the data we want to stash.
-                    self._local.append(data)
-                    found = True
+                # Update the child leaf.
+                if parent.value.l_key == child.key:
+                    parent.value.l_leaf = child.leaf
                 else:
-                    # Other real data are directly added to stash.
-                    self._stash.append(data)
+                    parent.value.r_leaf = child.leaf
 
-        # Check if stash overflows.
-        if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+    def _rotate_left(self, index: int, in_node: Data) -> Tuple[Any, int, int]:
+        """
+        Perform a left rotation at the provided input node.
 
-        # If the desired data is not found in the path, we check the stash.
-        if not found:
-            for i in range(to_index):
-                # If we find the data, we add it to local and remove it from stash.
-                if self._stash[i][KEY] == key:
-                    self._local.append(self._stash[i])
-                    del self._stash[i]
-                    # Terminate the function.
-                    return
+        :param index: the index of the node to rotate in local.
+        :param in_node: some AVLTreeNode to rotate.
+        :return: the (key, leaf, height) of the new parent node after rotation.
+        """
+        # The right child should exist in the next location.
+        p_node = self._local[index + 1]
 
-            # If also not found in stash, raise an error.
-            raise KeyError(f"The search key {key} is not found.")
+        # Verify that this is the right node.
+        if p_node.key != in_node.value.r_key:
+            raise ValueError("Right node is not loaded when it is supposed to.")
 
-    def __balance_local(self) -> None:
-        """Balance the AVL tree nodes that are added to the local storage."""
-        # Start from the third to last node and perform balance.
-        for i in range(len(self._local) - 3, 0, -1):
-            # Assume is not left child.
-            is_left_child = False
-            # Compute height balance of this node.
-            balance = self._local[i][VALUE][CH][L] - self._local[i][VALUE][CH][R]
-            if balance > 1:
-                # Check the children node balance.
-                if self._local[i + 1][VALUE][CH][L] - self._local[i + 1][VALUE][CH][R] >= 0:
-                    if self._local[i - 1][VALUE][CK][L] == self._local[i][KEY]:
-                        is_left_child = True
-                    self._local[i][VALUE][CK][L] = self._local[i + 1][VALUE][CK][R]
-                    self._local[i][VALUE][CL][L] = self._local[i + 1][VALUE][CL][R]
-                    self._local[i + 1][VALUE][CK][R] = self._local[i][KEY]
-                    self._local[i + 1][VALUE][CL][R] = self._local[i][LEAF]
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CK][L] = self._local[i + 1][KEY]
-                        self._local[i - 1][VALUE][CL][L] = self._local[i + 1][LEAF]
-                    else:
-                        self._local[i - 1][VALUE][CK][R] = self._local[i + 1][KEY]
-                        self._local[i - 1][VALUE][CL][R] = self._local[i + 1][LEAF]
+        # Save the left node information to temp.
+        tmp_key = p_node.value.l_key
+        tmp_leaf = p_node.value.l_leaf
+        tmp_height = p_node.value.l_height
 
-                    self._local[i][VALUE][CH][L] = self._local[i + 1][VALUE][CH][R]
-                    self._local[i + 1][VALUE][CH][R] = 1 + max(self._local[i][VALUE][CH][L],
-                                                               self._local[i][VALUE][CH][R])
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CH][L] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                                   self._local[i + 1][VALUE][CH][R])
-                    else:
-                        self._local[i - 1][VALUE][CH][R] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                                   self._local[i + 1][VALUE][CH][R])
-                    # Update height of the parent nodes.
-                    for j in range(i - 2, -1, -1):
-                        if self._local[j][VALUE][CK][L] == self._local[j + 1][KEY]:
-                            self._local[j][VALUE][CH][L] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                        else:
-                            self._local[j][VALUE][CH][R] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                    self.root = (self._local[0][0], self._local[0][1])
+        # The left child of parent node was on the right of input node.
+        in_node.value.r_key = tmp_key
+        in_node.value.r_leaf = tmp_leaf
+        in_node.value.r_height = tmp_height
+
+        # Now we set the input node as the left child of the parent node.
+        p_node.value.l_key = in_node.key
+        p_node.value.l_leaf = in_node.leaf
+        p_node.value.l_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
+
+        # Switch node stored in local around.
+        self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
+
+        # Return the new parent node.
+        return p_node.key, p_node.leaf, 1 + max(p_node.value.l_height, in_node.value.r_height)
+
+    def _rotate_right(self, index: int, in_node: Data) -> Tuple[Any, int, int]:
+        """
+        Perform a left rotation at the provided input node.
+
+        :param index: the index of the node to rotate in local.
+        :param in_node: some AVLTreeNode to rotate.
+        :return: the (key, leaf, height) of the new parent node after rotation.
+        """
+        # The right child should exist in the next location.
+        p_node = self._local[index + 1]
+
+        # Verify that this is the right node.
+        if p_node.key != in_node.value.l_key:
+            raise ValueError("Left node is not loaded when it is supposed to.")
+
+        # Save the left node information to temp.
+        tmp_key = p_node.value.r_key
+        tmp_leaf = p_node.value.r_leaf
+        tmp_height = p_node.value.r_height
+
+        # The left child of parent node was on the right of input node.
+        in_node.value.l_key = tmp_key
+        in_node.value.l_leaf = tmp_leaf
+        in_node.value.l_height = tmp_height
+
+        # Now we set the input node as the left child of the parent node.
+        p_node.value.r_key = in_node.key
+        p_node.value.r_leaf = in_node.leaf
+        p_node.value.r_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
+
+        # Switch node stored in local around.
+        self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
+
+        # Return the new parent node.
+        return p_node.key, p_node.leaf, 1 + max(p_node.value.l_height, in_node.value.r_height)
+
+    def _balance_node(self, index: int, node: Data):
+        """Re-balance a node if it is unbalanced."""
+        # Get the balance factor.
+        balance = node.value.l_height - node.value.r_height
+
+        # Left heavy subtree rotation.
+        if balance > 1:
+            # The left-right case. Get left node.
+            left_node = self._local[index + 1]
+            if left_node.key != node.value.l_key:
+                raise ValueError("Left node is not loaded when it is supposed to.")
+
+            # Find the balance of the left node.
+            if left_node.value.l_height - left_node.value.r_height < 0:
+                # Get the updated left node.
+                key, leaf, height = self._rotate_left(index=index + 1, in_node=left_node)
+                # Assign left node to the node.
+                node.value.l_key, node.value.l_leaf, node.value.l_height = key, leaf, height
+            # The left-left case.
+            return self._rotate_right(index=index, in_node=node)
+
+        # Right heavy subtree rotation.
+        if balance < -1:
+            # The right-left case. Get right node.
+            right_node = self._local[index + 1]
+            if right_node.key != node.value.r_key:
+                raise ValueError("Right node is not loaded when it is supposed to.")
+
+            # Find the balance of the right node.
+            if right_node.value.l_height - right_node.value.r_height > 0:
+                # Get the updated right node.
+                key, leaf, height = self._rotate_right(index=index + 1, in_node=right_node)
+                # Assign right node to the node.
+                node.value.r_key, node.value.r_leaf, node.value.r_height = key, leaf, height
+
+            # The right-right case.
+            return self._rotate_left(index=index, in_node=node)
+
+        return node.key, node.leaf, 1 + max(node.value.l_height, node.value.r_height)
+
+    def _balance_local(self):
+        """Balance the AVL tree path downloaded to local."""
+        # Perform rotation on the nodes stored in local.
+        node_index = len(self._local) - 1
+
+        while node_index >= 0:
+            # Get the current node of interest.
+            node = self._local[node_index]
+
+            # Get balanced information.
+            key, leaf, height = self._balance_node(index=node_index, node=node)
+
+            # If parent exists, update which node the parent should point to.
+            if node_index > 0:
+                parent = self._local[node_index - 1]
+                # If node was the right child, update right child information.
+                if parent.value.r_key == node.key:
+                    parent.value.r_key = key
+                    parent.value.r_leaf = leaf
+                    parent.value.r_height = height
+                # Otherwise update left child information.
+                elif parent.value.l_key == node.key:
+                    parent.value.l_key = key
+                    parent.value.l_leaf = leaf
+                    parent.value.l_height = height
+                # The between parent and child is broken somehow.
                 else:
-                    if self._local[i - 1][VALUE][CK][L] == self._local[i][KEY]:
-                        is_left_child = True
-                    self._local[i][VALUE][CK][L] = self._local[i + 2][VALUE][CK][R]
-                    self._local[i][VALUE][CL][L] = self._local[i + 2][VALUE][CL][R]
-                    self._local[i][VALUE][CH][L] = self._local[i + 2][VALUE][CH][R]
-                    self._local[i + 1][VALUE][CK][R] = self._local[i + 2][VALUE][CK][L]
-                    self._local[i + 1][VALUE][CL][R] = self._local[i + 2][VALUE][CL][L]
-                    self._local[i + 1][VALUE][CH][R] = self._local[i + 2][VALUE][CH][L]
-                    self._local[i + 2][VALUE][CK][R] = self._local[i][KEY]
-                    self._local[i + 2][VALUE][CL][R] = self._local[i][LEAF]
-                    self._local[i + 2][VALUE][CH][R] = 1 + max(self._local[i][VALUE][CH][L],
-                                                               self._local[i][VALUE][CH][R])
-                    self._local[i + 2][VALUE][CK][L] = self._local[i + 1][KEY]
-                    self._local[i + 2][VALUE][CL][L] = self._local[i + 1][LEAF]
-                    self._local[i + 2][VALUE][CH][L] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                               self._local[i + 1][VALUE][CH][R])
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CK][L] = self._local[i + 2][KEY]
-                        self._local[i - 1][VALUE][CL][L] = self._local[i + 2][LEAF]
-                        self._local[i - 1][VALUE][CH][L] = 1 + max(self._local[i + 2][VALUE][CH][L],
-                                                                   self._local[i + 2][VALUE][CH][R])
-                    else:
-                        self._local[i - 1][VALUE][CK][R] = self._local[i + 2][KEY]
-                        self._local[i - 1][VALUE][CL][R] = self._local[i + 2][LEAF]
-                        self._local[i - 1][VALUE][CH][R] = 1 + max(self._local[i + 2][VALUE][CH][L],
-                                                                   self._local[i + 2][VALUE][CH][R])
-                    # Update height of the parent nodes.
-                    for j in range(i - 2, -1, -1):
-                        if self._local[j][VALUE][CK][L] == self._local[j + 1][KEY]:
-                            self._local[j][VALUE][CH][L] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                        else:
-                            self._local[j][VALUE][CH][R] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                    self.root = (self._local[0][0], self._local[0][1])
+                    raise ValueError("This node is not connected to a parent.")
 
-            if balance < -1:
-                if self._local[i + 1][VALUE][CH][L] - self._local[i + 1][VALUE][CH][R] <= 0:
-                    if self._local[i - 1][VALUE][CK][L] == self._local[i][KEY]:
-                        is_left_child = True
-                    self._local[i][VALUE][CK][R] = self._local[i + 1][VALUE][CK][L]
-                    self._local[i][VALUE][CL][R] = self._local[i + 1][VALUE][CL][L]
-                    self._local[i + 1][VALUE][CK][L] = self._local[i][KEY]
-                    self._local[i + 1][VALUE][CL][L] = self._local[i][LEAF]
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CK][L] = self._local[i + 1][KEY]
-                        self._local[i - 1][VALUE][CL][L] = self._local[i + 1][LEAF]
-                    else:
-                        self._local[i - 1][VALUE][CK][R] = self._local[i + 1][KEY]
-                        self._local[i - 1][VALUE][CL][R] = self._local[i + 1][LEAF]
-                    self._local[i][VALUE][CH][R] = self._local[i + 1][VALUE][CH][L]
-                    self._local[i + 1][VALUE][CH][L] = 1 + max(self._local[i][VALUE][CH][L],
-                                                               self._local[i][VALUE][CH][R])
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CH][L] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                                   self._local[i + 1][VALUE][CH][R])
-                    else:
-                        self._local[i - 1][VALUE][CH][R] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                                   self._local[i + 1][VALUE][CH][R])
-                    # Update height of the parent nodes.
-                    for j in range(i - 2, -1, -1):
-                        if self._local[j][VALUE][CK][L] == self._local[j + 1][0]:
-                            self._local[j][VALUE][CH][L] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                        else:
-                            self._local[j][VALUE][CH][R] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
+            # Decrease the node index.
+            node_index -= 1
 
-                    self.root = (self._local[0][0], self._local[0][1])
-                else:
-                    if self._local[i - 1][VALUE][CK][L] == self._local[i][KEY]:
-                        is_left_child = True
-                    self._local[i][VALUE][CK][R] = self._local[i + 2][VALUE][CK][L]
-                    self._local[i][VALUE][CL][R] = self._local[i + 2][VALUE][CL][L]
-                    self._local[i][VALUE][CH][R] = self._local[i + 2][VALUE][CH][L]
-                    self._local[i + 1][VALUE][CK][L] = self._local[i + 2][VALUE][CK][R]
-                    self._local[i + 1][VALUE][CL][L] = self._local[i + 2][VALUE][CL][R]
-                    self._local[i + 1][VALUE][CH][L] = self._local[i + 2][VALUE][CH][R]
-                    self._local[i + 2][VALUE][CK][L] = self._local[i][KEY]
-                    self._local[i + 2][VALUE][CL][L] = self._local[i][LEAF]
-                    self._local[i + 2][VALUE][CH][L] = 1 + max(self._local[i][VALUE][CH][L],
-                                                               self._local[i][VALUE][CH][R])
-                    self._local[i + 2][VALUE][CK][R] = self._local[i + 1][KEY]
-                    self._local[i + 2][VALUE][CL][R] = self._local[i + 1][LEAF]
-                    self._local[i + 2][VALUE][CH][R] = 1 + max(self._local[i + 1][VALUE][CH][L],
-                                                               self._local[i + 1][VALUE][CH][R])
-                    if is_left_child:
-                        self._local[i - 1][VALUE][CK][L] = self._local[i + 2][KEY]
-                        self._local[i - 1][VALUE][CL][L] = self._local[i + 2][LEAF]
-                        self._local[i - 1][VALUE][CH][L] = 1 + max(self._local[i + 2][VALUE][CH][L],
-                                                                   self._local[i + 2][VALUE][CH][R])
-                    else:
-                        self._local[i - 1][VALUE][CK][R] = self._local[i + 2][KEY]
-                        self._local[i - 1][VALUE][CL][R] = self._local[i + 2][LEAF]
-                        self._local[i - 1][VALUE][CH][R] = 1 + max(self._local[i + 2][VALUE][CH][L],
-                                                                   self._local[i + 2][VALUE][CH][R])
-                    # Update height of the parent nodes.
-                    for j in range(i - 2, -1, -1):
-                        if self._local[j][VALUE][CK][L] == self._local[j + 1][KEY]:
-                            self._local[j][VALUE][CH][L] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                        else:
-                            self._local[j][VALUE][CH][R] = 1 + max(self._local[j + 1][VALUE][CH][L],
-                                                                   self._local[j + 1][VALUE][CH][R])
-                    self.root = (self._local[0][0], self._local[0][1])
-
-        # After all sub-nodes are balanced, we balance the root as well.
-        self.__balance_root()
-
-    def __balance_root(self) -> None:
-        """Perform AVL tree balance at the local root."""
-        # Compute height balance of the root.
-        root_balance = self._local[0][VALUE][CH][L] - self._local[0][VALUE][CH][R]
-        if root_balance > 1:
-            if self._local[1][VALUE][CH][L] - self._local[1][VALUE][CH][R] >= 0:
-                self._local[0][VALUE][CK][L] = self._local[1][VALUE][CK][R]
-                self._local[0][VALUE][CL][L] = self._local[1][VALUE][CL][R]
-                self._local[1][VALUE][CK][R] = self._local[0][KEY]
-                self._local[1][VALUE][CL][R] = self._local[0][LEAF]
-                self._local[0][VALUE][CH][L] = self._local[1][VALUE][CH][R]
-                self._local[1][VALUE][CH][R] = 1 + max(self._local[0][VALUE][CH][L], self._local[0][VALUE][CH][R])
-                self.root = (self._local[1][0], self._local[1][1])
-            else:
-                self._local[0][VALUE][CK][L] = self._local[2][VALUE][CK][R]
-                self._local[0][VALUE][CL][L] = self._local[2][VALUE][CL][R]
-                self._local[0][VALUE][CH][L] = self._local[2][VALUE][CH][R]
-                self._local[1][VALUE][CK][R] = self._local[2][VALUE][CK][L]
-                self._local[1][VALUE][CL][R] = self._local[2][VALUE][CL][L]
-                self._local[1][VALUE][CH][R] = self._local[2][VALUE][CH][L]
-                self._local[2][VALUE][CK][R] = self._local[0][KEY]
-                self._local[2][VALUE][CL][R] = self._local[0][LEAF]
-                self._local[2][VALUE][CH][R] = 1 + max(self._local[0][VALUE][CH][L], self._local[0][VALUE][CH][R])
-                self._local[2][VALUE][CK][L] = self._local[1][KEY]
-                self._local[2][VALUE][CL][L] = self._local[1][LEAF]
-                self._local[2][VALUE][CH][L] = 1 + max(self._local[1][VALUE][CH][L], self._local[1][VALUE][CH][R])
-                self.root = (self._local[2][0], self._local[2][1])
-
-        if root_balance < -1:
-            if self._local[1][VALUE][CH][L] - self._local[1][VALUE][CH][R] <= 0:
-                self._local[0][VALUE][CK][R] = self._local[1][VALUE][CK][L]
-                self._local[0][VALUE][CL][R] = self._local[1][VALUE][CL][L]
-                self._local[1][VALUE][CK][L] = self._local[0][KEY]
-                self._local[1][VALUE][CL][L] = self._local[0][LEAF]
-                self._local[0][VALUE][CH][R] = self._local[1][VALUE][CH][L]
-                self._local[1][VALUE][CH][L] = 1 + max(self._local[0][VALUE][CH][L], self._local[0][VALUE][CH][R])
-                self.root = (self._local[1][0], self._local[1][1])
-            else:
-                self._local[0][VALUE][CK][R] = self._local[2][VALUE][CK][L]
-                self._local[0][VALUE][CL][R] = self._local[2][VALUE][CL][L]
-                self._local[0][VALUE][CH][R] = self._local[2][VALUE][CH][L]
-                self._local[1][VALUE][CK][L] = self._local[2][VALUE][CK][R]
-                self._local[1][VALUE][CL][L] = self._local[2][VALUE][CL][R]
-                self._local[1][VALUE][CH][L] = self._local[2][VALUE][CH][R]
-                self._local[2][VALUE][CK][L] = self._local[0][KEY]
-                self._local[2][VALUE][CL][L] = self._local[0][LEAF]
-                self._local[2][VALUE][CH][L] = 1 + max(self._local[0][VALUE][CH][L], self._local[0][VALUE][CH][R])
-                self._local[2][VALUE][CK][R] = self._local[1][KEY]
-                self._local[2][VALUE][CL][R] = self._local[1][LEAF]
-                self._local[2][VALUE][CH][R] = 1 + max(self._local[1][VALUE][CH][L], self._local[1][VALUE][CH][R])
-                self.root = (self._local[2][0], self._local[2][1])
+        # Update the root after balance.
+        self.root = (self._local[0].key, self._local[0].leaf)
 
     def insert(self, key: Any, value: Any) -> None:
         """
@@ -516,236 +407,56 @@ class AVLOdsOmap(TreeOdsOmap):
         :param value: the value to insert.
         """
         # Create a new data block that holds the data to insert to tree.
-        data_block = self.__get_avl_data(key=key, value=value)
+        data_block = self._get_avl_data(key=key, value=value)
 
         # If the current root is empty, we simply set root as this new block.
         if self.root is None:
             # Add the data to stash and update root.
             self._stash.append(data_block)
-            self.root = (data_block[KEY], data_block[LEAF])
-            # Perform dummy finds and evictions.
-            self._perform_dummy_finds(num_round=self.__max_height)
-            self._perform_dummy_eviction(num_round=2 * self.__max_height + 1)
-            # Terminates the function.
+            self.root = (data_block.key, data_block.leaf)
+            # Perform desired number of dummy operations.
+            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
             return
 
+        # Make sure that the local is cleared and is empty at the moment.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
+
         # Get the node information from oram storage.
-        self.__move_remote_node_to_local(key=self.root[KEY], leaf=self.root[LEAF])
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
 
         # Keep adding node to local until we find a place to insert the new node.
         while True:
             # Save the last node data and its value.
             node = self._local[-1]
-            node_value = node[VALUE]
 
             # If node key is smaller, we go right and check whether a child is already there.
-            if node[KEY] < key:
+            if node.key < key:
                 # If the child is there, we keep grabbing the next node.
-                if node_value[CK][R] is not None:
-                    self.__move_remote_node_to_local(key=node_value[CK][R], leaf=node_value[CL][R])
-                # Else we store the new value.
+                if node.value.r_key is not None:
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                # Else we store link the parent with the new node, other information will be updated during balance.
                 else:
-                    node_value[CK][R] = data_block[KEY]
-                    node_value[CL][R] = data_block[LEAF]
-                    self._local.append(data_block)
+                    node.value.r_key = data_block.key
                     break
+
             # If key is not smaller, we go left and check the same as above.
             else:
-                if node_value[CK][L] is not None:
-                    self.__move_remote_node_to_local(key=node_value[CK][L], leaf=node_value[CL][L])
+                if node.value.l_key is not None:
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
                 else:
-                    node_value[CK][L] = data_block[KEY]
-                    node_value[CL][L] = data_block[LEAF]
-                    self._local.append(data_block)
+                    node.value.l_key = data_block.key
                     break
 
-        # Traverse local and update parent leaves and heights.
-        self.__update_leaves()
-        self.__update_heights()
+        # Append the newly inserted node to local as well and perform balance.
+        self._local.append(data_block)
+        self._balance_local()
 
-        # Update the root to reflect new path.
-        self.root = (self._local[0][KEY], self._local[0][LEAF])
-
-        # Perform rotation on the nodes stored in local.
-        self.__balance_local()
-
-        # Get the number of retrieved nodes.
+        # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
-
-        # Perform desired number of dummy finds.
-        self._perform_dummy_finds(num_round=self.__max_height - num_retrieved_nodes)
-
-        # Move the local nodes to stash and perform evictions.
         self._stash += self._local
         self._local = []
-
-        # Perform final dummy evictions.
-        self._perform_dummy_eviction(num_round=2 * self.__max_height + 1)
-
-    def __normal_search(self, key: Any, value: Any = None) -> Any:
-        """
-        Given a search key, return its corresponding value.
-
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the value to update.
-        :return: the (old) value corresponding to the search key.
-        """
-        # If the current root is empty, we can't perform search.
-        if self.root is None:
-            raise KeyError(f"The search key {key} is not found.")
-
-        # Otherwise get information about node.
-        self.__move_remote_node_to_local(key=self._root[KEY], leaf=self._root[LEAF])
-
-        # Set the node as root.
-        node = self._local[-1]
-
-        # Find the desired search key.
-        while node[KEY] != key:
-            # If node key is smaller, we go right and check whether a child is already there.
-            if node[KEY] < key:
-                if node[VALUE][CK][R] is not None:
-                    self.__move_remote_node_to_local(key=node[VALUE][CK][R], leaf=node[VALUE][CL][R])
-                else:
-                    raise KeyError(f"The search key {key} is not found.")
-            # If key is not smaller, we go left and check the same as above.
-            else:
-                if node[VALUE][CL][L] is not None:
-                    self.__move_remote_node_to_local(key=node[VALUE][CK][L], leaf=node[VALUE][CL][L])
-                else:
-                    raise KeyError(f"The search key {key} is not found.")
-            # Update the node to keep searching.
-            node = self._local[-1]
-
-        # Get the desired search value and update its leaf.
-        search_value = node[VALUE][V]
-        node[LEAF] = self._get_new_leaf()
-
-        # If the input value is not None, we update the value stored.
-        if value is not None:
-            node[VALUE][V] = value
-
-        # Get the number of retrieved nodes.
-        num_retrieved_nodes = len(self._local)
-        # Perform desired number of dummy finds.
-        self._perform_dummy_finds(num_round=self.__max_height - num_retrieved_nodes)
-
-        # Update new leaves.
-        self.__update_leaves()
-        # Update the root stored.
-        self.root = (self._local[0][KEY], self._local[0][LEAF])
-
-        # Move nodes from local to stash.
-        self._stash = self._local
-        self._local = []
-
-        # Perform dummy evictions.
-        self._perform_dummy_eviction(num_round=2 * self.__max_height)
-
-        return search_value
-
-    def __fast_search(self, key: Any, value: Any = None) -> Any:
-        """
-        Given a search key, return its corresponding value.
-
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the value to update.
-        :return: the (old) value corresponding to the search key.
-        """
-        # If the current root is empty, we can't perform search.
-        if self.root is None:
-            raise KeyError(f"The search key {key} is not found.")
-
-        # If root is not None, move its content to local.
-        self.__search_move_node_to_local(key=self.root[0], leaf=self.root[1])
-
-        # Save the old path and sample a new path.
-        old_child_path = self.root[1]
-        child_leaf = self._get_new_leaf()
-        self.root = (self.root[0], child_leaf)
-
-        # Count the number of visited nodes.
-        num_retrieved_nodes = 1
-
-        # Each node is grabbed and then returned, hence we are always getting the first node in local.
-        while self._local[0][KEY] != key:
-            # Update the number of visited nodes.
-            num_retrieved_nodes += 1
-            if self._local[0][KEY] < key:
-                if self._local[0][VALUE][CK][R] is not None:
-                    # Deep copy needed because of sublist structures.
-                    node_to_return = copy.deepcopy(self._local[0])
-                    node_to_return[LEAF] = child_leaf
-
-                    # Sample a new leaf for the next child to read and store it.
-                    child_leaf = self._get_new_leaf()
-                    # Update the node to write back to server.
-                    node_to_return[VALUE][CL][R] = child_leaf
-
-                    # Append the node to stash and write them back to server.
-                    self._stash.append(node_to_return)
-                    self.client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
-
-                    # Get the next node to check to local.
-                    self.__search_move_node_to_local(
-                        key=self._local[0][VALUE][CK][R], leaf=self._local[0][VALUE][CL][R]
-                    )
-
-                    # Store the old child path and then delete current node.
-                    old_child_path = self._local[0][VALUE][CL][R]
-                    del self._local[0]
-                else:
-                    raise KeyError(f"The search key {key} is not found.")
-            else:
-                if self._local[0][VALUE][CK][L] is not None:
-                    # Deep copy needed because of sublist structures.
-                    node_to_return = copy.deepcopy(self._local[0])
-                    node_to_return[LEAF] = child_leaf
-
-                    # Sample a new leaf for the next child to read and store it.
-                    child_leaf = self._get_new_leaf()
-                    # Update the node to write back to server.
-                    node_to_return[VALUE][CL][L] = child_leaf
-
-                    # Append the node to stash and write them back to server.
-                    self._stash.append(node_to_return)
-                    self.client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
-
-                    # Get the next node to check to local.
-                    self.__search_move_node_to_local(
-                        key=self._local[0][VALUE][CK][L], leaf=self._local[0][VALUE][CL][L]
-                    )
-
-                    # Store the old child path and then delete current node.
-                    old_child_path = self._local[0][VALUE][CL][L]
-                    del self._local[0]
-                else:
-                    raise KeyError(f"The search key {key} is not found.")
-
-        # Per design, the value of interest is the only one stored in local.
-        search_value = self._local[0][VALUE][V]
-
-        # If provided value is not None, update the data.
-        if value is not None:
-            self._local[0][VALUE][V] = value
-
-        # Deep copy needed because of sublist structures.
-        node_to_return = copy.deepcopy(self._local[0])
-        node_to_return[LEAF] = child_leaf
-
-        # Add the node to stash and clear local storage.
-        self._stash.append(node_to_return)
-        self._local = []
-
-        # Write the new node back to storage.
-        self.client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
-
-        # Perform desired number of dummy finds.
-        self._perform_dummy_eviction(num_round=self.__max_height - num_retrieved_nodes)
-
-        return search_value
+        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -756,7 +467,151 @@ class AVLOdsOmap(TreeOdsOmap):
         :param value: the updated value.
         :return: the (old) value corresponding to the search key.
         """
-        if self.__distinguishable_search:
-            return self.__fast_search(key=key, value=value)
-        else:
-            return self.__normal_search(key=key, value=value)
+        # If the current root is empty, we can't perform search.
+        if self.root is None:
+            raise ValueError(f"It seems the tree is empty and can't perform search.")
+
+        # Otherwise get information about node.
+        self._move_node_to_local(key=self._root[0], leaf=self._root[1])
+
+        # Set the node as root.
+        node = self._local[-1]
+
+        # Find the desired search key.
+        while node.key != key:
+            # If node key is smaller, we go right and check whether a child is already there.
+            if node.key < key:
+                if node.value.r_key is not None:
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                else:
+                    raise KeyError(f"The search key {key} is not found.")
+            # If key is not smaller, we go left and check the same as above.
+            else:
+                if node.value.l_key is not None:
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                else:
+                    raise KeyError(f"The search key {key} is not found.")
+            # Update the node to keep searching.
+            node = self._local[-1]
+
+        # Get the desired search value and update the stored value if needed.
+        search_value = node.value.value
+        if value is not None:
+            node.value.value = value
+
+        # Update new leaves.
+        self._update_leaves()
+
+        # Update the root stored.
+        self.root = (self._local[0].key, self._local[0].leaf)
+
+        # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
+        num_retrieved_nodes = len(self._local)
+        self._stash += self._local
+        self._local = []
+        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+
+        return search_value
+
+    def fast_search(self, key: Any, value: Any = None) -> Any:
+        """
+        Given a search key, return its corresponding value.
+
+        The difference here is that, fast search will return the node immediately without keeping it in local.
+        If input value is not None, the value corresponding to the search tree will be updated.
+        :param key: the search key of interest.
+        :param value: the value to update.
+        :return: the (old) value corresponding to the search key.
+        """
+        # If the current root is empty, we can't perform search.
+        if self.root is None:
+            raise ValueError(f"It seems the tree is empty and can't perform search.")
+
+        # If root is not None, move its content to local.
+        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
+
+        # Save the old path and sample a new path.
+        old_child_path = self.root[1]
+        child_leaf = self._get_new_leaf()
+        self.root = (self.root[0], child_leaf)
+
+        # Count the number of visited nodes.
+        num_retrieved_nodes = 1
+
+        # Each node is grabbed and then returned, hence we are always getting the first node in local.
+        while self._local[0].key != key:
+            # Update the number of visited nodes.
+            num_retrieved_nodes += 1
+            if self._local[0].key < key:
+                if self._local[0].value.r_key is not None:
+                    # Deep copy needed because of sublist structures.
+                    node_to_return = copy.deepcopy(self._local[0])
+                    node_to_return.leaf = child_leaf
+
+                    # Sample a new leaf for the next child to read and store it.
+                    child_leaf = self._get_new_leaf()
+                    # Update the node to write back to server.
+                    node_to_return.value.r_leaf = child_leaf
+
+                    # Append the node to stash and write them back to server.
+                    self._stash.append(node_to_return)
+                    self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+
+                    # Get the next node to check to local.
+                    self._move_node_to_local_without_eviction(
+                        key=self._local[0].value.r_key, leaf=self._local[0].value.r_leaf
+                    )
+
+                    # Store the old child path and then delete current node.
+                    old_child_path = self._local[0].value.r_leaf
+                    del self._local[0]
+                else:
+                    raise KeyError(f"The search key {key} is not found.")
+            else:
+                if self._local[0].value.l_key is not None:
+                    # Deep copy needed because of sublist structures.
+                    node_to_return = copy.deepcopy(self._local[0])
+                    node_to_return.leaf = child_leaf
+
+                    # Sample a new leaf for the next child to read and store it.
+                    child_leaf = self._get_new_leaf()
+                    # Update the node to write back to server.
+                    node_to_return.value.l_leaf = child_leaf
+
+                    # Append the node to stash and write them back to server.
+                    self._stash.append(node_to_return)
+                    self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+
+                    # Get the next node to check to local.
+                    self._move_node_to_local_without_eviction(
+                        key=self._local[0].value.l_key, leaf=self._local[0].value.l_leaf
+                    )
+
+                    # Store the old child path and then delete current node.
+                    old_child_path = self._local[0].value.l_leaf
+                    del self._local[0]
+                else:
+                    raise KeyError(f"The search key {key} is not found.")
+
+        # Per design, the value of interest is the only one stored in local.
+        search_value = self._local[0].value.value
+
+        # If provided value is not None, update the data.
+        if value is not None:
+            self._local[0].value.value = value
+
+        # Deep copy needed because of sublist structures.
+        node_to_return = copy.deepcopy(self._local[0])
+        node_to_return.leaf = child_leaf
+
+        # Add the node to stash and clear local storage.
+        self._stash.append(node_to_return)
+        self._local = []
+
+        # Write the new node back to storage.
+        self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+
+        # Perform desired number of dummy finds.
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
+
+        return search_value

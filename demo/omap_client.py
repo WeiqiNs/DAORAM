@@ -16,7 +16,7 @@ def avl_ods_omap_client():
     omap = AVLOdsOmap(num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
 
     # Initialize the client to make connection.
-    omap.client.init_connection()
+    omap._client.init_connection()
 
     # Set the storage to the server.
     omap.init_server_storage()
@@ -30,7 +30,7 @@ def avl_ods_omap_client():
         print(f"Read key {i} have value {omap.search(key=i)}")
 
     # Finally close the connection.
-    omap.client.close_connection()
+    omap._client.close_connection()
 
 
 def bplus_ods_omap_client():
@@ -41,7 +41,7 @@ def bplus_ods_omap_client():
     omap = BPlusOdsOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
 
     # Initialize the client to make connection.
-    omap.client.init_connection()
+    omap._client.init_connection()
 
     # Set the storage to the server.
     omap.init_server_storage()
@@ -55,7 +55,7 @@ def bplus_ods_omap_client():
         print(f"Read key {i} have value {omap.search(key=i)}")
 
     # Finally close the connection.
-    omap.client.close_connection()
+    omap._client.close_connection()
 
 
 def daoram_avl_omap_client():
