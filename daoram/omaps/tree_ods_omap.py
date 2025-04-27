@@ -2,19 +2,14 @@
 Module for defining a parent class for tree-structure ods omap.
 
 The BaseOmap class defines a set of attributes that an omap should have and some basic methods such as encryption, etc.
-Note that we don't use double underscores (name mangling) in this file for private methods because all things defined
-here should be accessible to its children classes.
 """
 
 import math
-import pickle
 import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency.binary_tree import BinaryTree, Buckets, KEY
-from daoram.dependency.crypto import Aes, pad_pickle, unpad_pickle
-from daoram.dependency.interact_server import InteractServer
+from daoram.dependency import Aes, BinaryTree, Buckets, Data, InteractServer
 
 # Root contains the data key and the path.
 ROOT = Tuple[Any, int]
@@ -30,6 +25,7 @@ class TreeOdsOmap(ABC):
                  client: InteractServer,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
+                 filename: str = None,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
@@ -40,6 +36,7 @@ class TreeOdsOmap(ABC):
         :param key_size: the number of bytes the random key should have.
         :param data_size: the number of bytes the random dummy data should have.
         :param client: the instance we use to interact with server.
+        :param filename: the filename to save the oram data to.
         :param bucket_size: the number of data each bucket should have.
         :param stash_scale: the scaling scale of the stash.
         :param aes_key: the key to use for the AES instance.
@@ -47,6 +44,7 @@ class TreeOdsOmap(ABC):
         :param use_encryption: a boolean indicating whether to use encryption.
         """
         # Store the useful input values.
+        self._filename: str = filename
         self._num_data: int = num_data
         self._key_size: int = key_size
         self._data_size: int = data_size
@@ -67,14 +65,13 @@ class TreeOdsOmap(ABC):
         self._local: list = []
         self._stash: list = []
 
-        # Compute the padded total data size, which at largest would be [biggest_key, biggest_leaf, biggest_data].
-        self._padded_block_size: int = 0
-
         # Use encryption if required.
+        self._aes_key: bytes = aes_key
+        self._num_key_bytes: int = num_key_bytes
         self._cipher: Optional[Aes] = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
 
         # Initialize the client connection.
-        self.client: InteractServer = client
+        self._client: InteractServer = client
 
     @property
     def root(self) -> ROOT:
@@ -86,6 +83,16 @@ class TreeOdsOmap(ABC):
         """Set the root stored in the local."""
         self._root = root
 
+    @property
+    def client(self) -> InteractServer:
+        """Return the client object."""
+        return self._client
+
+    @property
+    def stash_size(self) -> int:
+        """Return the stash size."""
+        return len(self._stash)
+
     @abstractmethod
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -95,23 +102,89 @@ class TreeOdsOmap(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _dummy_block_size(self) -> int:
+    def _max_block_size(self) -> int:
         """Get the number of bytes equal to the size of actual data block stored in ORAM."""
         raise NotImplementedError
 
-    def _encrypt_buckets(self, buckets: Buckets) -> Buckets:
-        """Given buckets, encrypt all data in it."""
-        return [[self._cipher.enc(plaintext=pad_pickle(data=pickle.dumps(data), length=self._padded_block_size))
-                 for data in bucket] for bucket in buckets] if self._use_encryption else buckets
+    @abstractmethod
+    def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
+        """
+        Given buckets, encrypt all data in it.
 
-    def _decrypt_buckets(self, buckets: Buckets) -> Buckets:
-        """Given encrypted buckets, decrypt all data in it."""
-        return [[pickle.loads(unpad_pickle(data=self._cipher.dec(ciphertext=data)))
-                 for data in bucket] for bucket in buckets] if self._use_encryption else buckets
+        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
+        bucket with desired amount of dummy data.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _decrypt_buckets(self, buckets: Buckets) -> List[List[Data]]:
+        """
+        Given encrypted buckets, decrypt all data in it.
+
+        Note that we also remove dummy data where the key is None.
+        """
+        raise NotImplementedError
 
     def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
         return secrets.randbelow(self._leaf_range)
+
+    def _move_node_to_local(self, key: Any, leaf: int) -> None:
+        """
+        Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
+
+        :param key: search key of interest.
+        :param leaf: indicate which path the data of interest is stored in the ORAM.
+        """
+        # Move the node to local without doing eviction.
+        self._move_node_to_local_without_eviction(key=key, leaf=leaf)
+
+        # Perform eviction and write the path back.
+        self._client.write_query(label="ods", leaf=leaf, data=self._evict_stash(leaf=leaf))
+
+    def _move_node_to_local_without_eviction(self, key: Any, leaf: Any) -> None:
+        """
+        Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
+
+        This is specialized to the fast search method, where the data of interest are moved to local and the rest
+        are added to stash.
+        :param key: search key of interest.
+        :param leaf: indicate which path the data of interest is stored in the ORAM.
+        """
+        # Set found to false and get existing stash size.
+        found = False
+        to_index = len(self._stash)
+
+        # Get the desired path and perform decryption as needed.
+        path = self._decrypt_buckets(buckets=self._client.read_query(label="ods", leaf=leaf))
+
+        # Find the desired data in the path.
+        for bucket in path:
+            for data in bucket:
+                if data.key == key:
+                    # We append the data we want to stash.
+                    self._local.append(data)
+                    found = True
+                else:
+                    # Other real data are directly added to stash.
+                    self._stash.append(data)
+
+        # Check if stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # If the desired data is not found in the path, we check the stash.
+        if not found:
+            for i in range(to_index):
+                # If we find the data, we add it to local and remove it from stash.
+                if self._stash[i].key == key:
+                    self._local.append(self._stash[i])
+                    del self._stash[i]
+                    # Terminate the function.
+                    return
+
+            # If also not found in stash, raise an error.
+            raise KeyError(f"The search key {key} is not found.")
 
     def _evict_stash(self, leaf: int) -> Buckets:
         """
@@ -136,69 +209,37 @@ class TreeOdsOmap(ABC):
             if not inserted:
                 temp_stash.append(data)
 
-        # After we are done with all real data, complete the path with dummy data.
-        BinaryTree.fill_buckets_with_dummy_data(buckets=path, bucket_size=self._bucket_size)
-
         # Update the stash.
         self._stash = temp_stash
 
         # Note that we return the path in the reversed order because we copy path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
-    def _perform_dummy_finds(self, num_round: int) -> None:
-        """Perform desired number of dummy finds."""
-        # Check if the number of round is less than needed.
-        if num_round < 0:
-            raise ValueError("The height is not enough.")
-
-        # Perform desired number of dummy finds.
-        for i in range(num_round):
-            # Generate a random path.
-            leaf = self._get_new_leaf()
-
-            # Read a path from the ODS storage.
-            path = self.client.read_query(label="ods", leaf=leaf)
-
-            # Perform dummy decryption and encryption.
-            path = self._encrypt_buckets(buckets=self._decrypt_buckets(buckets=path))
-
-            # Write the path back to the ODS storage.
-            self.client.write_query(label="ods", leaf=leaf, data=path)
-
-    def _perform_dummy_eviction(self, num_round: int) -> None:
+    def _perform_dummy_operation(self, num_round: int) -> None:
         """Perform desired number of dummy evictions."""
         # Check if the number of round is less than needed.
         if num_round < 0:
-            raise ValueError("The height is not enough.")
+            raise ValueError("The height is not enough, as the number of dummy operation required is negative.")
 
         # Perform desired number of dummy evictions.
-        for i in range(num_round):
+        for _ in range(num_round):
             # Generate a random path.
             leaf = self._get_new_leaf()
 
-            # Read a path from the ODS storage.
-            path = self.client.read_query(label="ods", leaf=leaf)
-
-            # Decrypt the path as needed.
-            path = self._decrypt_buckets(buckets=path)
+            # Read a path from the ODS storage and decrypt it.
+            path = self._decrypt_buckets(buckets=self._client.read_query(label="ods", leaf=leaf))
 
             # Add all real data to the stash.
             for bucket in path:
                 for data in bucket:
-                    if data[KEY] is None:
-                        continue
-                    else:
-                        self._stash.append(data)
+                    self._stash.append(data)
 
             # Check if stash overflows.
             if len(self._stash) > self._stash_size:
                 raise MemoryError("Stash overflow!")
 
-            # Evict stash and get a new path.
-            path = self._evict_stash(leaf=leaf)
-
-            # Write the path back to the ODS storage.
-            self.client.write_query(label="ods", leaf=leaf, data=path)
+            # Evict stash and write the path back to the ODS storage.
+            self._client.write_query(label="ods", leaf=leaf, data=self._evict_stash(leaf=leaf))
 
     @abstractmethod
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
@@ -217,7 +258,7 @@ class TreeOdsOmap(ABC):
         :param data: a list of key-value pairs.
         """
         # Let server store the binary tree.
-        self.client.init_query(label="ods", storage=self._init_ods_storage(data=data))
+        self._client.init_query(storage={"ods": self._init_ods_storage(data=data)})
 
     @abstractmethod
     def _init_mul_tree_ods_storage(self, data_list: List[KV_LIST]) -> Tuple[BinaryTree, List[ROOT]]:
@@ -237,9 +278,9 @@ class TreeOdsOmap(ABC):
         :return: a list of AVL tree roots.
         """
         # Initialize the server binary tree storage and get list of roots of AVL trees.
-        oram_tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
+        tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
         # Let the server store the binary tree.
-        self.client.init_query(label="ods", storage=oram_tree)
+        self._client.init_query(storage={"ods": tree})
         # Return list of roots.
         return root_list
 
@@ -258,6 +299,20 @@ class TreeOdsOmap(ABC):
         """
         Given a search key, return its corresponding value.
 
+        If input value is not None, the value corresponding to the search tree will be updated.
+        :param key: the search key of interest.
+        :param value: the updated value.
+        :return: the (old) value corresponding to the search key.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def fast_search(self, key: Any, value: Any = None) -> Any:
+        """
+        Given a search key, return its corresponding value.
+
+        Note: This search is allowed to be distinguished from insert and can be sped up.
+        The difference here is that, fast search will return the node immediately without keeping it in local.
         If input value is not None, the value corresponding to the search tree will be updated.
         :param key: the search key of interest.
         :param value: the updated value.

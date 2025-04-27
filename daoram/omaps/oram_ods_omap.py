@@ -1,7 +1,6 @@
 from typing import Any, List, Optional, Tuple, Union
 
-from daoram.dependency.crypto import Prf
-from daoram.dependency.helpers import Helper
+from daoram.dependency import Helper, Prf
 from daoram.omaps.tree_ods_omap import TreeOdsOmap
 from daoram.orams.tree_base_oram import TreeBaseOram
 
@@ -85,6 +84,32 @@ class OramTreeOdsOmap:
         # Set the ods root and perform insert.
         self.__ods.root = root
         value = self.__ods.search(key=key, value=value)
+
+        # Update the stored root in oram.
+        self.__oram.eviction_with_update_stash(key=oram_key, value=self.__ods.root)
+
+        # Return the retrieved value from tree omap.
+        return value
+
+    def fast_search(self, key: Union[str, int, bytes], value: Any = None) -> Any:
+        """
+        Given a search key, return its corresponding value.
+
+        This function uses the fast search function of the underlying oblivious search tree.
+        If input value is not None, the value corresponding to the search tree will be updated.
+        :param key: the search key of interest.
+        :param value: the updated value.
+        :return: the (old) value corresponding to the search key.
+        """
+        # First hash the key of interest and find where it is stored in the oram.
+        oram_key = Helper.hash_data_to_leaf(prf=self.__prf, data=key, map_size=self.__num_data)
+
+        # Get the root of the ods tree storing the input key of interest.
+        root = self.__oram.operate_on_key_without_eviction(op="r", key=oram_key, value=None)
+
+        # Set the ods root and perform insert.
+        self.__ods.root = root
+        value = self.__ods.fast_search(key=key, value=value)
 
         # Update the stored root in oram.
         self.__oram.eviction_with_update_stash(key=oram_key, value=self.__ods.root)

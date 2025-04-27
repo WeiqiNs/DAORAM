@@ -1,18 +1,45 @@
 """Defines the AVL tree; note that inserting repeated keys may cause unexpected behavior."""
+from __future__ import annotations
 
+import pickle
 import secrets
-from typing import Any, Optional, Tuple
+from dataclasses import astuple, dataclass
+from typing import Any, List, Optional, Tuple
+
+from daoram.dependency.helper import Data
 
 # Set the values to extract information from KV pair.
 K = 0
 V = 1
 
-# Set the values for left and right.
-L = 0
-R = 1
-
 # Define the KV pair as a tuple contain two values.
 KV_PAIR = Tuple[Any, Any]
+
+
+@dataclass
+class AVLData:
+    """
+    Create the data structure to hold a data record that should be put into a complete binary tree.
+
+    It has three fields: key, leaf, and value, where key and value could be anything but leaf needs to be an integer.
+    By default, (when used as a dummy), when initialize the fields to None.
+    """
+    value: Optional[Any] = None
+    r_key: Optional[Any] = None
+    r_leaf: Optional[int] = None
+    r_height: int = 0
+    l_key: Optional[Any] = None
+    l_leaf: Optional[int] = None
+    l_height: int = 0
+
+    @classmethod
+    def from_pickle(cls, data: bytes) -> AVLData:
+        """Given some pickled data, convert it to a Data typed object"""
+        return cls(*pickle.loads(data))
+
+    def dump(self) -> bytes:
+        """Dump the data structure to bytes."""
+        return pickle.dumps(astuple(self))  # type: ignore
 
 
 class AVLTreeNode:
@@ -26,11 +53,11 @@ class AVLTreeNode:
         :param kv_pair: a tuple containing two values (key, value).
         """
         self.key: Any = kv_pair[K]
+        self.leaf: Optional[int] = None
         self.value: Any = kv_pair[V]
-        self.path: Optional[int] = None
+        self.height: int = 1
         self.left_node: Optional[AVLTreeNode] = None
         self.right_node: Optional[AVLTreeNode] = None
-        self.height: int = 1
 
 
 class AVLTree:
@@ -74,12 +101,12 @@ class AVLTree:
         # Save the right child of the input node as the parent node.
         p_node = in_node.right_node
         # The input node will be the left child of the parent node; we store its left child to a tmp variable.
-        tmp_mode = p_node.left_node
+        tmp_node = p_node.left_node
 
         # Now we set the input node as the left child of the parent node.
         p_node.left_node = in_node
         # The left child of parent node was on the right of input node.
-        in_node.right_node = tmp_mode
+        in_node.right_node = tmp_node
 
         # Update the input node height.
         self.__update_height(in_node)
@@ -178,7 +205,6 @@ class AVLTree:
         while stack:
             # Get the last node and update its height.
             node = stack.pop()
-            self.__update_height(node)
             # Balance the node at this position.
             balanced_node = self.__balance(node)
 
@@ -191,6 +217,9 @@ class AVLTree:
                     parent.right_node = balanced_node
             else:
                 return balanced_node
+
+        # The code should not exist the while loop without returning.
+        raise ValueError("The node was not successfully inserted.")
 
     def recursive_insert(self, root: Optional[AVLTreeNode], kv_pair: KV_PAIR) -> AVLTreeNode:
         """
@@ -255,40 +284,52 @@ class AVLTree:
         # If never found, return None.
         return None
 
-    def post_order(self, root: Optional[AVLTreeNode], pos_map: dict) -> None:
+    def get_data_list(self, root: AVLTreeNode, encryption: bool = False) -> List[Data]:
+        """From root, expand the AVL tree as a list of Data objects.
+
+        :param root: an AVL tree root node.
+        :param encryption: indicate whether encryption is needed, i.e. whether the value should be bytes.
+        :return: a list of Data objects.
         """
-        Expand out the AVL tree stored in some root to a dictionary; the dictionary is modified in-place.
+        # Otherwise sample a new leaf for the root and add it to stack.
+        root.leaf = self.__get_new_leaf()
+        stack = [root]
 
-        The dictionary is of the following format:
-            key: [leaf, [value, [left_key, right_key], [left_path, right_path], [left_height, right_height]]]
-        :param root: the root node of the AVL tree.
-        :param pos_map: some dictionary to store the tree information.
-        """
-        # Once we hit an empty root, terminate the recursion.
-        if root is None:
-            return
+        # Create an empty list to hold the result.
+        result = []
 
-        # Create default values for the children information.
-        tmp_child_key = [None, None]
-        tmp_child_path = [None, None]
-        tmp_child_height = [0, 0]
+        # While stack, keep popping element.
+        while stack:
+            # Get the current node.
+            node = stack.pop()
+            # Create an AVL Data with the node value.
+            avl_data = AVLData(value=node.value)
 
-        # Traverse the left children.
-        if root.left_node:
-            self.post_order(pos_map=pos_map, root=root.left_node)
-            tmp_child_key[L] = root.left_node.key
-            tmp_child_path[L] = root.left_node.path
-            tmp_child_height[L] = root.left_node.height
+            # Add value from left node.
+            if node.left_node:
+                # Sample a new leaf for the left node.
+                node.left_node.leaf = self.__get_new_leaf()
+                avl_data.l_key = node.left_node.key
+                avl_data.l_leaf = node.left_node.leaf
+                avl_data.l_height = node.left_node.height
+                # Append the left node to stack.
+                stack.append(node.left_node)
 
-        # Travers the right children.
-        if root.right_node:
-            self.post_order(pos_map=pos_map, root=root.right_node)
-            tmp_child_key[R] = root.right_node.key
-            tmp_child_path[R] = root.right_node.path
-            tmp_child_height[R] = root.right_node.height
+            # Add value from right node.
+            if node.right_node:
+                # Sample a new leaf for the right node.
+                node.right_node.leaf = self.__get_new_leaf()
+                avl_data.r_key = node.right_node.key
+                avl_data.r_leaf = node.right_node.leaf
+                avl_data.r_height = node.right_node.height
+                # Append the right node to stack.
+                stack.append(node.right_node)
 
-        # Store the path of the leaf.
-        root.path = self.__get_new_leaf()
+            # Append the Data to result.
+            if encryption:
+                result.append(Data(key=node.key, leaf=node.leaf, value=avl_data.dump()))
+            else:
+                result.append(Data(key=node.key, leaf=node.leaf, value=avl_data))
 
-        # Update the position map with correct information.
-        pos_map[root.key] = [root.path, [root.value, tmp_child_key, tmp_child_path, tmp_child_height]]
+        # Return the list.
+        return result

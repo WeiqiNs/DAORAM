@@ -5,31 +5,6 @@ from Cryptodome.Random import get_random_bytes
 from Cryptodome.Util.Padding import pad, unpad
 
 
-def pad_pickle(data: bytes, length: int) -> bytes:
-    """
-    Pad pickled data to desired length with trailing zeros.
-
-    Note that if the data to pad has trailing zeros already, the padding would fail.
-    :param data: data to pad.
-    :param length: desired length of the padded data.
-    :return: padded data.
-    """
-    if len(data) > length:
-        # If the data length is too long, return error.
-        raise ValueError("Data length is longer than the desired padded length.")
-    else:
-        # If the data is not empty and its trailing byte is zero.
-        if data and data[-1] == 0:
-            raise ValueError("Padding is broken because of trailing null byte.")
-
-        return data + b"\x00" * (length - len(data))
-
-
-def unpad_pickle(data: bytes) -> bytes:
-    """Remove trailing zeros from padded data."""
-    return data.rstrip(b"\x00")
-
-
 class Aes:
     def __init__(self, aes_mode=AES.MODE_CBC, key: Optional[bytes] = None, key_byte_length: int = 16):
         """Class for performing AES encryption and decryption.
@@ -53,6 +28,11 @@ class Aes:
     def key(self) -> bytes:
         """Get the current AES key."""
         return self.__key
+
+    @property
+    def key_byte_length(self) -> int:
+        """Get the current AES key byte length."""
+        return self.__key_byte_length
 
     def enc(self, plaintext: bytes) -> bytes:
         """Perform AES encryption on the provided plaintext."""

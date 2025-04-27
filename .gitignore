@@ -183,3 +183,6 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# Testing generated bin file
+*.bin

@@ -1,4 +1,6 @@
+import glob
 import math
+import os
 
 from daoram.dependency import InteractLocalServer
 from daoram.omaps import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
@@ -6,6 +8,13 @@ from daoram.orams import DAOram
 
 # Set a global parameter for number of data the server should store.
 NUM_DATA = pow(2, 10)
+TEST_FILE = "oram.bin"
+
+
+# Helper function to remove files generated during testing.
+def remove_file():
+    for file in glob.glob("*.bin"):
+        os.remove(file)
 
 
 class TestAVLOdsOmap:
@@ -30,6 +39,14 @@ class TestAVLOdsOmap:
         for i in range(NUM_DATA):
             assert omap.search(key=i) == i * 2
 
+        # Issue some fast update queries.
+        for i in range(NUM_DATA):
+            omap.fast_search(key=i, value=i * 3)
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=i) == i * 3
+
     def test_int_key_with_enc(self):
         # Create the omap instance.
         omap = AVLOdsOmap(
@@ -47,6 +64,39 @@ class TestAVLOdsOmap:
         for i in range(NUM_DATA // 10):
             assert omap.search(key=i) == i
 
+        # Issue some fast search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.fast_search(key=i) == i
+
+    def test_int_key_with_enc_file(self):
+        # Create the omap instance.
+        omap = AVLOdsOmap(
+            num_data=NUM_DATA,
+            key_size=10,
+            data_size=10,
+            client=InteractLocalServer(),
+            filename=TEST_FILE,
+            use_encryption=True
+        )
+
+        # Initialize an empty storage.
+        omap.init_server_storage()
+
+        # Issue some insert queries.
+        for i in range(NUM_DATA // 10):
+            omap.insert(key=i, value=i)
+
+        # Issue some search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.search(key=i) == i
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.fast_search(key=i) == i
+
+        # Remove testing files.
+        remove_file()
+
     def test_str_key(self):
         # Create the omap instance.
         omap = AVLOdsOmap(
@@ -63,6 +113,10 @@ class TestAVLOdsOmap:
         # Issue some search queries.
         for i in range(NUM_DATA):
             assert omap.search(key=f"{i}") == f"{i}"
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
 
     def test_data_init(self):
         # Set the init number of data.
@@ -83,6 +137,10 @@ class TestAVLOdsOmap:
         # Issue some search queries.
         for i in range(NUM_DATA):
             assert omap.search(key=f"{i}") == f"{i}"
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
 
     def test_mul_data_init(self):
         # Set extra data to insert.
@@ -118,49 +176,9 @@ class TestAVLOdsOmap:
             # Search for data in this root.
             for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
                 assert omap.search(key=j) == j
-
-    def test_mul_data_init_fast_search(self):
-        # Set extra data to insert.
-        extra = 3
-        size_group = math.floor(math.log2(NUM_DATA))
-        num_group = NUM_DATA // size_group
-
-        # Set the init number of data.
-        init_data = [
-            [(f"{j}", f"{j}") for j in range(i * 2 * size_group, (i * 2 + 1) * size_group)]
-            for i in range(num_group)
-        ]
-
-        # Create the omap instance.
-        omap = AVLOdsOmap(
-            num_data=NUM_DATA,
-            key_size=10,
-            data_size=10,
-            use_encryption=False,
-            distinguishable_search=True,
-            client=InteractLocalServer()
-        )
-
-        # Initialize storage with lists of key-value pairs.
-        roots = omap.init_mul_tree_server_storage(data_list=init_data)
-
-        # Insert some data to each subgroup.
-        for i, root in enumerate(roots):
-            # Update root.
-            omap.root = root
-            # Insert some new data to this root.
-            for j in range(extra):
-                omap.insert(key=f"{(i * 2 + 1) * size_group + j}", value=f"{(i * 2 + 1) * size_group + j}")
-            # Update the stored root.
-            roots[i] = omap.root
-
-        # For each root, search the key stored in this root.
-        for i, root in enumerate(roots):
-            # Update root.
-            omap.root = root
-            # Search for data in this root.
+            # Fast search for data in this root.
             for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
-                assert omap.search(key=f"{j}") == f"{j}"
+                assert omap.fast_search(key=j) == j
 
 
 class TestBPlusOdsOmap:
@@ -185,6 +203,14 @@ class TestBPlusOdsOmap:
         for i in range(NUM_DATA):
             assert omap.search(key=i) == i * 2
 
+        # Issue some fast update queries.
+        for i in range(NUM_DATA):
+            omap.fast_search(key=i, value=i * 3)
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=i) == i * 3
+
     def test_str_key(self):
         # Create the omap instance.
         omap = BPlusOdsOmap(
@@ -202,6 +228,10 @@ class TestBPlusOdsOmap:
         for i in range(NUM_DATA):
             assert omap.search(key=f"{i}") == f"{i}"
 
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
+
     def test_str_key_with_enc(self):
         # Create the omap instance.
         omap = BPlusOdsOmap(
@@ -218,6 +248,40 @@ class TestBPlusOdsOmap:
         # Issue some search queries.
         for i in range(NUM_DATA // 10):
             assert omap.search(key=f"{i}") == f"{i}"
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
+
+    def test_str_key_with_enc_file(self):
+        # Create the omap instance.
+        omap = BPlusOdsOmap(
+            order=10,
+            num_data=NUM_DATA,
+            key_size=10,
+            data_size=10,
+            client=InteractLocalServer(),
+            filename=TEST_FILE,
+            use_encryption=True
+        )
+
+        # Initialize an empty storage.
+        omap.init_server_storage()
+
+        # Issue some insert queries.
+        for i in range(NUM_DATA // 10):
+            omap.insert(key=f"{i}", value=f"{i}")
+
+        # Issue some search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.search(key=f"{i}") == f"{i}"
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA // 10):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
+
+        # Remove testing files.
+        remove_file()
 
     def test_data_init(self):
         # Set the init number of data.
@@ -238,6 +302,10 @@ class TestBPlusOdsOmap:
         # Issue some search queries.
         for i in range(NUM_DATA):
             assert omap.search(key=f"{i}") == f"{i}"
+
+        # Issue some fast search queries.
+        for i in range(NUM_DATA):
+            assert omap.fast_search(key=f"{i}") == f"{i}"
 
     def test_mul_data_init(self):
         # Set extra data to insert.
@@ -273,6 +341,10 @@ class TestBPlusOdsOmap:
             # Search for data in this root.
             for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
                 assert omap.search(key=j) == j
+
+            # Fast search for data in this root.
+            for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
+                assert omap.fast_search(key=j) == j
 
 
 class TestOramOdsOmap:

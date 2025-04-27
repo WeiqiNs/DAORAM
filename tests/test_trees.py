@@ -1,6 +1,6 @@
 import random
 
-from daoram.dependency import AVLTree, BinaryTree, KEY, VALUE, BPlusTree, BPlusTreeNode
+from daoram.dependency import AVLTree, BinaryTree, BPlusTree, BPlusTreeNode, Data
 
 
 class TestBinaryTree:
@@ -9,7 +9,6 @@ class TestBinaryTree:
         assert tree.level == 11
         assert tree.size == 2047
         assert tree.start_leaf == 1023
-        assert len(tree.storage) == tree.size
 
     def test_get_parent_index(self):
         assert BinaryTree.get_parent_index(index=0) < 0
@@ -27,14 +26,18 @@ class TestBinaryTree:
 
     def test_fill_data_to_mul_path(self):
         path = BinaryTree.get_mul_path_dict(level=11, indices=[0, 2])
-        BinaryTree.fill_data_to_mul_path(data=[0, 0, "Path0"], path=path, leaves=[0, 2], level=11, bucket_size=1)
-        BinaryTree.fill_data_to_mul_path(data=[0, 0, "Up"], path=path, leaves=[0, 2], level=11, bucket_size=1)
-        BinaryTree.fill_data_to_mul_path(data=[1, 2, "Path2"], path=path, leaves=[0, 2], level=11, bucket_size=1)
-        BinaryTree.fill_data_to_mul_path(data=[2, 10, "Common"], path=path, leaves=[0, 2], level=11, bucket_size=1)
-        assert path[1023][0][VALUE] == "Path0"
-        assert path[1025][0][VALUE] == "Path2"
-        assert path[511][0][VALUE] == "Up"
-        assert path[63][0][VALUE] == "Common"
+        BinaryTree.fill_data_to_mul_path(
+            data=Data(key=0, leaf=0, value="Path0"), path=path, leaves=[0, 2], level=11, bucket_size=1)
+        BinaryTree.fill_data_to_mul_path(
+            data=Data(key=0, leaf=0, value="Up"), path=path, leaves=[0, 2], level=11, bucket_size=1)
+        BinaryTree.fill_data_to_mul_path(
+            data=Data(key=1, leaf=2, value="Path2"), path=path, leaves=[0, 2], level=11, bucket_size=1)
+        BinaryTree.fill_data_to_mul_path(
+            data=Data(key=2, leaf=10, value="Common"), path=path, leaves=[0, 2], level=11, bucket_size=1)
+        assert path[1023][0].value == "Path0"
+        assert path[1025][0].value == "Path2"
+        assert path[511][0].value == "Up"
+        assert path[63][0].value == "Common"
 
     def test_get_leaf_path(self):
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
@@ -64,30 +67,24 @@ class TestBinaryTree:
         assert tree.get_cross_index_level(leaf_one=0, leaf_two=511, level=tree.level) == 1
         assert tree.get_cross_index_level(leaf_one=10, leaf_two=10, level=tree.level) == 10
 
-    def test_fill_storage_with_dummy_data(self):
-        tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
-        tree.fill_storage_with_dummy_data()
-        assert tree.storage[0][0][KEY] is None
-        assert tree.storage[-1][-1][KEY] is None
-
     def test_fill_data_to_leaf(self):
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
         for i in range(10):
-            tree.fill_data_to_storage_leaf(data=[i, 0, i])
-        assert tree.read_path(0)[0][0][KEY] == 0
-        assert tree.read_path(0)[1][0][KEY] == 4
-        assert tree.read_path(0)[2][1][KEY] == 9
+            tree.fill_data_to_storage_leaf(data=Data(key=i, leaf=0, value=i))
+        assert tree.read_path(0)[0][0].key == 0
+        assert tree.read_path(0)[1][0].key == 4
+        assert tree.read_path(0)[2][1].key == 9
 
     def test_fill_data_to_path(self):
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
         path = [[] for _ in range(tree.level)]
-        tree.fill_data_to_path(data=[0, 0, 0], path=path, leaf=1, level=tree.level, bucket_size=4)
-        tree.fill_data_to_path(data=[0, 0, 0], path=path, leaf=0, level=tree.level, bucket_size=4)
-        tree.fill_data_to_path(data=[1, 0, 1], path=path, leaf=7, level=tree.level, bucket_size=4)
+        tree.fill_data_to_path(data=Data(key=0, leaf=0, value=0), path=path, leaf=1, level=tree.level, bucket_size=4)
+        tree.fill_data_to_path(data=Data(key=0, leaf=0, value=0), path=path, leaf=0, level=tree.level, bucket_size=4)
+        tree.fill_data_to_path(data=Data(key=1, leaf=0, value=1), path=path, leaf=7, level=tree.level, bucket_size=4)
 
         # Access the second last bucket.
-        assert path[-2][0][KEY] == 0
-        assert path[-4][0][KEY] == 1
+        assert path[-2][0].key == 0
+        assert path[-4][0].key == 1
 
 
 class TestAVLTree:
@@ -205,30 +202,7 @@ class TestAVLTree:
         for i in random_values:
             assert i == avl_tree.search(key=i, root=root)
 
-    def test_post_order(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=10)
-
-        # Set the beginning root to None and create a list of kv pairs.
-        root = None
-        kv_pairs = [(i, i) for i in range(1000)]
-
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.recursive_insert(root=root, kv_pair=kv_pair)
-
-        # Create an empty dictionary.
-        pos_map = {}
-
-        # Put the avl tree in the position map.
-        avl_tree.post_order(root=root, pos_map=pos_map)
-
-        # Test root.
-        assert pos_map[511][1][1] == [255, 767]
-        assert pos_map[255][1][1] == [127, 383]
-        assert pos_map[767][1][1] == [639, 895]
-
-    def test_post_order_height(self):
+    def test_get_list(self):
         # Create an avl tree object.
         avl_tree = AVLTree(leaf_range=10)
 
@@ -240,20 +214,22 @@ class TestAVLTree:
         for kv_pair in kv_pairs:
             root = avl_tree.insert(root=root, kv_pair=kv_pair)
 
-        # Create an empty dictionary.
-        pos_map = {}
+        # Convert the avl tree nodes to a list.
+        data_list = avl_tree.get_data_list(root=root)
 
-        # Put the avl tree in the position map.
-        avl_tree.post_order(root=root, pos_map=pos_map)
+        # The root node should be 3.
+        assert data_list[0].key == 3
+        assert data_list[0].value.r_key == 7
+        assert data_list[0].value.l_key == 1
+        assert data_list[0].value.r_height == 3
+        assert data_list[0].value.l_height == 2
 
-        # Test the child height.
-        assert pos_map[3][1][3] == [2, 3]
-        assert pos_map[1][1][3] == [1, 1]
-        assert pos_map[0][1][3] == [0, 0]
-
-        # Test the left height.
-        assert pos_map[7][1][3] == [2, 2]
-        assert pos_map[8][1][3] == [0, 1]
+        # The second node added should be the right node. (As they are more recent in stack.)
+        assert data_list[1].key == 7
+        assert data_list[1].value.r_key == 8
+        assert data_list[1].value.l_key == 5
+        assert data_list[1].value.r_height == 2
+        assert data_list[1].value.l_height == 2
 
 
 class TestBPlusTree:
@@ -357,7 +333,7 @@ class TestBPlusTree:
 
     def test_post_order(self):
         # Create a b+ tree object.
-        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
 
         # Set an empty b+ tree node.
         root = BPlusTreeNode()
@@ -366,14 +342,17 @@ class TestBPlusTree:
         for i in range(21):
             root = bplus_tree.insert(root=root, kv_pair=(i, i))
 
-        # Create an empty dictionary.
-        pos_map = {}
+        # Convert the B+ tree nodes to a list.
+        data_list = bplus_tree.get_data_list(root=root)
 
-        # Put the b+ tree in the position map.
-        block_id, leaf = bplus_tree.post_order(root=root, pos_map=pos_map)
+        # The data list should contain 14 values.
+        assert len(data_list) == 14
 
-        # Test children.
-        assert pos_map[block_id][0] == leaf
-        assert pos_map[block_id][1][0] == [8]
-        assert pos_map[pos_map[block_id][1][1][0][0]][1][0] == [4]
-        assert pos_map[pos_map[block_id][1][1][1][0]][1][0] == [12, 16]
+        # The root should have keys 6, 12 and has three values.
+        assert data_list[0].value.keys == [6, 12]
+        assert len(data_list[0].value.values) == 3
+
+        # The right-most child of the root should have the following.
+        assert data_list[1].key == 3
+        assert data_list[1].value.keys == [14, 16, 18]
+        assert len(data_list[1].value.values) == 4

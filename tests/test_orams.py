@@ -1,3 +1,5 @@
+import glob
+import os
 import random
 
 from daoram.dependency import InteractLocalServer
@@ -5,6 +7,13 @@ from daoram.orams import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 # Set a global parameter for number of data the server should store.
 NUM_DATA = pow(2, 10)
+TEST_FILE = "oram.bin"
+
+
+# Helper function to remove files generated during testing.
+def remove_file():
+    for file in glob.glob("*.bin"):
+        os.remove(file)
 
 
 class TestPathOram:
@@ -57,6 +66,46 @@ class TestPathOram:
         # Check for whether all values are correctly written.
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i) == i
+
+    def test_with_file(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = PathOram(
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=False
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i) == i
+
+        # Remove the testing file.
+        remove_file()
+
+    def test_with_file_enc(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = PathOram(
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=True
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i) == i
+
+        # Remove the testing file.
+        remove_file()
 
     def test_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.
@@ -129,6 +178,26 @@ class TestRecursivePathOram:
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i) == i
 
+    def test_with_file_enc(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = RecursivePathOram(
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=True
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i) == i
+
+        # Remove the testing file.
+        remove_file()
+
     def test_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = RecursivePathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=False)
@@ -199,6 +268,26 @@ class TestFreecursiveOram:
         # Check for whether all values are correctly written.
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i, value=None) == i
+
+    def test_prob_with_file_enc(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = FreecursiveOram(
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=True
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i, value=None) == i
+
+        # Remove the testing file.
+        remove_file()
 
     def test_prob_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.
@@ -275,6 +364,31 @@ class TestFreecursiveOram:
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i, value=None) == i
 
+    def test_hard_with_file_enc(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = FreecursiveOram(
+            num_data=NUM_DATA,
+            data_size=10,
+            reset_method="hard",
+            client=InteractLocalServer(),
+            filename=TEST_FILE,
+            use_encryption=True
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i, value=None) == i
+
+        # Remove the testing file.
+        remove_file()
+
     def test_hard_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = FreecursiveOram(
@@ -347,6 +461,26 @@ class TestDAOram:
         # Check for whether all values are correctly written.
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i, value=None) == i
+
+    def test_with_file_enc(self):
+        # Create the oram instance; encryption turned off for testing efficiency.
+        oram = DAOram(
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=True
+        )
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some write queries.
+        for i in range(NUM_DATA):
+            oram.operate_on_key(op="w", key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(NUM_DATA):
+            assert oram.operate_on_key(op="r", key=i, value=None) == i
+
+        # Remove the testing file.
+        remove_file()
 
     def test_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.

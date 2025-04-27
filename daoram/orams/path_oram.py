@@ -10,8 +10,7 @@ Path oram has two public methods:
 
 from typing import Any, Optional
 
-from daoram.dependency.binary_tree import BinaryTree, Buckets, KEY, LEAF, VALUE
-from daoram.dependency.interact_server import InteractServer
+from daoram.dependency import BinaryTree, Buckets, InteractServer
 from daoram.orams.tree_base_oram import TreeBaseOram
 
 
@@ -20,6 +19,7 @@ class PathOram(TreeBaseOram):
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
+                 filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  aes_key: bytes = None,
@@ -31,6 +31,7 @@ class PathOram(TreeBaseOram):
         :param num_data: the number of data points the oram should store.
         :param data_size: the number of bytes the random dummy data should have.
         :param client: the instance we use to interact with server.
+        :param filename: the filename to save the oram data to.
         :param bucket_size: the number of data each bucket should have.
         :param stash_scale: the scaling scale of the stash.
         :param aes_key: the key to use for the AES instance.
@@ -42,6 +43,7 @@ class PathOram(TreeBaseOram):
             client=client,
             aes_key=aes_key,
             num_data=num_data,
+            filename=filename,
             data_size=data_size,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
@@ -61,8 +63,11 @@ class PathOram(TreeBaseOram):
 
         :param data_map: a dictionary storing {key: data}.
         """
+        # Get the storage.
+        storage = {"oram": self._init_storage_on_pos_map(data_map=data_map)}
+
         # Initialize the storage and send it to the server.
-        self.client.init_query(label="oram", storage=self._init_storage_on_pos_map(data_map=data_map))
+        self.client.init_query(storage=storage)
 
     def __retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
         """
@@ -82,20 +87,20 @@ class PathOram(TreeBaseOram):
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
             # If we find the data of interest, perform operation, otherwise just skip over.
-            if data[KEY] == key:
+            if data.key == key:
                 if op == "r":
-                    read_value = data[VALUE]
+                    read_value = data.value
                 elif op == "w":
-                    data[VALUE] = value
+                    data.value = value
                 elif op == "rw":
-                    read_value = data[VALUE]
-                    data[VALUE] = value
+                    read_value = data.value
+                    data.value = value
                 else:
                     raise ValueError("The provided operation is not valid.")
                 # Get new path and update the position map.
-                data[LEAF] = self._get_new_leaf()
+                data.leaf = self._get_new_leaf()
                 # Update the position map.
-                self._pos_map[key] = data[LEAF]
+                self._pos_map[key] = data.leaf
                 # Set found to true.
                 found = True
                 # Break the for loop.
@@ -131,23 +136,23 @@ class PathOram(TreeBaseOram):
         for bucket in path:
             for data in bucket:
                 # Real data is always placed in front of dummy data, once we read dummy, we skip it.
-                if data[KEY] is None:
+                if data.key is None:
                     continue
                 # If it's the data of interest, we read/write it, and give it a new path.
-                elif data[KEY] == key:
+                elif data.key == key:
                     if op == "r":
-                        read_value = data[VALUE]
+                        read_value = data.value
                     elif op == "w":
-                        data[VALUE] = value
+                        data.value = value
                     elif op == "rw":
-                        read_value = data[VALUE]
-                        data[VALUE] = value
+                        read_value = data.value
+                        data.value = value
                     else:
                         raise ValueError("The provided operation is not valid.")
                     # Get new path and update the position map.
-                    data[LEAF] = self._get_new_leaf()
+                    data.leaf = self._get_new_leaf()
                     # Update the position map.
-                    self._pos_map[key] = data[LEAF]
+                    self._pos_map[key] = data.leaf
                     # Set found to True.
                     found = True
 
@@ -187,9 +192,6 @@ class PathOram(TreeBaseOram):
             # If we were not able to insert data, overflow happened, put the block to the temp stash.
             if not inserted:
                 temp_stash.append(data)
-
-        # After we are done with all real data, complete the path with dummy data.
-        BinaryTree.fill_buckets_with_dummy_data(buckets=path, bucket_size=self._bucket_size)
 
         # Update the stash.
         self._stash = temp_stash
@@ -258,8 +260,8 @@ class PathOram(TreeBaseOram):
         # Read all buckets stored in the stash and find the desired data block of interest.
         for data in self._stash:
             # If we find the data of interest, update value and set found to True.
-            if data[KEY] == key:
-                data[VALUE] = value
+            if data.key == key:
+                data.value = value
                 found = True
 
         # If the data was never found, we raise an error.
