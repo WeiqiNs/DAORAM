@@ -1,17 +1,17 @@
 from typing import Any, List, Optional, Tuple, Union
 
 from daoram.dependency import Helper, Prf
-from daoram.omaps.tree_ods_omap import TreeOdsOmap
-from daoram.orams.tree_base_oram import TreeBaseOram
+from daoram.omap.tree_ods_omap import TreeOdsOmap
+from daoram.oram.tree_base_oram import TreeBaseOram
 
 
 class OramTreeOdsOmap:
     def __init__(self, num_data: int, ods: TreeOdsOmap, oram: TreeBaseOram):
         """Initialize the proposed construction for optimal omap.
 
-        :param num_data: the number of data points the oram should store.
-        :param ods: some tree structured ods omap that inherits the TreeOdsOmap class.
-        :param oram: some tree based oram that inherits the TreeBaseOmap class.
+        :param num_data: The number of data points the oram should store.
+        :param ods: Some tree structured ods omap that inherits the TreeOdsOmap class.
+        :param oram: Some tree-based oram that inherits the TreeBaseOmap class.
         """
         # Save the input as class attributes.
         self.__num_data: int = num_data
@@ -28,7 +28,7 @@ class OramTreeOdsOmap:
         """
         Initialize the server storage for the input list of key-value pairs.
 
-        :param data: a list of key-value pairs.
+        :param data: A list of key-value pairs.
         """
         # If the data list is not provided, we set it to an empty list.
         if data is None:
@@ -50,8 +50,8 @@ class OramTreeOdsOmap:
         """
         Given key-value pair, insert the pair to the omap.
 
-        :param key: the search key of interest.
-        :param value: the value to insert.
+        :param key: The search key of interest.
+        :param value: The value to insert.
         """
         # First hash the key of interest and find where it is stored in the oram.
         oram_key = Helper.hash_data_to_leaf(prf=self.__prf, data=key, map_size=self.__num_data)
@@ -70,10 +70,10 @@ class OramTreeOdsOmap:
         """
         Given a search key, return its corresponding value.
 
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         # First hash the key of interest and find where it is stored in the oram.
         oram_key = Helper.hash_data_to_leaf(prf=self.__prf, data=key, map_size=self.__num_data)
@@ -96,10 +96,10 @@ class OramTreeOdsOmap:
         Given a search key, return its corresponding value.
 
         This function uses the fast search function of the underlying oblivious search tree.
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         # First hash the key of interest and find where it is stored in the oram.
         oram_key = Helper.hash_data_to_leaf(prf=self.__prf, data=key, map_size=self.__num_data)

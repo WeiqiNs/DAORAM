@@ -1,5 +1,5 @@
 """
-Module for defining a parent class for tree-structure ods omap.
+Module for defining a parent class for tree-structure ODS omap.
 
 The BaseOmap class defines a set of attributes that an omap should have and some basic methods such as encryption, etc.
 """
@@ -32,16 +32,16 @@ class TreeOdsOmap(ABC):
         """
         Defines the base omap, including its attributes and methods.
 
-        :param num_data: the number of data points the oram should store.
-        :param key_size: the number of bytes the random key should have.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param client: the instance we use to interact with server.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param use_encryption: a boolean indicating whether to use encryption.
+        :param num_data: The number of data points the oram should store.
+        :param key_size: The number of bytes the random key should have.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with the server.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Store the useful input values.
         self._filename: str = filename
@@ -97,7 +97,7 @@ class TreeOdsOmap(ABC):
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
         
-        :param num_tree: number of tree to store, which is the same as number of data in upper level oram.
+        :param num_tree: Number of trees to store, which is the same as number of data in upper level oram.
         """
         raise NotImplementedError
 
@@ -109,10 +109,10 @@ class TreeOdsOmap(ABC):
     @abstractmethod
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
         """
-        Given buckets, encrypt all data in it.
+        Encrypt all data in given buckets.
 
-        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
-        bucket with desired amount of dummy data.
+        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills the
+        bucket with the desired amount of dummy data.
         """
         raise NotImplementedError
 
@@ -133,8 +133,8 @@ class TreeOdsOmap(ABC):
         """
         Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
 
-        :param key: search key of interest.
-        :param leaf: indicate which path the data of interest is stored in the ORAM.
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data of interest is stored in the ORAM.
         """
         # Move the node to local without doing eviction.
         self._move_node_to_local_without_eviction(key=key, leaf=leaf)
@@ -146,10 +146,10 @@ class TreeOdsOmap(ABC):
         """
         Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
 
-        This is specialized to the fast search method, where the data of interest are moved to local and the rest
-        are added to stash.
-        :param key: search key of interest.
-        :param leaf: indicate which path the data of interest is stored in the ORAM.
+        This is specialized in the fast search method, where the data of interest are moved to local and the rest
+        are added to the stash.
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data of interest is stored in the ORAM.
         """
         # Set found to false and get existing stash size.
         found = False
@@ -166,7 +166,7 @@ class TreeOdsOmap(ABC):
                     self._local.append(data)
                     found = True
                 else:
-                    # Other real data are directly added to stash.
+                    # Other real data are directly added to the stash.
                     self._stash.append(data)
 
         # Check if stash overflows.
@@ -176,21 +176,21 @@ class TreeOdsOmap(ABC):
         # If the desired data is not found in the path, we check the stash.
         if not found:
             for i in range(to_index):
-                # If we find the data, we add it to local and remove it from stash.
+                # If we find the data, we add it to local and remove it from the stash.
                 if self._stash[i].key == key:
                     self._local.append(self._stash[i])
                     del self._stash[i]
                     # Terminate the function.
                     return
 
-            # If also not found in stash, raise an error.
+            # If also not found in the stash, raise an error.
             raise KeyError(f"The search key {key} is not found.")
 
     def _evict_stash(self, leaf: int) -> Buckets:
         """
         Evict data blocks in the stash while maintaining correctness.
 
-        :param leaf: the leaf label of the path we are evicting data to.
+        :param leaf: The leaf label of the path we are evicting data to.
         :return: The leaf label and the path we should write.
         """
         # Create a temporary stash.
@@ -200,7 +200,7 @@ class TreeOdsOmap(ABC):
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
-            # Attempt to insert actual data to path.
+            # Attempt to insert actual data to the path.
             inserted = BinaryTree.fill_data_to_path(
                 data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
             )
@@ -212,16 +212,16 @@ class TreeOdsOmap(ABC):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we copy path from bottom up.
+        # Note that we return the path in the reversed order because we copy the path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
     def _perform_dummy_operation(self, num_round: int) -> None:
-        """Perform desired number of dummy evictions."""
-        # Check if the number of round is less than needed.
+        """Perform the desired number of dummy evictions."""
+        # Check if the number of rounds is lower than needed.
         if num_round < 0:
             raise ValueError("The height is not enough, as the number of dummy operation required is negative.")
 
-        # Perform desired number of dummy evictions.
+        # Perform the desired number of dummy evictions.
         for _ in range(num_round):
             # Generate a random path.
             leaf = self._get_new_leaf()
@@ -238,7 +238,7 @@ class TreeOdsOmap(ABC):
             if len(self._stash) > self._stash_size:
                 raise MemoryError("Stash overflow!")
 
-            # Evict stash and write the path back to the ODS storage.
+            # Evict the stash and write the path back to the ODS storage.
             self._client.write_query(label="ods", leaf=leaf, data=self._evict_stash(leaf=leaf))
 
     @abstractmethod
@@ -246,8 +246,8 @@ class TreeOdsOmap(ABC):
         """
         Initialize a binary tree storage to store the B+ tree holding input key-value pairs.
 
-        :param data: a list of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs.
+        :param data: A list of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs.
         """
         raise NotImplementedError
 
@@ -255,9 +255,9 @@ class TreeOdsOmap(ABC):
         """
         Initialize the server storage for the input list of key-value pairs.
 
-        :param data: a list of key-value pairs.
+        :param data: A list of key-value pairs.
         """
-        # Let server store the binary tree.
+        # Let the server store the binary tree.
         self._client.init_query(storage={"ods": self._init_ods_storage(data=data)})
 
     @abstractmethod
@@ -265,8 +265,8 @@ class TreeOdsOmap(ABC):
         """
         Initialize a binary tree storage to store multiple B+ trees holding input lists of key-value pairs.
 
-        :param data_list: a list of lists of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs and a list of B+ tree roots.
+        :param data_list: A list of lists of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs and a list of B+ tree roots.
         """
         raise NotImplementedError
 
@@ -274,10 +274,10 @@ class TreeOdsOmap(ABC):
         """
         Send server the tree storage storing multiple AVL trees holding input lists of key-value pairs.
 
-        :param data_list: a list of lists of key-value pairs.:
+        :param data_list: A list of lists of key-value pairs.:
         :return: a list of AVL tree roots.
         """
-        # Initialize the server binary tree storage and get list of roots of AVL trees.
+        # Initialize the server binary tree storage and get a list of roots of AVL trees.
         tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
         # Let the server store the binary tree.
         self._client.init_query(storage={"ods": tree})
@@ -289,8 +289,8 @@ class TreeOdsOmap(ABC):
         """
         Given key-value pair, insert the pair to the tree.
 
-        :param key: the search key of interest.
-        :param value: the value to insert.
+        :param key: The search key of interest.
+        :param value: The value to insert.
         """
         raise NotImplementedError
 
@@ -299,10 +299,10 @@ class TreeOdsOmap(ABC):
         """
         Given a search key, return its corresponding value.
 
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         raise NotImplementedError
 
@@ -312,10 +312,10 @@ class TreeOdsOmap(ABC):
         Given a search key, return its corresponding value.
 
         Note: This search is allowed to be distinguished from insert and can be sped up.
-        The difference here is that, fast search will return the node immediately without keeping it in local.
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        The difference here is that fast search will return the node immediately without keeping it in local.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         raise NotImplementedError

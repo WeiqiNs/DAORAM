@@ -4,14 +4,14 @@ This module defines the path oram class.
 Path oram has two public methods:
     - init_storage_on_pos_map: this should be called first after the class object is created. This method constructs the
         storage the server should hold for the client.
-    - operate_on_key: after the server get the created storage, the client can use this function to obliviously access
+    - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
         data points stored in the storage.
 """
 
 from typing import Any, Optional
 
 from daoram.dependency import BinaryTree, Buckets, InteractServer
-from daoram.orams.tree_base_oram import TreeBaseOram
+from daoram.oram.tree_base_oram import TreeBaseOram
 
 
 class PathOram(TreeBaseOram):
@@ -28,15 +28,15 @@ class PathOram(TreeBaseOram):
         """
         Defines the path oram, including its attributes and methods.
 
-        :param num_data: the number of data points the oram should store.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param client: the instance we use to interact with server.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param use_encryption: a boolean indicating whether to use encryption.
+        :param num_data: The number of data points the oram should store.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Initialize the parent BaseOram class.
         super().__init__(
@@ -61,7 +61,7 @@ class PathOram(TreeBaseOram):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: a dictionary storing {key: data}.
+        :param data_map: A dictionary storing {key: data}.
         """
         # Get the storage.
         storage = {"oram": self._init_storage_on_pos_map(data_map=data_map)}
@@ -71,11 +71,11 @@ class PathOram(TreeBaseOram):
 
     def __retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
         """
-        Given a key and an operation, retrieve the block from stash and apply the operation to it.
+        Given a key and an operation, retrieve the block from the stash and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param to_index: up to which index we should be checking.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param to_index: Up to which index we should be checking.
         :param value: If the operation is "write", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
@@ -86,7 +86,7 @@ class PathOram(TreeBaseOram):
 
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
-            # If we find the data of interest, perform operation, otherwise just skip over.
+            # If we find the data of interest, perform operation, otherwise skip over.
             if data.key == key:
                 if op == "r":
                     read_value = data.value
@@ -97,7 +97,7 @@ class PathOram(TreeBaseOram):
                     data.value = value
                 else:
                     raise ValueError("The provided operation is not valid.")
-                # Get new path and update the position map.
+                # Get a new path and update the position map.
                 data.leaf = self._get_new_leaf()
                 # Update the position map.
                 self._pos_map[key] = data.leaf
@@ -106,7 +106,7 @@ class PathOram(TreeBaseOram):
                 # Break the for loop.
                 continue
 
-        # If the key was never found, raise an error, since the stash is always searched after path.
+        # If the key was never found, raise an error, since the stash is always searched after a path.
         if not found:
             raise KeyError(f"Key {key} not found.")
 
@@ -116,9 +116,9 @@ class PathOram(TreeBaseOram):
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param path: a list of buckets of data where the data block of interest is stored.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param path: A list of buckets of data where the data block of interest is stored.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -149,7 +149,7 @@ class PathOram(TreeBaseOram):
                         data.value = value
                     else:
                         raise ValueError("The provided operation is not valid.")
-                    # Get new path and update the position map.
+                    # Get a new path and update the position map.
                     data.leaf = self._get_new_leaf()
                     # Update the position map.
                     self._pos_map[key] = data.leaf
@@ -174,7 +174,7 @@ class PathOram(TreeBaseOram):
         """
         Evict data blocks in the stash while maintaining correctness.
 
-        :param leaf: the leaf label of the path we are evicting data to.
+        :param leaf: The leaf label of the path we are evicting data to.
         :return: The leaf label and the path we should write there.
         """
         # Create a temporary stash.
@@ -184,7 +184,7 @@ class PathOram(TreeBaseOram):
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
-            # Attempt to insert actual data to path.
+            # Attempt to insert actual data to a path.
             inserted = BinaryTree.fill_data_to_path(
                 data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
             )
@@ -196,15 +196,15 @@ class PathOram(TreeBaseOram):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we write path from bottom up.
+        # Note that we return the path in the reversed order because we write a path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
     def operate_on_key(self, op: str, key: int, value: Any = None) -> Any:
         """
         Perform operation on a given key.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -229,8 +229,8 @@ class PathOram(TreeBaseOram):
         """
         Perform operation on a given key without writing the data added to the stash back to the server.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -251,8 +251,8 @@ class PathOram(TreeBaseOram):
     def eviction_with_update_stash(self, key: int, value: Any) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
-        :param key: the key of the data block of interest.
-        :param value: the value to update the data block of interest.
+        :param key: The key of the data block of interest.
+        :param value: The value to update the data block of interest.
         """
         # Set found the key to False.
         found = False

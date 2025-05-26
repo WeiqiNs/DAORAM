@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import pickle
 from dataclasses import astuple, dataclass
@@ -13,7 +14,7 @@ class Data:
     """
     Create the data structure to hold a data record that should be put into a complete binary tree.
 
-    It has three fields: key, leaf, and value, where key and value could be anything but leaf needs to be an integer.
+    It has three fields: key, leaf, and value, where key and value could be anything, but the leaf needs to be an int.
     By default, (when used as a dummy), when initialize the fields to None.
     """
     key: Optional[Any] = None
@@ -22,7 +23,7 @@ class Data:
 
     @classmethod
     def from_pickle(cls, data: bytes) -> Data:
-        """Given some pickled data, convert it to a Data typed object"""
+        """Given some pickled data, convert it to a Data-typed object"""
         # Load from pickle and remove padding if necessary.
         return cls(*pickle.loads(Helper.unpad_pickle(data)))
 
@@ -42,7 +43,7 @@ class Storage:
     A class that manages an n x m matrix of fixed-size byte strings.
     In our use case, n is the size of the binary tree, m is the size of each bucket.
     Since we always read the entire bucket, the read/write access is with respect to one row of the matrix.
-    If filename is provided, data is stored on disk, otherwise data is stored in memory (list of lists).
+    If the filename is provided, data is stored on disk, otherwise data is stored in memory (list of lists).
     """
 
     def __init__(self,
@@ -56,7 +57,7 @@ class Storage:
         :param data_size: size (in bytes) of each element.
         :param bucket_size: number of columns.
         :param filename: optional path for on-disk storage.
-        :param enc_key_size: the key size for the encryption, if set to 0 it means encryption will not be used.
+        :param enc_key_size: the key size for the encryption, if set to 0, it means encryption will not be used.
         """
         # Store the information useful for accessing data.
         self.__size: int = size
@@ -80,14 +81,14 @@ class Storage:
 
         # Whether the filename is provided determines how we store things.
         if self.__filename is None:
-            # Simply create a list of empty lists.
+            # Create a list of empty lists.
             self.__internal_data: Buckets = [[] for _ in range(size)]
         else:
-            # When file name is not None, data size must be provided.
+            # When the file name is not None, data size must be provided.
             if data_size is None:
                 raise ValueError("Data size is required when storing to a file.")
 
-            # Allocate or confirm existence of the file.
+            # Allocate or confirm the existence of the file.
             if not os.path.exists(self.__filename):
                 with open(self.__filename, 'wb') as file:
                     # Compute the total number of bytes required.
@@ -132,7 +133,7 @@ class Storage:
         self.__file.seek(self.__row_offset(index))
         row_bytes = self.__file.read(self.__bucket_size * self.__total_size)
 
-        # Split this big chunk into m elements each of length x.
+        # Split this big chunk into m elements each of lengths x.
         read_data = [
             row_bytes[i * self.__total_size: (i + 1) * self.__total_size]
             for i in range(self.__bucket_size)
@@ -149,7 +150,7 @@ class Storage:
     def write_row(self, index: int, data: Bucket) -> None:
         """Writes the entire row i from a list.
 
-        The tricky thing here is that, when writing to internal list, you don't need padding, but you need it for
+        The tricky thing here is that, when writing to an internal list, you don't need padding, but you need it for
         writing to the disk.
         """
         # Determines where to write.
@@ -158,7 +159,7 @@ class Storage:
             self.__internal_data[index] = data
             return
 
-        # On-disk write. First convert and pad the data to desired length.
+        # On-disk write. First, convert and pad the data to the desired length.
         write_data = [
             Helper.pad_pickle(data=elem.dump() if isinstance(elem, Data) else elem, length=self.__total_size)
             for elem in data
@@ -180,7 +181,7 @@ class Storage:
         """
         Given an aes instance, encrypt the entire storage.
 
-        Note that each of the bucket should be made full (dummy data maybe added).
+        Note that each of the buckets should be made full (dummy data maybe added).
         """
         # If we do not need to load from the file.
         if self.__filename is None:
@@ -204,7 +205,7 @@ class Storage:
             # Terminate the function.
             return
 
-        # Otherwise we load from the disk and encrypt.
+        # Otherwise, we load from the disk and encrypt.
         for i in range(self.__size * self.__bucket_size):
             # Compute the location to read.
             location = i * self.__total_size
@@ -231,7 +232,7 @@ class Storage:
             # Terminate the function.
             return
 
-        # Otherwise we load from the disk and encrypt.
+        # Otherwise, we load from the disk and encrypt.
         for i in range(self.__size * self.__bucket_size):
             # Compute the location to read.
             location = i * self.__total_size
@@ -255,15 +256,15 @@ class Helper:
     @staticmethod
     def pad_pickle(data: bytes, length: int) -> bytes:
         """
-        Pad pickled data to desired length with trailing zeros.
+        Pad pickled data to the desired length with trailing zeros.
 
         Note that if the data to pad has trailing zeros already, the padding would fail.
-        :param data: data to pad.
-        :param length: desired length of the padded data.
-        :return: padded data.
+        :param data: Data to pad.
+        :param length: Desired length of the padded data.
+        :return: Padded data.
         """
         if len(data) > length:
-            # If the data length is too long, return error.
+            # If the data length is too long, return an error.
             raise ValueError("Data length is longer than the desired padded length.")
         else:
             return data + b"\x00" * (length - len(data))
@@ -298,7 +299,7 @@ class Helper:
         else:
             raise TypeError(f"Data must be either a string or an integer.")
 
-        # Use the prf as hash and compute mod map size.
+        # Use the prf as a hash and compute mod map size.
         return prf.digest_mod_n(message=byte_data, mod=map_size)
 
     @staticmethod
@@ -306,12 +307,12 @@ class Helper:
         """
         Given a list of data, map them to the correct integer bucket.
 
-        :param prf: the PRF instance defined in crypto.
-        :param map_size: the total number of buckets; note that some buckets might be empty.
-        :param data: a list of key-value pairs.
-        :return: a dictionary where each integer corresponds to a bucket of key-value pairs.
+        :param prf: The PRF instance is defined in crypto.
+        :param map_size: The total number of buckets; note that some buckets might be empty.
+        :param data: A list of key-value pairs.
+        :return: A dictionary where each integer corresponds to a bucket of key-value pairs.
         """
-        # Create data map with empty buckets.
+        # Create a data map with empty buckets.
         data_map = {i: [] for i in range(map_size)}
 
         # Map each data to the correct buckets.
@@ -321,3 +322,38 @@ class Helper:
 
         # Remove the empty buckets.
         return data_map
+
+    @staticmethod
+    def lambert_w(x: float, tol: float = 1e-10, max_iter: int = 100):
+        """
+        Calculate the Lambert W function for a given value of x using an iterative Newton's method approach.
+
+        The Lambert W function satisfies the equation w * e^w = x for a given x.
+        :param x: The input value for which to calculate the Lambert W function.
+        :param tol: The error tolerance for the convergence criterion.
+        :param max_iter: The maximum number of iterations allowed for the Newton's method.
+        :return: The value of the Lambert W function at the given input x.
+        """
+        # Handle special cases.
+        if x == 0:
+            return 0.0
+        if x < -math.exp(-1):
+            raise ValueError("lambert_w(x) is not defined for x < -1/e.")
+
+        # Initial approximation.
+        w = 0 if x <= 1 else math.log(x) - math.log(math.log(x))
+
+        # Newton's method.
+        for _ in range(max_iter):
+            ew = math.exp(w)
+            wew = w * ew
+            w_next = w - (wew - x) / (ew * (w + 1) - (w + 2) * (wew - x) / (2 * w + 2))
+
+            # Stop if meet the tolerance bound.
+            if abs(w_next - w) < tol:
+                return w_next
+
+            # Otherwise update w.
+            w = w_next
+
+        raise RuntimeError("Lambert W function did not converge")

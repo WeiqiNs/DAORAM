@@ -51,7 +51,7 @@ class BPlusTreeNode:
         """
         Add a key-value pair to this node.
 
-        :param kv_pair: a tuple containing two values (key, value).
+        :param kv_pair: A tuple containing two values (key, value).
         """
         # Unpack the key, value pair.
         key, value = kv_pair
@@ -59,7 +59,7 @@ class BPlusTreeNode:
         # If keys is not empty, we find the correct place to insert the input value.
         if self.keys:
             for index, each_key in enumerate(self.keys):
-                # Keys go from smaller to larger; hence if a larger key is found, we insert new value in front.
+                # Keys go from smaller to larger; hence if a larger key is found, we insert a new value in front.
                 if key < each_key:
                     self.keys = self.keys[:index] + [key] + self.keys[index:]
                     self.values = self.values[:index] + [value] + self.values[index:]
@@ -76,7 +76,7 @@ class BPlusTree:
         """
         The B+ tree needs to store the required branching degree and possible leaf range to sample.
 
-        :param order: the branching degree of the B+ tree, minimum should be 3.
+        :param order: The branching degree of the B+ tree, minimum should be 3.
         """
         self.__order = order
         self.__mid = order // 2
@@ -91,9 +91,9 @@ class BPlusTree:
         """
         Given B+ tree root and a key of interest, find the leaf where the key is stored.
 
-        :param key: the key to search for.
-        :param root: the root node of the B+ tree.
-        :return: the leaf storing the key of interest.
+        :param key: The key to search for.
+        :param root: The root node of the B+ tree.
+        :return: The leaf storing the key of interest.
         """
         # Set the root to current node for traversal.
         cur_node = root
@@ -105,7 +105,7 @@ class BPlusTree:
                 if key == each_key:
                     cur_node = cur_node.values[index + 1]
                     break
-                # If key is smaller, it is on the left.
+                # If the key is smaller, it is on the left.
                 elif key < each_key:
                     cur_node = cur_node.values[index]
                     break
@@ -122,9 +122,9 @@ class BPlusTree:
         """
         Given B+ tree root and a key of interest, find the entire path to the leaf where the key is stored.
 
-        :param key: the key to search for.
-        :param root: the root node of the B+ tree.
-        :return: a list of nodes for the entire path.
+        :param key: The key to search for.
+        :param root: The root node of the B+ tree.
+        :return: A list of nodes for the entire path.
         """
         # Get the result node list and set the root to current node for traversal.
         result = [root]
@@ -137,7 +137,7 @@ class BPlusTree:
                 if key == each_key:
                     cur_node = cur_node.values[index + 1]
                     break
-                # If key is smaller, it is on the left.
+                # If the key is smaller, it is on the left.
                 elif key < each_key:
                     cur_node = cur_node.values[index]
                     break
@@ -157,10 +157,10 @@ class BPlusTree:
         Given a node that is full, split it depends on whether it is a leaf or not.
 
         Note that the node itself is modified in place and only one new node is created.
-        :param node: the node whose number of keys is same as the branching degree.
-        :return: the split node, which contains the right half of the input node.
+        :param node: The node whose number of keys is the same as the branching degree.
+        :return: The split node, which contains the right half of the input node.
         """
-        # We break from middle and create left child node.
+        # We break from the middle and create left child node.
         right_node = BPlusTreeNode()
 
         # Depending on whether the child node is a leaf node, we break it differently.
@@ -192,8 +192,8 @@ class BPlusTree:
         """
         Insert the child node into the parent node.
 
-        :param child_node: a B+ tree node whose number of keys is same as the branching degree.
-        :param parent_node: a B+ tree node containing the child node.
+        :param child_node: A B+ tree node whose number of keys is the same as the branching degree.
+        :param parent_node: A B+ tree node containing the child node.
         """
         # Store the key to insert to parent.
         insert_key = child_node.keys[self.__mid]
@@ -216,8 +216,8 @@ class BPlusTree:
         """
         When a node has no parent and split is required, create a new parent node for them.
 
-        :param child_node: a B+ tree node whose number of keys is same as the branching degree.
-        :return: a B+ tree node containing the split left and right child nodes.
+        :param child_node: A B+ tree node whose number of keys is the same as the branching degree.
+        :return: A B+ tree node containing the split left and right child nodes.
         """
         # Store the key to insert to parent.
         insert_key = child_node.keys[self.__mid]
@@ -241,9 +241,9 @@ class BPlusTree:
         """
         Inserts a new node into the tree, which is represented by the root.
 
-        :param root: the root node of the B+ tree.
-        :param kv_pair: a tuple containing two values (key, value).
-        :return: the updated B+ tree root node.
+        :param root: The root node of the B+ tree.
+        :param kv_pair: A tuple containing two values (key, value).
+        :return: The updated B+ tree root node.
         """
         # Find which leaf to insert.
         leaves = self.__find_leaf_path(root=root, key=kv_pair[0])
@@ -275,9 +275,9 @@ class BPlusTree:
         """
         Performs a search on the provided key and root node.
 
-        :param key: the key to search for.
-        :param root: the root node of the B+ tree.
-        :return: the value corresponding to the provided search key.
+        :param key: The key to search for.
+        :param root: The root node of the B+ tree.
+        :return: The value corresponding to the provided search key.
         """
         # First get the node leaf.
         leaf = self.__find_leaf(root=root, key=key)
@@ -292,10 +292,10 @@ class BPlusTree:
     def get_data_list(self, root: BPlusTreeNode, block_id: int = 0, encryption: bool = False) -> List[Data]:
         """From root, expand the AVL tree as a list of Data objects.
 
-        :param root: an AVL tree root node.
-        :param block_id: the starting block ID, by default 0.
-        :param encryption: indicate whether encryption is needed, i.e. whether the value should be bytes.
-        :return: a list of Data objects.
+        :param root: An AVL tree root node.
+        :param block_id: The starting block ID, by default 0.
+        :param encryption: Indicate whether encryption is needed, i.e., whether the value should be bytes.
+        :return: A list of Data objects.
         """
         # Update the root id and assign a new leaf.
         root.id = block_id
@@ -324,7 +324,7 @@ class BPlusTree:
                 # Add all children nodes to the stack.
                 stack.extend([child for child in node.values])
 
-            # Otherwise just store the keys and values.
+            # Otherwise, store the keys and values.
             else:
                 bplus_data = BPlusData(keys=node.keys, values=node.values)
 

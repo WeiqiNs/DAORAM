@@ -16,24 +16,24 @@ class BinaryTree:
         """
         Initializes the binary tree based on input parameters.
 
-        :param num_data: Number of data points the tree should hold.
+        :param num_data: The Number of data points the tree should hold.
         :param bucket_size: Size of each node/bucket in the tree.
         :param data_size: Size of each data point in the tree.
-        :param filename: Name of the file the tree should hold.
-        :param enc_key_size: the key size for the encryption, if set to 0 it means encryption will not be used.
+        :param filename: The Name of the file the tree should hold.
+        :param enc_key_size: The key size for the encryption, if set to 0 it means encryption will not be used.
         """
         # Store the number of data point and bucket size.
         self._num_data = num_data
         self._bucket_size = bucket_size
 
-        # Compute the level of the binary tree based on number of data we plan to store.
+        # Compute the level of the binary tree based on the number of data we plan to store.
         self._level = int(math.ceil(math.log(num_data, 2))) + 1
         # Compute the size of the tree, which is the length of the storage list.
         self._size = pow(2, self._level) - 1
         # Compute the last index before actual leaves.
         self._start_leaf = pow(2, self._level - 1) - 1
 
-        # Use the input buckets to initialize storage or create empty list.
+        # Use the input buckets to initialize storage or create an empty list.
         self._storage = Storage(
             size=self._size,
             filename=filename,
@@ -62,19 +62,13 @@ class BinaryTree:
         """Return the current storage."""
         return self._storage
 
-    #
-    # @storage.setter
-    # def storage(self, storage: Buckets):
-    #     """Set the current storage to provided buckets."""
-    #     self._storage.data = storage
-
     @staticmethod
     def get_parent_index(index: int) -> int:
         """
         Given index of a node, find where its parent node is stored in the list.
 
-        :param index: the index of a node.
-        :return: the index of input node's parent node.
+        :param index: The index of a node.
+        :return: The index of input node's parent node.
         """
         return int(math.ceil(index / 2)) - 1
 
@@ -83,10 +77,10 @@ class BinaryTree:
         """
         Given an index of a node, get the index of the path from itself to the root node.
 
-        :param index: the index of a node.
-        :return: a list of index from the input node to the root.
+        :param index: The index of a node.
+        :return: A list of index from the input node to the root.
         """
-        # Return path as a list.
+        # Return a path as a list.
         path = []
 
         # Go through all possible parent indices.
@@ -102,8 +96,8 @@ class BinaryTree:
         """
         Given a list of indices of nodes, get the index of the paths from themselves to the root node.
 
-        :param indices: a list of indices of nodes.
-        :return: a list of index from the input nodes to the root.
+        :param indices: A list of indices of nodes.
+        :return: A list of index from the input nodes to the root.
         """
         # Paths would be a set to exclude duplicates.
         path = set()
@@ -119,9 +113,9 @@ class BinaryTree:
         """
         Given a list of indices of nodes, get a dictionary whose keys are index to all buckets belong to these paths.
 
-        :param level: the level of the tree.
-        :param indices: a list of indices of nodes.
-        :return: a dictionary where keys are indices from the input nodes to the root and each value is an empty list.
+        :param level: The level of the tree.
+        :param indices: A list of indices of nodes.
+        :return: A dictionary where keys are indices from the input nodes to the root and each value is an empty list.
         """
         # Get the start leaf of the tree.
         indices = [index + pow(2, level - 1) - 1 for index in indices]
@@ -133,7 +127,7 @@ class BinaryTree:
         """
         Given a list of buckets, fill them with dummy data.
 
-        Note that the default dummy size eventually yields an encryption of 96 bytes. When saving this, there's an
+        Note that the default dummy size eventually yields encryption of 96 bytes. When saving this, there's an
         overhead of 33 bytes introduced by pickle. Also, when set to 1 to 10 bytes, this takes 32 bytes.
         :param buckets: A list of buckets.
         :param bucket_size: Size of each bucket.
@@ -148,10 +142,10 @@ class BinaryTree:
         """
         Given two leaf labels, find the lowest index where their paths are crossed.
 
-        :param leaf_one: the index of a node.
-        :param leaf_two: the index of a node.
-        :param level: the level of the entire tree.
-        :return: the index of the lowest node where input nodes' paths are crossed.
+        :param leaf_one: The index of a node.
+        :param leaf_two: The index of a node.
+        :param level: The level of the entire tree.
+        :return: The index of the lowest node where input nodes' paths are crossed.
         """
         start_leaf = pow(2, level - 1) - 1
         # Compute leaf index to its index in the storage list.
@@ -170,10 +164,10 @@ class BinaryTree:
         """
         Given two leaf labels, find the depth in the tree where their paths are crossed.
 
-        :param leaf_one: the index of a node.
-        :param leaf_two: the index of a node.
-        :param level: the level of the entire tree.
-        :return: the depth in the tree where input nodes' paths are crossed.
+        :param leaf_one: The index of a node.
+        :param leaf_two: The index of a node.
+        :param level: The level of the entire tree.
+        :return: The depth in the tree where input nodes' paths are crossed.
         """
         index = BinaryTree.get_cross_index(leaf_one=leaf_one, leaf_two=leaf_two, level=level)
         return int(math.ceil(math.log(index + 2, 2))) - 1
@@ -183,11 +177,11 @@ class BinaryTree:
         """
         Provide a list of buckets (path), fill the data to the lowest leaf node possible.
 
-        :param data: the data to be filled in.
-        :param path: the list of buckets to fill.
-        :param leaf: the leaf of the list of buckets.
-        :param level: the level of the entire tree.
-        :param bucket_size: the size of each bucket.
+        :param data: The data to be filled in.
+        :param path: The list of buckets to fill.
+        :param leaf: The leaf of the list of buckets.
+        :param level: The level of the entire tree.
+        :param bucket_size: The size of each bucket.
         :return: Modify the input list of lists in-place, return True if data was filled.
         """
         # Get the lowest crossed level index of the path between the data and the current path.
@@ -209,11 +203,11 @@ class BinaryTree:
         """
         Provide a dictionary of buckets, fill the data to the lowest leaf node possible.
 
-        :param data: the data to be filled in.
-        :param path: the dictionary of buckets (tree index are the keys).
-        :param leaf: the leaf of the list of buckets.
-        :param level: the level of the entire tree.
-        :param bucket_size: the size of each bucket.
+        :param data: The data to be filled in.
+        :param path: The dictionary of buckets (tree index are the keys).
+        :param leaf: The leaf of the list of buckets.
+        :param level: The level of the entire tree.
+        :param bucket_size: The size of each bucket.
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
@@ -237,11 +231,11 @@ class BinaryTree:
         """
         Provide a list of buckets, fill the data to the lowest leaf node possible.
 
-        :param data: the data to be filled in.
-        :param path: the dictionary of buckets (tree index are the keys).
-        :param leaves: a list of leaves where the data can be potentially stored to.
-        :param level: the level of the entire tree.
-        :param bucket_size: the size of each bucket.
+        :param data: The data to be filled in.
+        :param path: The dictionary of buckets (tree index are the keys).
+        :param leaves: A list of leaves where the data can be potentially stored to.
+        :param level: The level of the entire tree.
+        :param bucket_size: The size of each bucket.
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
@@ -263,7 +257,7 @@ class BinaryTree:
 
     def fill_data_to_storage_leaf(self, data: Data) -> bool:
         """Based on the input data, fill it to the proper path at the lowest leaf node."""
-        # Go from leaf to node; check whether bucket is full.
+        # Go from leaf to node; check whether the current bucket is full.
         for path_index in self.get_leaf_path(leaf=data.leaf):
             if len(self._storage[path_index]) < self._bucket_size:
                 self._storage[path_index] = self._storage[path_index] + [data]
@@ -278,8 +272,8 @@ class BinaryTree:
         Given a leaf label, get the index of the path from itself to the root node.
 
         Assume that leaf ranges from 0 to 2 ** level - 1.
-        :param leaf: the label of a leaf.
-        :return: a list of index from the leaf node to the root.
+        :param leaf: The label of a leaf.
+        :return: A list of index from the leaf node to the root.
         """
         return self.get_path_indices(index=leaf + self._start_leaf)
 
@@ -287,8 +281,8 @@ class BinaryTree:
         """
         Given a list of leaf labels, get the index of the mul leaf path.
 
-        :param leaves: a list of leaf labels.
-        :return: a list of indices from multiple leaf nodes to the root.
+        :param leaves: A list of leaf labels.
+        :return: A list of indices from multiple leaf nodes to the root.
         """
         return self.get_mul_path_indices(indices=[leaf + self._start_leaf for leaf in leaves])
 
@@ -296,9 +290,9 @@ class BinaryTree:
         """
         Given a leaf label, and an index, get the index of the block on that path.
 
-        :param leaf: the label of a leaf.
-        :param index: the index of the block of interest.
-        :return: an index indicating location of the block in the tree.
+        :param leaf: The label of a leaf.
+        :param index: The index of the block of interest.
+        :return: An index indicating the location of the block in the tree.
         """
         return self.get_leaf_path(leaf=leaf)[-index - 1]
 
@@ -306,8 +300,8 @@ class BinaryTree:
         """
         Given one leaf node or a list of nodes, grab all buckets of data along the path(s).
 
-        :param leaf: the label of a leaf or a list of leaves.
-        :return: a list of buckets of Data object, from leaf/leaves to root.
+        :param leaf: The label of a leaf or a list of leaves.
+        :return: A list of buckets of Data objects, from leaf/leaves to root.
         """
         # If the leaf is an integer, we read one path.
         if isinstance(leaf, int):
@@ -317,7 +311,7 @@ class BinaryTree:
         elif isinstance(leaf, list):
             path_to_read = self.get_mul_leaf_path(leaves=leaf)
 
-        # Otherwise raise a type error.
+        # Otherwise, raise a type error.
         else:
             raise TypeError("Leaf must be an integer or list of integers.")
 
@@ -328,8 +322,8 @@ class BinaryTree:
         """
         Given one leaf node or a list of nodes, write provided data to the path(s).
 
-        :param leaf: the label of a leaf or a list of leaves.
-        :param data: a list of buckets of Data object.
+        :param leaf: The label of a leaf or a list of leaves.
+        :param data: A list of buckets of Data objects.
         """
         # If the leaf is an integer, we read one path.
         if isinstance(leaf, int):
@@ -349,7 +343,7 @@ class BinaryTree:
             if len(data) != len(path_to_write):
                 raise ValueError("Wrong number of buckets on a path.")
 
-        # Otherwise raise a type error.
+        # Otherwise, raise a type error.
         else:
             raise TypeError("Leaf must be an integer or list of integers.")
 
@@ -361,10 +355,10 @@ class BinaryTree:
         """
         Given a leaf node, a bucket index, and a block index, grab data stored in that location.
 
-        :param leaf: the label of a leaf.
-        :param bucket_id: the index of the bucket of interest.
-        :param block_id: the index of the block of interest.
-        :return: one data value.
+        :param leaf: The label of a leaf.
+        :param bucket_id: The index of the bucket of interest.
+        :param block_id: The index of the block of interest.
+        :return: One data value.
         """
         # Read the desired values.
         return self._storage[self.get_leaf_block(leaf=leaf, index=bucket_id)][block_id]
@@ -373,10 +367,10 @@ class BinaryTree:
         """
         Given a leaf node, a bucket index, and a block index, write data to that location.
 
-        :param leaf: the label of a leaf.
-        :param bucket_id: the index of the bucket of interest.
-        :param block_id: the index of the block of interest.
-        :param data: the data to write.
+        :param leaf: The label of a leaf.
+        :param bucket_id: The index of the bucket of interest.
+        :param block_id: The index of the block of interest.
+        :param data: The data to write.
         """
         # Compute the index to write to.
         index_to_write = self.get_leaf_block(leaf=leaf, index=bucket_id)

@@ -5,10 +5,8 @@ import os
 from functools import cached_property
 from typing import Any, List, Tuple
 
-from scipy.special import lambertw
-
 from daoram.dependency import AVLData, AVLTree, BinaryTree, Buckets, Data, Helper, InteractServer
-from daoram.omaps.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
 
 
 class AVLOdsOmap(TreeOdsOmap):
@@ -26,16 +24,16 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Initializes the OMAP based on the AVL tree ODS.
 
-        :param num_data: the number of data points the oram should store.
-        :param key_size: the number of bytes the random dummy key should have.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param client: the instance we use to interact with server.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param use_encryption: a boolean indicating whether to use encryption.
+        :param num_data: The number of data points the oram should store.
+        :param key_size: The number of bytes the random dummy key should have.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
@@ -57,10 +55,12 @@ class AVLOdsOmap(TreeOdsOmap):
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
 
-        :param num_tree: number of tree to store, which is the same as number of data in upper level oram.
+        :param num_tree: Number of trees to store, which is the same as number of data in upper level oram.
         """
         # First compute how many are in the buckets, according to https://eprint.iacr.org/2021/1280.
-        tree_size = math.ceil(math.e ** (lambertw(math.e ** -1 * (math.log(num_tree, 2) + 128 - 1)).real + 1))
+        tree_size = math.ceil(
+            math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(num_tree, 2) + 128 - 1)).real + 1)
+        )
 
         # Update the height accordingly.
         self._max_height = math.ceil(1.44 * math.log(tree_size, 2))
@@ -86,15 +86,15 @@ class AVLOdsOmap(TreeOdsOmap):
 
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
         """
-        Given buckets, encrypt all data in it.
+        Encrypt all data in the given buckets.
 
-        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
-        bucket with desired amount of dummy data.
+        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills
+        the bucket with the desired amount of dummy data.
         """
 
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
             """Helper function to add dummy data and encrypt a bucket."""
-            # First, each data's value is AVLData, we need to dump it.
+            # First, each data's value is AVLData; we need to dump it.
             for data in bucket:
                 data.value = data.value.dump()
 
@@ -107,7 +107,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # Compute if dummy block is needed.
             dummy_needed = self._bucket_size - len(bucket)
 
-            # If needed perform padding.
+            # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
                     self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
@@ -151,8 +151,8 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Initialize a binary tree storage to store the AVL tree holding input key-value pairs.
 
-        :param data: a list of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs.
+        :param data: A list of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs.
         """
         # Create the binary tree object.
         tree = BinaryTree(
@@ -190,8 +190,8 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Initialize a binary tree storage to store multiple AVL trees holding input lists of key-value pairs.
 
-        :param data_list: a list of lists of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs and a list of AVL tree roots.
+        :param data_list: A list of lists of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs and a list of AVL tree roots.
         """
         # Create the binary tree object.
         tree = BinaryTree(
@@ -256,9 +256,9 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Perform a left rotation at the provided input node.
 
-        :param index: the index of the node to rotate in local.
-        :param in_node: some AVLTreeNode to rotate.
-        :return: the (key, leaf, height) of the new parent node after rotation.
+        :param index: The index of the node to rotate in local.
+        :param in_node: Some AVLTreeNode to rotate.
+        :return: The (key, leaf, height) of the new parent node after rotation.
         """
         # The right child should exist in the next location.
         p_node = self._local[index + 1]
@@ -292,9 +292,9 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Perform a left rotation at the provided input node.
 
-        :param index: the index of the node to rotate in local.
-        :param in_node: some AVLTreeNode to rotate.
-        :return: the (key, leaf, height) of the new parent node after rotation.
+        :param index: The index of the node to rotate in local.
+        :param in_node: Some AVLTreeNode to rotate.
+        :return: The (key, leaf, height) of the new parent node after rotation.
         """
         # The right child should exist in the next location.
         p_node = self._local[index + 1]
@@ -347,7 +347,7 @@ class AVLOdsOmap(TreeOdsOmap):
 
         # Right heavy subtree rotation.
         if balance < -1:
-            # The right-left case. Get right node.
+            # The right-left case. Get the right node.
             right_node = self._local[index + 1]
             if right_node.key != node.value.r_key:
                 raise ValueError("Right node is not loaded when it is supposed to.")
@@ -356,7 +356,7 @@ class AVLOdsOmap(TreeOdsOmap):
             if right_node.value.l_height - right_node.value.r_height > 0:
                 # Get the updated right node.
                 key, leaf, height = self._rotate_right(index=index + 1, in_node=right_node)
-                # Assign right node to the node.
+                # Assign the right node to the node.
                 node.value.r_key, node.value.r_leaf, node.value.r_height = key, leaf, height
 
             # The right-right case.
@@ -376,7 +376,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # Get balanced information.
             key, leaf, height = self._balance_node(index=node_index, node=node)
 
-            # If parent exists, update which node the parent should point to.
+            # If the parent exists, update which node the parent should point to.
             if node_index > 0:
                 parent = self._local[node_index - 1]
                 # If node was the right child, update right child information.
@@ -384,7 +384,7 @@ class AVLOdsOmap(TreeOdsOmap):
                     parent.value.r_key = key
                     parent.value.r_leaf = leaf
                     parent.value.r_height = height
-                # Otherwise update left child information.
+                # Otherwise, update left child information.
                 elif parent.value.l_key == node.key:
                     parent.value.l_key = key
                     parent.value.l_leaf = leaf
@@ -403,8 +403,8 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Given key-value pair, insert the pair to the tree.
 
-        :param key: the search key of interest.
-        :param value: the value to insert.
+        :param key: The search key of interest.
+        :param value: The value to insert.
         """
         # Create a new data block that holds the data to insert to tree.
         data_block = self._get_avl_data(key=key, value=value)
@@ -414,7 +414,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # Add the data to stash and update root.
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
-            # Perform desired number of dummy operations.
+            # Perform the desired number of dummy operations.
             self._perform_dummy_operation(num_round=2 * self._max_height + 1)
             return
 
@@ -430,7 +430,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # Save the last node data and its value.
             node = self._local[-1]
 
-            # If node key is smaller, we go right and check whether a child is already there.
+            # If a node key is smaller, we go right and check whether a child is already there.
             if node.key < key:
                 # If the child is there, we keep grabbing the next node.
                 if node.value.r_key is not None:
@@ -440,7 +440,7 @@ class AVLOdsOmap(TreeOdsOmap):
                     node.value.r_key = data_block.key
                     break
 
-            # If key is not smaller, we go left and check the same as above.
+            # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
                     self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
@@ -462,10 +462,10 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Given a search key, return its corresponding value.
 
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
@@ -479,13 +479,13 @@ class AVLOdsOmap(TreeOdsOmap):
 
         # Find the desired search key.
         while node.key != key:
-            # If node key is smaller, we go right and check whether a child is already there.
+            # If a node key is smaller, we go right and check whether a child is already there.
             if node.key < key:
                 if node.value.r_key is not None:
                     self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
                 else:
                     raise KeyError(f"The search key {key} is not found.")
-            # If key is not smaller, we go left and check the same as above.
+            # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
                     self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
@@ -517,11 +517,11 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         Given a search key, return its corresponding value.
 
-        The difference here is that, fast search will return the node immediately without keeping it in local.
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the value to update.
-        :return: the (old) value corresponding to the search key.
+        The difference here is that fast search will return the node immediately without keeping it in local.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The value to update.
+        :return: The (old) value corresponding to the search key.
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
@@ -562,7 +562,7 @@ class AVLOdsOmap(TreeOdsOmap):
                         key=self._local[0].value.r_key, leaf=self._local[0].value.r_leaf
                     )
 
-                    # Store the old child path and then delete current node.
+                    # Store the old child path and then delete the current node.
                     old_child_path = self._local[0].value.r_leaf
                     del self._local[0]
                 else:
@@ -587,7 +587,7 @@ class AVLOdsOmap(TreeOdsOmap):
                         key=self._local[0].value.l_key, leaf=self._local[0].value.l_leaf
                     )
 
-                    # Store the old child path and then delete current node.
+                    # Store the old child path and then delete the current node.
                     old_child_path = self._local[0].value.l_leaf
                     del self._local[0]
                 else:
@@ -596,7 +596,7 @@ class AVLOdsOmap(TreeOdsOmap):
         # Per design, the value of interest is the only one stored in local.
         search_value = self._local[0].value.value
 
-        # If provided value is not None, update the data.
+        # If the provided value is not None, update the data.
         if value is not None:
             self._local[0].value.value = value
 

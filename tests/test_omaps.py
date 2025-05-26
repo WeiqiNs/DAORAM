@@ -3,10 +3,10 @@ import math
 import os
 
 from daoram.dependency import InteractLocalServer
-from daoram.omaps import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
-from daoram.orams import DAOram
+from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
+from daoram.oram import DAOram
 
-# Set a global parameter for number of data the server should store.
+# Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)
 TEST_FILE = "oram.bin"
 
@@ -368,7 +368,7 @@ class TestOramOdsOmap:
         for i in range(NUM_DATA):
             omap.insert(key=i, value=i)
 
-        # Issue some search queries with update.
+        # Issue some update queries.
         for i in range(NUM_DATA):
             omap.search(key=i, value=i * 2)
 
@@ -396,7 +396,7 @@ class TestOramOdsOmap:
         for i in range(NUM_DATA):
             omap.insert(key=f"{i}", value=f"{i}")
 
-        # Issue some search queries with update.
+        # Issue some update queries.
         for i in range(NUM_DATA):
             omap.search(key=f"{i}", value=f"{i * 2}")
 
@@ -496,7 +496,7 @@ class TestOramOdsOmap:
         for i in range(NUM_DATA):
             omap.insert(key=i, value=i)
 
-        # Issue some search queries with update.
+        # Issue some update queries.
         for i in range(NUM_DATA):
             omap.search(key=i, value=i * 2)
 
@@ -548,7 +548,7 @@ class TestOramOdsOmap:
         for i in range(NUM_DATA):
             omap.insert(key=f"{i}", value=f"{i}")
 
-        # Issue some search queries with update.
+        # Issue some update queries.
         for i in range(NUM_DATA):
             omap.search(key=f"{i}", value=f"{i * 2}")
 

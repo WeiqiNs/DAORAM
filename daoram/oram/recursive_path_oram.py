@@ -5,8 +5,8 @@ Recursive path oram has three public methods:
     - init_storage_on_pos_map: this should be called first after the class object is created. This method constructs the
         storage the server should hold for the client.
     - compress_pos_map: this should be called after the storage is initialized as this will destroy the initial position
-        map and compress it to a list of orams. The compression rate by default is set to 1/4.
-    - operate_on_key: after the server get the created storage, the client can use this function to obliviously access
+        map and compress it to a list of oram. The compression rate by default is set to 1/4.
+    - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
         data points stored in the storage.
 """
 
@@ -17,7 +17,7 @@ from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
 from daoram.dependency import BinaryTree, Buckets, Data, InteractServer, ServerStorage
-from daoram.orams.tree_base_oram import TreeBaseOram
+from daoram.oram.tree_base_oram import TreeBaseOram
 
 
 class RecursivePathOram(TreeBaseOram):
@@ -36,17 +36,17 @@ class RecursivePathOram(TreeBaseOram):
         """
         Initialize the recursive path oram with the following parameters.
 
-        :param num_data: the number of data points the oram should store.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param on_chip_mem: the number of data points the client can store.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param compression_ratio: the amount of leaves each position map data point stores.
-        :param use_encryption: a boolean indicating whether to use encryption.
-        :param client: the instance we use to interact with server; maybe None for pos map orams.
+        :param num_data: The number of data points the oram should store.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param on_chip_mem: The number of data points the client can store.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param compression_ratio: The amount of leaves each position maps data point stores.
+        :param use_encryption: A boolean indicating whether to use encryption.
+        :param client: The instance we use to interact with server; maybe None for pos map oram.
         """
         # Initialize the parent BaseOram class.
         super().__init__(
@@ -89,13 +89,13 @@ class RecursivePathOram(TreeBaseOram):
         Given a key, find what key we should use for each position map oram.
 
         We also return its index in the values.
-        :param key: key to some data of interest.
-        :return: a list of key, index pairs.
+        :param key: Key to some data of interest.
+        :return: A list of (key, index) pairs.
         """
-        # Create an empty list to hold result.
+        # Create an empty list to hold the result.
         pos_map_keys = []
 
-        # For each position map, compute which block the key should be in, and it's index in value list.
+        # For each position map, compute which block the key should be in, and its index in value list.
         for i in range(self._num_oram_pos_map):
             index = key % self._compression_ratio
             key = key // self._compression_ratio
@@ -108,7 +108,7 @@ class RecursivePathOram(TreeBaseOram):
         return pos_map_keys
 
     def _compress_pos_map(self) -> ServerStorage:
-        """Compress the large position map to a list of position map orams. """
+        """Compress the large position map to a list of position map oram. """
         # Storage binary trees to send to the server.
         server_storage = {}
 
@@ -134,7 +134,7 @@ class RecursivePathOram(TreeBaseOram):
                 use_encryption=self._use_encryption
             )
 
-            # For current position map, get its corresponding binary tree.
+            # For the current position map, get its corresponding binary tree.
             tree = BinaryTree(
                 filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
                 num_data=pos_map_size,
@@ -165,10 +165,10 @@ class RecursivePathOram(TreeBaseOram):
             server_storage[f"pos_map_{self._num_oram_pos_map - i - 1}"] = tree
             self._pos_maps.append(cur_pos_map_oram)
 
-        # Finally only store the on chip position maps.
+        # Finally, only store the on chip position maps.
         self._pos_map = last_pos_map
 
-        # Reverse the pos map orams.
+        # Reverse the pos map oram.
         self._pos_maps.reverse()
 
         # Return the storage.
@@ -178,7 +178,7 @@ class RecursivePathOram(TreeBaseOram):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: a dictionary storing {key: data}.
+        :param data_map: A dictionary storing {key: data}.
         """
         # Initialize the storage.
         storage = self._init_storage_on_pos_map(data_map=data_map)
@@ -189,18 +189,18 @@ class RecursivePathOram(TreeBaseOram):
         # Add the oram storage to the dictionary.
         pos_map_storage_dict["oram"] = storage
 
-        # Let server hold these storages.
+        # Let the server hold these storages.
         self.client.init_query(storage=pos_map_storage_dict)
 
     def _retrieve_pos_map_stash(self, key: int, value: int, offset: int, new_leaf: int, to_index: int) -> int:
         """
-        Given a key and an operation, retrieve the block from stash and apply the operation to it.
+        Given a key and an operation, retrieve the block from the stash and apply the operation to it.
 
-        :param key: the key of the data block of interest.
+        :param key: The key of the data block of interest.
         :param value: If the operation is "write", this is the new value for data block.
-        :param offset: the offset of where the value should be written to.
-        :param to_index: up to which index we should be checking.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param offset: The offset of where the value should be written to.
+        :param to_index: Up to which index we should be checking.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
         # Set a value for whether the key is found.
@@ -210,17 +210,17 @@ class RecursivePathOram(TreeBaseOram):
 
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
-            # If we find the data of interest, perform operation, otherwise just skip over.
+            # If we find the data of interest, perform operation, otherwise skip over.
             if data.key == key:
                 read_value = data.value[offset]
                 data.value[offset] = value
                 data.leaf = new_leaf
                 # Set found to true.
                 found = True
-                # Break the for loop.
+                # Break for loop.
                 continue
 
-        # If the key was never found, raise an error, since the stash is always searched after path.
+        # If the key was never found, raise an error, since the stash is always searched after a path.
         if not found:
             raise KeyError(f"Key {key} not found.")
 
@@ -230,11 +230,11 @@ class RecursivePathOram(TreeBaseOram):
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
-        :param key: a key to a data block.
-        :param offset: the offset of where the value should be written to.
-        :param new_leaf: the leaf of where the block should be written to.
+        :param key: A key to a data block.
+        :param offset: The offset of where the value should be written to.
+        :param new_leaf: The leaf of where the block should be written to.
         :param value: By default, write this value to key block at offset.
-        :param path: a list of buckets of data.
+        :param path: A list of buckets of data.
         :return: The leaf of the data block we found.
         """
         # Temp holder for the value to read.
@@ -274,13 +274,13 @@ class RecursivePathOram(TreeBaseOram):
 
     def _retrieve_data_stash(self, op: str, key: int, to_index: int, new_leaf: int, value: Any = None) -> int:
         """
-        Given a key and an operation, retrieve the block from stash and apply the operation to it.
+        Given a key and an operation, retrieve the block from the stash and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param to_index: up to which index we should be checking.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param to_index: Up to which index we should be checking.
         :param value: If the operation is "write", this is the new value for data block.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
         # Set a value for whether the key is found.
@@ -290,7 +290,7 @@ class RecursivePathOram(TreeBaseOram):
 
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
-            # If we find the data of interest, perform operation, otherwise just skip over.
+            # If we find the data of interest, perform operation, otherwise skip over.
             if data.key == key:
                 if op == "r":
                     read_value = data.value
@@ -301,14 +301,14 @@ class RecursivePathOram(TreeBaseOram):
                     data.value = value
                 else:
                     raise ValueError("The provided operation is not valid.")
-                # Get new path and update the position map.
+                # Get a new path and update the position map.
                 data.leaf = new_leaf
                 # Set found to true.
                 found = True
                 # Break the for loop.
                 continue
 
-        # If the key was never found, raise an error, since the stash is always searched after path.
+        # If the key was never found, raise an error, since the stash is always searched after a path.
         if not found:
             raise KeyError(f"Key {key} not found.")
 
@@ -318,11 +318,11 @@ class RecursivePathOram(TreeBaseOram):
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param path: a list of buckets of data.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param path: A list of buckets of data.
         :param value: If the operation is "write", this is the new value for data block.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
         # Set a value for whether the key is found.
@@ -352,7 +352,7 @@ class RecursivePathOram(TreeBaseOram):
                         data.value = value
                     else:
                         raise ValueError("The provided operation is not valid.")
-                    # Get new path and update the position map.
+                    # Get a new path and update the position map.
                     data.leaf = new_leaf
                     # Set found to True.
                     found = True
@@ -374,7 +374,7 @@ class RecursivePathOram(TreeBaseOram):
         """
         Evict data blocks in the stash while maintaining correctness.
 
-        :param leaf: the leaf label of the path we are evicting data to.
+        :param leaf: The leaf label of the path we are evicting data to.
         :return: The leaf label and the path we should write there.
         """
         # Create a temporary stash.
@@ -384,7 +384,7 @@ class RecursivePathOram(TreeBaseOram):
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
-            # Attempt to insert actual data to path.
+            # Attempt to insert actual data to the path.
             inserted = BinaryTree.fill_data_to_path(
                 data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
             )
@@ -396,20 +396,20 @@ class RecursivePathOram(TreeBaseOram):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we write path from bottom up.
+        # Note that we return the path in the reversed order because we write a path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
     def _get_leaf_from_pos_map(self, key: int) -> Tuple[int, int]:
         """
-        Provide a key to some data, iterate through all position map orams to find where it is stored.
+        Provide a key to some data, iterate through all position map oram to find where it is stored.
 
-        :param key: the key of the data block of interest.
-        :return: which path the data block is on and the new path it should be stored to.
+        :param key: The key of the data block of interest.
+        :return: Which path the data block is on and the new path it should be stored to.
         """
         # Set up some variables.
         cur_leaf, new_cur_leaf = None, None
 
-        # Iterate through all position map to retrieve the key for the data of interest.
+        # Iterate through all position maps to retrieve the key for the data of interest.
         for pos_map_index, (cur_key, cur_index) in enumerate(self._get_pos_map_keys(key=key)):
             # Get the first leaf from the on chip mem, otherwise it should have been set.
             if pos_map_index == 0:
@@ -439,7 +439,7 @@ class RecursivePathOram(TreeBaseOram):
 
             self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf, data=path_data)
 
-            # Finally set the current leaf to the next leaf.
+            # Finally, set the current leaf to the next leaf.
             cur_leaf, new_cur_leaf = next_leaf, new_next_leaf
 
         return cur_leaf, new_cur_leaf
@@ -448,8 +448,8 @@ class RecursivePathOram(TreeBaseOram):
         """
         Perform operation on a given key.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -474,8 +474,8 @@ class RecursivePathOram(TreeBaseOram):
         """
         Perform operation on a given key without writing the data added to the stash back to the server.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -496,8 +496,8 @@ class RecursivePathOram(TreeBaseOram):
     def eviction_with_update_stash(self, key: int, value: Any) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
-        :param key: the key of the data block of interest.
-        :param value: the value to update the data block of interest.
+        :param key: The key of the data block of interest.
+        :param value: The value to update the data block of interest.
         """
         # Set found the key to False.
         found = False

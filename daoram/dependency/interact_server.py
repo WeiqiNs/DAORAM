@@ -30,8 +30,8 @@ class InteractServer(ABC):
         Issues an init query; sending some storage over to the server.
 
         Note that storage is either one BinaryTree or a list of BinaryTrees, in the case of position map oram storages.
-        :param storage: the storage client wants server to hold.
-        :return: no return, but should check whether the query is successfully issues.
+        :param storage: The storage client wants server to hold.
+        :return: No return, but should check whether the query is successfully issued.
         """
         raise NotImplementedError
 
@@ -40,21 +40,21 @@ class InteractServer(ABC):
         """
         Issues a read query; telling the server to read one/multiple path from some storage.
 
-        :param label: the label indicating what kind of storage is being loaded.
-        :param leaf: the leaf of one path or leaves of multiples paths to retrieve data.
-        :return: the desired path data.
+        :param label: The label indicating what kind of storage is being loaded.
+        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
+        :return: The desired path data.
         """
         raise NotImplementedError
 
     @abstractmethod
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
         """
-        Issues a write query; telling the server to write one/multiple paths to some storage.
+        Issues a "write" query; telling the server to write one/multiple paths to some storage.
 
-        :param label: the label indicating what kind of storage is being loaded.
-        :param leaf: the leaf of one path or leaves of multiples paths to retrieve data.
-        :param data: the data to write to the path(s).
-        :return: no return, but should check whether the query is successfully issues.
+        :param label: The label indicating what kind of storage is being loaded.
+        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
+        :param data: The data to write to the path(s).
+        :return: No return, but should check whether the query is successfully issued.
         """
         raise NotImplementedError
 
@@ -63,25 +63,25 @@ class InteractServer(ABC):
         """
         Issues a read query; telling the server to read one block from some storage.
 
-        :param label: the label indicating what kind of storage is being loaded.
-        :param leaf: the leaf of one path or leaves of multiples paths to retrieve data.
-        :param bucket_id: the index of which bucket on the path is of interest.
-        :param block_id: the index of which block in the bucket is of interest.
-        :return: the desired block data.
+        :param label: The label indicating what kind of storage is being loaded.
+        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
+        :param bucket_id: The index of which bucket on the path is of interest.
+        :param block_id: The index of which block in the bucket is of interest.
+        :return: The desired block data.
         """
         raise NotImplementedError
 
     @abstractmethod
     def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
         """
-        Issues a write query; telling the server to write one block to some storage.
+        Issues a "write" query; telling the server to write one block to some storage.
 
-        :param label: the label indicating what kind of storage is being loaded.
-        :param leaf: the leaf of one path or leaves of multiples paths to retrieve data.
-        :param bucket_id: the index of which bucket on the path is of interest.
-        :param block_id: the index of which block in the bucket is of interest.
-        :param data: the data to write to the block.
-        :return: no return, but should check whether the query is successfully issues.
+        :param label: The label indicating what kind of storage is being loaded.
+        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
+        :param bucket_id: The index of which bucket on the path is of interest.
+        :param block_id: The index of which block in the bucket is of interest.
+        :param data: The data to write to the block.
+        :return: No return, but should check whether the query is successfully issued.
         """
         raise NotImplementedError
 
@@ -90,8 +90,8 @@ class InteractRemoteServer(InteractServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
         """Create an instance to talk to the remote server.
 
-        :param ip: the IP address of the remote server.
-        :param port: the port the remote server is listening on.
+        :param ip: The IP address of the remote server.
+        :param port: The port the remote server is listening on.
         """
         # Save the connection information.
         self.__ip = ip
@@ -159,7 +159,7 @@ class InteractRemoteServer(InteractServer):
         return response
 
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-        """Issues a write query; telling the server to write one/multiple paths to some storage."""
+        """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
         # Check for connection.
         self.__check_client()
 
@@ -187,7 +187,7 @@ class InteractRemoteServer(InteractServer):
         return self.__client.recv()
 
     def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a write block query; telling the server to write one block to some storage."""
+        """Issues a "write" block query; telling the server to write one block to some storage."""
         # Check for connection.
         self.__check_client()
 
@@ -207,11 +207,11 @@ class InteractLocalServer(InteractServer):
         self.__storage: Dict[str, BinaryTree] = {}
 
     def init_connection(self) -> None:
-        """Since the server is local, just pass."""
+        """Since the server is local, pass."""
         pass
 
     def close_connection(self) -> None:
-        """Since the server is local, just pass."""
+        """Since the server is local, pass."""
         pass
 
     def init_query(self, storage: ServerStorage) -> None:
@@ -229,7 +229,7 @@ class InteractLocalServer(InteractServer):
         return self.__storage[label].read_path(leaf=leaf)
 
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-        """Issues a write query; telling the server to write one/multiple paths from some storage."""
+        """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
         # Check if the requested storage exists.
         if label not in self.__storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
@@ -247,7 +247,7 @@ class InteractLocalServer(InteractServer):
         return self.__storage[label].read_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id)
 
     def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a write block query; telling the server to write one block to some storage."""
+        """Issues a "write" block query; telling the server to write one block to some storage."""
         # Check if the requested storage exists.
         if label not in self.__storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
@@ -260,8 +260,8 @@ class RemoteServer(InteractLocalServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
         """Creates a remote server instance that will answer client's queries.
 
-        :param ip: the ip address of the remote server.
-        :param port: the port the remote server is listening on.
+        :param ip: The ip address of the remote server.
+        :param port: The port the remote server is listening on.
         """
         # Initialize the super class to create the storages.
         super().__init__()
@@ -327,9 +327,9 @@ class RemoteServer(InteractLocalServer):
 
         # Keep receiving queries.
         while True:
-            # Receive query from the client.
+            # Receive a query from the client.
             query = self.__server.recv()
-            # If query has content, we process it.
+            # If the query has content, we process it.
             if query:
                 self.__server.send(self.__process_query(query=query))
             else:

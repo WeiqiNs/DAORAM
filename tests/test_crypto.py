@@ -8,7 +8,7 @@ class TestCrypto:
     def test_aes(self):
         # Create a new aes instance.
         aes = Aes()
-        # Check correctness of the scheme.
+        # Check the correctness of the scheme.
         assert aes.dec(aes.enc("Hello".encode())) == "Hello".encode()
 
     def test_aes_with_pickle(self):
@@ -18,7 +18,7 @@ class TestCrypto:
         data = [0, 1, [2, 3, 4, 5], os.urandom(100)]
         # Pickle dump some data.
         pickle_data = pickle.dumps(data)
-        # Check correctness of the scheme.
+        # Check the correctness of the scheme.
         assert aes.dec(aes.enc(pickle_data)) == pickle_data
         assert pickle.loads(aes.dec(aes.enc(pickle_data))) == data
 

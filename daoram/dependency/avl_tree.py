@@ -8,7 +8,7 @@ from typing import Any, List, Optional, Tuple
 
 from daoram.dependency.helper import Data
 
-# Set the values to extract information from KV pair.
+# Set the values to extract information from a KV pair.
 K = 0
 V = 1
 
@@ -21,7 +21,7 @@ class AVLData:
     """
     Create the data structure to hold a data record that should be put into a complete binary tree.
 
-    It has three fields: key, leaf, and value, where key and value could be anything but leaf needs to be an integer.
+    It has three fields: key, leaf, and value, where key and value could be anything, but the leaf needs to be an int.
     By default, (when used as a dummy), when initialize the fields to None.
     """
     value: Optional[Any] = None
@@ -34,7 +34,7 @@ class AVLData:
 
     @classmethod
     def from_pickle(cls, data: bytes) -> AVLData:
-        """Given some pickled data, convert it to a Data typed object"""
+        """Given some pickled data, convert it to an AVLData-typed object"""
         return cls(*pickle.loads(data))
 
     def dump(self) -> bytes:
@@ -48,9 +48,9 @@ class AVLTreeNode:
         Given a key-value pair, create a new AVL tree node.
 
         Comparing to the standard tree node, we add two fields:
-            - value, which holds the value from the input key-value pair.
-            - path, which can store the random path the oram will store the node.
-        :param kv_pair: a tuple containing two values (key, value).
+            - Value, which holds the value from the input key-value pair.
+            - Path, which can store the random path the oram will store the node.
+        :param kv_pair: A tuple containing two values (key, value).
         """
         self.key: Any = kv_pair[K]
         self.leaf: Optional[int] = None
@@ -77,14 +77,14 @@ class AVLTree:
 
     @staticmethod
     def __get_height(node: Optional[AVLTreeNode]) -> int:
-        """Get height of the input node."""
-        # If node is empty, the height would be 0; otherwise return height.
+        """Get the height of the input node."""
+        # If the node is empty, the height would be 0; otherwise return height.
         return node.height if node else 0
 
     @staticmethod
     def __get_balance(node: Optional[AVLTreeNode]) -> int:
         """Get balance of the input node."""
-        # If node is empty, the balance would be 0; otherwise compute the balance.
+        # If the node is empty, the balance would be 0; otherwise compute the balance.
         return AVLTree.__get_height(node.left_node) - AVLTree.__get_height(node.right_node) if node else 0
 
     def __update_height(self, node: AVLTreeNode) -> None:
@@ -95,8 +95,8 @@ class AVLTree:
         """
         Perform a left rotation at the provided input node.
 
-        :param in_node: some AVLTreeNode to rotate.
-        :return: the parent node of the rotated node.
+        :param in_node: Some AVLTreeNode to rotate.
+        :return: The parent node of the rotated node.
         """
         # Save the right child of the input node as the parent node.
         p_node = in_node.right_node
@@ -105,7 +105,7 @@ class AVLTree:
 
         # Now we set the input node as the left child of the parent node.
         p_node.left_node = in_node
-        # The left child of parent node was on the right of input node.
+        # The left child of the parent node was on the right of the input node.
         in_node.right_node = tmp_node
 
         # Update the input node height.
@@ -120,8 +120,8 @@ class AVLTree:
         """
         Perform a left rotation at the provided input node.
 
-        :param in_node: some AVLTreeNode to rotate.
-        :return: the parent node of the rotated node.
+        :param in_node: Some AVLTreeNode to rotate.
+        :return: The parent node of the rotated node.
         """
         # Save the left child of the input node as the parent node.
         p_node = in_node.left_node
@@ -130,7 +130,7 @@ class AVLTree:
 
         # Now we set the input node as the right child of the parent node.
         p_node.right_node = in_node
-        # The right child of parent node was on the left of input node.
+        # The right child of the parent node was on the left of the input node.
         in_node.left_node = tmp_node
 
         # Update the input node height.
@@ -170,9 +170,9 @@ class AVLTree:
         """
         Inserts a new node into the tree, which is represented by the root.
 
-        :param root: the root node of the AVL tree.
-        :param kv_pair: a tuple containing two values (key, value).
-        :return: the updated AVL tree root node.
+        :param root: The root node of the AVL tree.
+        :param kv_pair: A tuple containing two values (key, value).
+        :return: The updated AVL tree root node.
         """
         # If the tree is empty, the new node becomes the root.
         if not root:
@@ -201,14 +201,14 @@ class AVLTree:
                     break
                 node = node.right_node
 
-        # Re-balance the tree from the insertion point up to the root.
+        # Rebalance the tree from the insertion point up to the root.
         while stack:
             # Get the last node and update its height.
             node = stack.pop()
             # Balance the node at this position.
             balanced_node = self.__balance(node)
 
-            # If parent exists, update which node the parent should point to.
+            # If a parent exists, update which node the parent should point to.
             if stack:
                 parent = stack[-1]
                 if parent.left_node == node:
@@ -225,21 +225,21 @@ class AVLTree:
         """
         Inserts a new node into the tree, which is represented by the root.
 
-        We also provide the recursive algorithm to validate correctness of the non-recursive approach.
-        :param root: the root node of the AVL tree.
-        :param kv_pair: a tuple containing two values (key, value).
-        :return: the updated AVL tree root node.
+        We also provide the recursive algorithm to validate the correctness of the non-recursive approach.
+        :param root: The root node of the AVL tree.
+        :param kv_pair: A tuple containing two values (key, value).
+        :return: The updated AVL tree root node.
         """
         # When we reach an empty root, create a new tree node to store the KV pair.
         if root is None:
             return AVLTreeNode(kv_pair)
-        # If not empty node, we compare the key.
+        # If not an empty node, we compare the key.
         elif kv_pair[K] < root.key:
             root.left_node = self.recursive_insert(root=root.left_node, kv_pair=kv_pair)
         else:
             root.right_node = self.recursive_insert(root=root.right_node, kv_pair=kv_pair)
 
-        # Update height of the parent node.
+        # Update the height of the parent node.
         root.height = 1 + max(self.__get_height(node=root.left_node), self.__get_height(node=root.right_node))
 
         # Get the balance factor.
@@ -268,11 +268,11 @@ class AVLTree:
         """
         Performs a search on the provided key and root node.
 
-        :param key: the key to search for.
-        :param root: the root node of the AVL tree.
-        :return: the value corresponding to the provided search key.
+        :param key: The key to search for.
+        :param root: The root node of the AVL tree.
+        :return: The value corresponding to the provided search key.
         """
-        # While root is not empty.
+        # While the root is not empty.
         while root:
             if key < root.key:
                 root = root.left_node
@@ -285,13 +285,13 @@ class AVLTree:
         return None
 
     def get_data_list(self, root: AVLTreeNode, encryption: bool = False) -> List[Data]:
-        """From root, expand the AVL tree as a list of Data objects.
+        """From the root, expand the AVL tree as a list of Data objects.
 
-        :param root: an AVL tree root node.
-        :param encryption: indicate whether encryption is needed, i.e. whether the value should be bytes.
-        :return: a list of Data objects.
+        :param root: An AVL tree root node.
+        :param encryption: Indicate whether encryption is needed, i.e., whether the value should be bytes.
+        :return: A list of Data objects.
         """
-        # Otherwise sample a new leaf for the root and add it to stack.
+        # Otherwise, sample a new leaf for the root and add it to the stack.
         root.leaf = self.__get_new_leaf()
         stack = [root]
 
@@ -305,24 +305,24 @@ class AVLTree:
             # Create an AVL Data with the node value.
             avl_data = AVLData(value=node.value)
 
-            # Add value from left node.
+            # Add value from the left node.
             if node.left_node:
                 # Sample a new leaf for the left node.
                 node.left_node.leaf = self.__get_new_leaf()
                 avl_data.l_key = node.left_node.key
                 avl_data.l_leaf = node.left_node.leaf
                 avl_data.l_height = node.left_node.height
-                # Append the left node to stack.
+                # Append the left node to the stack.
                 stack.append(node.left_node)
 
-            # Add value from right node.
+            # Add value from the right node.
             if node.right_node:
                 # Sample a new leaf for the right node.
                 node.right_node.leaf = self.__get_new_leaf()
                 avl_data.r_key = node.right_node.key
                 avl_data.r_leaf = node.right_node.leaf
                 avl_data.r_height = node.right_node.height
-                # Append the right node to stack.
+                # Append the right node to the stack.
                 stack.append(node.right_node)
 
             # Append the Data to result.

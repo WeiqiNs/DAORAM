@@ -5,12 +5,12 @@ DAOram has three public methods:
     - init_storage_on_pos_map: this should be called first after the class object is created. This method constructs the
         storage the server should hold for the client.
     - compress_pos_map: this should be called after the storage is initialized as this will destroy the initial position
-        map and compress it to a list of orams.
-    - operate_on_key: after the server get the created storage, the client can use this function to obliviously access
+        map and compress it to a list of oram.
+    - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
         data points stored in the storage.
 
-By default, we assume the position map oram store 512 bit values. We set the optimized parameters and have a compression
-ratio of 1/64.
+By default, we assume the position map oram stores 512-bit values. We set the optimized parameters and have a
+compression ratio of 1/64.
 """
 
 import math
@@ -19,9 +19,9 @@ from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
 from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
-from daoram.orams.tree_base_oram import TreeBaseOram
+from daoram.oram.tree_base_oram import TreeBaseOram
 
-# Reset leaf is a tuple (index, cur_leaf, new_leaf). The new_leaf would be None, when the index is -1.
+# Reset leaf is a tuple (index, cur_leaf, new_leaf). The new_leaf would be None when the index is -1.
 RESET_LEAF = Tuple[int, int, Optional[int]]
 # Set the type of processed data, which should be cur_leaf, new_leaf, reset_index, reset_cur_leaf, reset_new_leaf.
 PROCESSED_DATA = Tuple[int, int, int, int, Optional[int]]
@@ -49,23 +49,23 @@ class DAOram(TreeBaseOram):
         """
         Initialize the average oram with the following parameters.
 
-        :param num_data: the number of data points the oram should store.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param num_ic: number of individual count we store per block.
-        :param ic_length: length of the binary representing individual count.
-        :param gc_length: length of the binary representing group count.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param on_chip_mem: the number of data points the client can store.
-        :param aes_key: the key to use for the AES instance, by default it will be randomly sampled.
-        :param prf_key: the key to use for the PRF instance, by default it will be randomly sampled.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param last_oram_data: the number of data points last oram stored (only useful for position map oram).
-        :param last_oram_level: the level last oram has (only useful for position map oram).
-        :param use_encryption: a boolean indicating whether to use encryption.
-        :param evict_path_obo: a boolean indicating whether to evict path one by one.
-        :param client: the instance we use to interact with server; maybe None for pos map orams.
+        :param num_data: The number of data points the oram should store.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param num_ic: Number of individual counts we store per block.
+        :param ic_length: Length of the binary representing individual count.
+        :param gc_length: Length of the binary representing group count.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param on_chip_mem: The number of data points the client can store.
+        :param aes_key: The key to use for the AES instance, by default it will be randomly sampled.
+        :param prf_key: The key to use for the PRF instance, by default it will be randomly sampled.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param last_oram_data: The number of data points last oram stored (only useful for position map oram).
+        :param last_oram_level: The level the last oram has (only useful for position map oram).
+        :param use_encryption: A boolean indicating whether to use encryption.
+        :param evict_path_obo: A boolean indicating whether to evict path one by one.
+        :param client: The instance we use to interact with server; maybe None for pos map oram.
         """
         # Initialize the parent BaseOram class.
         super().__init__(
@@ -94,7 +94,7 @@ class DAOram(TreeBaseOram):
         # Create the prf instance.
         self._prf: Prf = Prf(key=prf_key)
 
-        # Need to store a list of oram and the on chip storage is empty by default.
+        # Need to store a list of oram, and the on-chip storage is empty by default.
         self._on_chip_storage: List[bytes] = []
         self._pos_maps: List[DAOram] = []
 
@@ -106,12 +106,12 @@ class DAOram(TreeBaseOram):
 
     @cached_property
     def _count_length(self) -> int:
-        """Get length of the binary representation what position map oram stores."""
+        """Get the length of the binary representation what position map oram stores."""
         return self._gc_length + (self._ic_length + 1) * self._num_ic
 
     @cached_property
     def _num_oram_pos_map(self) -> int:
-        """Get the number of oram pos maps needed; note that last one will be stored on chip, hence -1."""
+        """Get the number of oram pos maps needed; note that the last one will be stored on chip, hence -1."""
         return math.ceil(math.log(self._num_data / self._on_chip_mem, self._num_ic)) - 1
 
     @cached_property
@@ -123,13 +123,13 @@ class DAOram(TreeBaseOram):
         """
         Given a key, find what key and offset we should use for each position map oram.
 
-        :param key: key to some data of interest.
-        :return: a list of key, offset pairs.
+        :param key: Key to some data of interest.
+        :return: A list of (key, offset) pairs.
         """
-        # Create an empty list to hold result.
+        # Create an empty list to hold the result.
         pos_map_keys = []
 
-        # For each position map, compute which block the key should be in, and it's index in value list.
+        # For each position map, compute which block the key should be in, and its index in value list.
         for i in range(self._num_oram_pos_map + 1):
             index = key % self._num_ic
             key = key // self._num_ic
@@ -145,10 +145,10 @@ class DAOram(TreeBaseOram):
         """
         Provide the key, gc, and ic, we compute what leaf they correspond to.
 
-        :param key: key to some data of interest (index of position map).
-        :param gc: group count, in binary representation.
-        :param ic: individual count, in binary representation.
-        :return: leaf computed as PRF(KEY||GC||IC) mod 2^L.
+        :param key: Key to some data of interest (index of a position map).
+        :param gc: Group count, in binary representation.
+        :param ic: Individual count, in binary representation.
+        :return: Leaf computed as PRF(KEY||GC||IC) mod 2^L.
         """
         return self._prf.digest_mod_n(Helper.binary_str_to_bytes(
             bin(key)[2:].zfill(self._level - 1) +  # key of the data
@@ -160,10 +160,10 @@ class DAOram(TreeBaseOram):
         """
         Provide the key, gc, and ic, we compute what leaf they correspond to in the previous oram.
 
-        :param key: key to some data of interest (index of position map).
-        :param gc: group count, in binary representation.
-        :param ic: individual count, in binary representation.
-        :return: leaf computed as PRF(KEY||LAST_GC||IC) mod 2^LAST_L.
+        :param key: Key to some data of interest (index of a position map).
+        :param gc: Group count, in binary representation.
+        :param ic: Individual count, in binary representation.
+        :return: Leaf computed as PRF(KEY||LAST_GC||IC) mod 2^LAST_L.
         """
 
         return self._prf.digest_mod_n(Helper.binary_str_to_bytes(
@@ -178,7 +178,7 @@ class DAOram(TreeBaseOram):
         self._pos_map = {i: self._get_leaf_from_prf(key=i, gc=0, ic=0) for i in range(self._num_data)}
 
     def _compress_pos_map(self) -> ServerStorage:
-        """Compress the large position map to a list of position map orams. """
+        """Compress the large position map to a list of position map oram. """
         # We first delete the inited position map as we are going to compress it.
         self._pos_map = {}
 
@@ -213,7 +213,7 @@ class DAOram(TreeBaseOram):
                 use_encryption=self._use_encryption
             )
 
-            # For current position map, get its corresponding binary tree.
+            # For the current position map, get its corresponding binary tree.
             tree = BinaryTree(
                 filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
                 num_data=pos_map_size,
@@ -248,7 +248,7 @@ class DAOram(TreeBaseOram):
         # Get the on chip storage.
         self._on_chip_storage = [value for _ in range(math.ceil(last_oram_data / self._num_ic) + 1)]
 
-        # Reverse the pos map orams.
+        # Reverse the pos map oram.
         self._pos_maps.reverse()
 
         return server_storage
@@ -257,7 +257,7 @@ class DAOram(TreeBaseOram):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: a dictionary storing {key: data}.
+        :param data_map: A dictionary storing {key: data}.
         """
         # Initialize the storage.
         storage = self._init_storage_on_pos_map(data_map=data_map)
@@ -268,14 +268,14 @@ class DAOram(TreeBaseOram):
         # Add the oram storage to the dictionary.
         pos_map_storage_dict["oram"] = storage
 
-        # Let server hold these storages.
+        # Let the server hold these storages.
         self.client.init_query(storage=pos_map_storage_dict)
 
     def _evict_stash_to_mul(self, leaves: List[int]) -> Buckets:
         """
         Evict data blocks in the stash to multiple paths while maintaining correctness.
 
-        :param leaves: a list of leaf labels of the path we are evicting data to.
+        :param leaves: A list of leaf labels of the path we are evicting data to.
         :return: The prepared path that should be written back to the storage.
         """
         # Create a temporary stash.
@@ -286,7 +286,7 @@ class DAOram(TreeBaseOram):
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
-            # Attempt to insert actual data to path.
+            # Attempt to insert actual data to the path.
             inserted = BinaryTree.fill_data_to_mul_path(
                 data=data, path=path_dict, leaves=leaves, level=self._level, bucket_size=self._bucket_size
             )
@@ -300,7 +300,7 @@ class DAOram(TreeBaseOram):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we copy path from bottom up.
+        # Note that we return the path in the reversed order because we copy a path from bottom up.
         return self._encrypt_buckets(buckets=path)
 
     def _evict_stash_to_mul_obo(self, leaves: List[int]) -> Buckets:
@@ -308,7 +308,7 @@ class DAOram(TreeBaseOram):
         Evict data blocks in the stash to multiple paths while maintaining correctness.
 
         Note that this function maybe removed, it is a less aggressive way to perform eviction.
-        :param leaves: a list of leaf labels of the path we are evicting data to.
+        :param leaves: A list of leaf labels of the path we are evicting data to.
         :return: The prepared path that should be written back to the storage.
         """
         # Create a temporary stash.
@@ -320,7 +320,7 @@ class DAOram(TreeBaseOram):
         # How do we evict path by path.
         for leaf in leaves:
             for data in self._stash:
-                # Attempt to insert actual data to path.
+                # Attempt to insert actual data to a path.
                 inserted = BinaryTree.fill_data_to_path_dict(
                     data=data, path=path_dict, leaf=leaf, level=self._level, bucket_size=self._bucket_size
                 )
@@ -337,15 +337,15 @@ class DAOram(TreeBaseOram):
         # After we are done with all real data, convert the dict to list of lists.
         path = [path_dict[key] for key in path_dict.keys()]
 
-        # Note that we return the path in the reversed order because we copy path from bottom up.
+        # Note that we return the path in the reversed order because we copy a path from bottom up.
         return self._encrypt_buckets(buckets=path)
 
     def _update_stash_leaf(self, key: int, new_leaf: int) -> None:
         """
-        Look in the stash to update the leaf of the data block with key.
+        Look in the stash to update the leaf of the data block with a key.
 
-        :param key: the key of the data block of interest.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param key: The key of the data block of interest.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         """
         # If the key is empty, we don't need to perform update; terminate the function.
         if key is None:
@@ -358,15 +358,15 @@ class DAOram(TreeBaseOram):
                 data.leaf = new_leaf
                 return
 
-        # If the key was never found, raise an error, since the stash is always searched after path.
+        # If the key was never found, raise an error, since the stash is always searched after a path.
         raise KeyError(f"Key {key} not found.")
 
     def _perform_reset_on_chip(self, key: int) -> RESET_LEAF:
         """
         Find if a reset can be performed by looking at the ic indicators.
 
-        :param key: key to the current data of interest.
-        :return: if reset can be performed, find the leaf that needs the reset, its cur leaf and new leaf. If reset
+        :param key: Key to the current data of interest.
+        :return: If reset can be performed, find the leaf that needs the reset, its cur leaf and new leaf. If reset
         cannot be performed, return (-1, random_path, None).
         """
         # Get the data to update from on chip storage.
@@ -378,14 +378,14 @@ class DAOram(TreeBaseOram):
         # Finding 1 means we need a reset.
         offset = ic_indicators.find("1")
 
-        # However if the key is outside the number of data, we turn offset off.
+        # However, if the key is outside the number of data, we turn offset off.
         if key * self._num_ic + offset >= self._last_oram_data:
             offset = -1
 
         # If not -1, means 1 was found. Then we read that count.
         if offset != -1:
             cur_leaf, new_leaf = self._update_data_on_chip(key=key, offset=offset)
-        # Just get a random leaf to read if no 1 exists.
+        # Get a random leaf to read if no one exists.
         else:
             cur_leaf, new_leaf = secrets.randbelow(pow(2, self._last_oram_level - 1)), None
 
@@ -395,9 +395,9 @@ class DAOram(TreeBaseOram):
         """
         Find if a reset can be performed by looking at the ic indicators.
 
-        :param key: key to the current data of interest.
-        :param data: a Data object.
-        :return: if reset can be performed, find the leaf that needs the reset, its cur leaf and new leaf. If reset
+        :param key: Key to the current data of interest.
+        :param data: A Data object.
+        :return: If reset can be performed, find the leaf that needs the reset, its cur leaf and new leaf. If reset
         cannot be performed, return (-1, random_path, None).
         """
         # First convert bytes to binary string.
@@ -412,14 +412,14 @@ class DAOram(TreeBaseOram):
         # Convert the value back to bytes.
         data.value = Helper.binary_str_to_bytes(data.value)
 
-        # However if the key is outside the number of data, we turn offset off.
+        # However, if the key is outside the number of data, we turn offset off.
         if key * self._num_ic + offset >= self._last_oram_data:
             offset = -1
 
         # If not -1, means 1 was found. Then we read that count.
         if offset != -1:
             cur_leaf, new_leaf = self._update_data(key=key, data=data, offset=offset)
-        # Just get a random leaf to read if no 1 exists.
+        # Get a random leaf to read if no one exists.
         else:
             cur_leaf, new_leaf = secrets.randbelow(pow(2, self._last_oram_level - 1)), None
 
@@ -429,9 +429,9 @@ class DAOram(TreeBaseOram):
         """
         Given a data block and offset, compute the current.
 
-        :param key: key to some data of interest.
-        :param offset: the offset of where the value ic is stored at.
-        :return: the computed current leaf and updated leaf.
+        :param key: Key to some data of interest.
+        :param offset: The offset of where the value ic is stored at.
+        :return: The computed current leaf and updated leaf.
         """
         # First convert bytes to binary string.
         data = Helper.bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
@@ -451,7 +451,7 @@ class DAOram(TreeBaseOram):
 
         # We check if the backup bit is 1.
         if data[ic_ind_start + offset] == "1":
-            # Set values for next ic and next gc, in this case, ic and the one backup indicator need to be updated.
+            # Set values for next ic and next gc, in this case, ic, and the one backup indicator need to be updated.
             next_ic = 0
             next_gc = gc
             gc = gc - 1
@@ -460,7 +460,7 @@ class DAOram(TreeBaseOram):
 
         # When overflow happens.
         elif ic + 1 >= pow(2, self._ic_length):
-            # Set values for next ic and next gc; in this case ic, gc, and backup indicators all need to be updated.
+            # Set values for next ic and next gc; in this case, ic, gc, and backup indicators all need to be updated.
             next_ic = 0
             next_gc = gc + 1
             # Update the group counter and ic backup indicator.
@@ -492,10 +492,10 @@ class DAOram(TreeBaseOram):
         """
         Given a data block and offset, compute the current.
 
-        :param key: key to some data of interest.
-        :param data: a Data object.
-        :param offset: the offset of where the value ic is stored at.
-        :return: the computed current leaf and updated leaf.
+        :param key: Key to some data of interest.
+        :param data: A Data object.
+        :param offset: The offset of where the value ic is stored at.
+        :return: The computed current leaf and updated leaf.
         """
         # First convert bytes to binary string.
         data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
@@ -515,7 +515,7 @@ class DAOram(TreeBaseOram):
 
         # We check if the backup bit is 1.
         if data.value[ic_ind_start + offset] == "1":
-            # Set values for next ic and next gc, in this case, ic and the one backup indicator need to be updated.
+            # Set values for next ic and next gc, in this case, ic, and the one backup indicator need to be updated.
             next_ic = 0
             next_gc = gc
             gc = gc - 1
@@ -524,7 +524,7 @@ class DAOram(TreeBaseOram):
 
         # When overflow happens.
         elif ic + 1 >= pow(2, self._ic_length):
-            # Set values for next ic and next gc; in this case ic, gc, and backup indicators all need to be updated.
+            # Set values for next ic and next gc; in this case, ic, gc, and backup indicators all need to be updated.
             next_ic = 0
             next_gc = gc + 1
             # Update the group counter and ic backup indicator.
@@ -559,13 +559,13 @@ class DAOram(TreeBaseOram):
         Given key and reset key, retrieve the blocks from stash and apply the operation on only the data of interest.
 
         Note that the reset key maybe None.
-        :param key: key to some data of interest.
-        :param r_key: key to the data we need to reset, which may be None.
-        :param offset: the offset of where the value ic is stored at.
-        :param new_leaf: the leaf where the data of interest should be stored to.
-        :param r_new_leaf: the leaf where the reset data it should be stored to.
-        :param to_index: up to which index in the stash we should be checking.
-        :return: a tuple of five values
+        :param key: Key to some data of interest.
+        :param r_key: Key to the data we need to reset, which may be None.
+        :param offset: The offset of where the value ic is stored at.
+        :param new_leaf: The leaf where the data of interest should be stored to.
+        :param r_new_leaf: The leaf where the reset data it should be stored to.
+        :param to_index: Up to which index in the stash, we should be checking.
+        :return: A tuple of five values
             - next_cur_leaf: the leaf of the data of interest in the next position map.
             - next_new_leaf: the new leaf of the data of interest in the next position map.
             - r_index: -1 if no reset, otherwise some value to indicate which value we are resetting.
@@ -583,12 +583,12 @@ class DAOram(TreeBaseOram):
                 next_cur_leaf, next_new_leaf = self._update_data(key=key, data=data, offset=offset)
                 # Check if the reset can be performed.
                 r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
-                # This data block should be placed to where new leaf is.
+                # This data block should be placed to where the new leaf is.
                 data.leaf = new_leaf
                 # Set key to None to indicate this has been found and changed.
                 key = None
             elif data.key == r_key:
-                # This data block should be placed to where new leaf is.
+                # This data block should be placed to where the new leaf is.
                 data.leaf = r_new_leaf
                 # Set b_key to None to indicate this has been found and changed.
                 r_key = None
@@ -596,7 +596,7 @@ class DAOram(TreeBaseOram):
             if key is None and r_key is None:
                 continue
 
-        # If the key or b_key was never found, raise an error, since the stash is always searched after path.
+        # If the key or b_key was never found, raise an error, since the stash is always searched after the path.
         if key is not None:
             raise KeyError(f"Key {key} not found.")
         if r_key is not None:
@@ -611,13 +611,13 @@ class DAOram(TreeBaseOram):
         Given key and reset key, retrieve the blocks from stash and apply the operation on only the data of interest.
 
         Note that the reset key maybe None.
-        :param key: key to some data of interest.
-        :param r_key: key to the data we need to reset, which may be None.
-        :param offset: the offset of where the value ic is stored at.
-        :param new_leaf: the leaf where the data of interest should be stored to.
-        :param r_new_leaf: the leaf where the reset data it should be stored to.
-        :param path: a list of buckets of data.
-        :return: a tuple of five values
+        :param key: Key to some data of interest.
+        :param r_key: Key to the data we need to reset, which may be None.
+        :param offset: The offset of where the value ic is stored at.
+        :param new_leaf: The leaf where the data of interest should be stored to.
+        :param r_new_leaf: The leaf where the reset data it should be stored to.
+        :param path: A list of buckets of data.
+        :return: A tuple of five values
             - next_cur_leaf: the leaf of the data of interest in the next position map.
             - next_new_leaf: the new leaf of the data of interest in the next position map.
             - r_index: -1 if no reset, otherwise some value to indicate which value we are resetting.
@@ -645,7 +645,7 @@ class DAOram(TreeBaseOram):
                     next_cur_leaf, next_new_leaf = self._update_data(key=key, data=data, offset=offset)
                     # Perform the reset on this data block.
                     r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
-                    # This data block should be placed to where new leaf is.
+                    # This data block should be placed to where the new leaf is.
                     data.leaf = new_leaf
                     key = None
                 # If the backup key is None already, this will never be triggered.
@@ -673,13 +673,13 @@ class DAOram(TreeBaseOram):
 
     def _retrieve_data_stash(self, op: str, key: int, to_index: int, new_leaf: int, value: Any = None) -> Any:
         """
-        Given a key and an operation, retrieve the block from stash and apply the operation to it.
+        Given a key and an operation, retrieve the block from the stash and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param to_index: up to which index we should be checking.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param to_index: Up to which index we should be checking.
         :param value: If the operation is "write", this is the new value for data block.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
         # Temp holder for the value to read.
@@ -687,7 +687,7 @@ class DAOram(TreeBaseOram):
 
         # Read all buckets in the path and add real data to stash.
         for data in self._stash[:to_index]:
-            # If we find the data of interest, perform operation, otherwise just skip over.
+            # If we find the data of interest, perform operation, otherwise skip over.
             if data.key == key:
                 if op == "r":
                     read_value = data.value
@@ -698,23 +698,23 @@ class DAOram(TreeBaseOram):
                     data.value = value
                 else:
                     raise ValueError("The provided operation is not valid.")
-                # Get new path and update the position map.
+                # Get a new path and update the position map.
                 data.leaf = new_leaf
                 # Set found to true.
                 return read_value
 
-        # If the key was never found, raise an error, since the stash is always searched after path.
+        # If the key was never found, raise an error, since the stash is always searched after the path.
         raise KeyError(f"Key {key} not found.")
 
     def _retrieve_data_block(self, op: str, key: int, new_leaf: int, path: Buckets, value: Any = None) -> Any:
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
-        :param path: a list of buckets of data.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param path: A list of buckets of data.
         :param value: If the operation is "write", this is the new value for data block.
-        :param new_leaf: If new leaf value is provided, store the accessed data to that leaf.
+        :param new_leaf: If a new leaf value is provided, store the accessed data to that leaf.
         :return: The leaf of the data block we found, and a value if the operation is "read".
         """
         # Set a value for whether the key is found.
@@ -744,7 +744,7 @@ class DAOram(TreeBaseOram):
                         data.value = value
                     else:
                         raise ValueError("The provided operation is not valid.")
-                    # Get new path and update the position map.
+                    # Get a new path and update the position map.
                     data.leaf = new_leaf
                     # Set found to True.
                     found = True
@@ -763,10 +763,10 @@ class DAOram(TreeBaseOram):
 
     def _get_leaf_from_pos_map(self, key: int) -> PROCESSED_DATA:
         """
-        Provide a key to some data, iterate through all position map orams to find where it is stored.
+        Provide a key to some data, iterate through all position map oram to find where it is stored.
 
-        :param key: the key of the data block of interest.
-        :return: which path the data block is on and the new path it should be stored to.
+        :param key: The key of the data block of interest.
+        :return: Which path the data block is on and the new path it should be stored to.
         """
         # We get the position map keys.
         pos_map_keys = self._get_pos_map_keys(key=key)
@@ -782,17 +782,18 @@ class DAOram(TreeBaseOram):
             # If the reset index is -1, no reset needs to happen and r_key should be None.
             if r_index == -1:
                 r_key = None
-            # Otherwise compute the key for the value we are resetting.
+            # Otherwise, compute the key for the value we are resetting.
             else:
                 r_key = cur_key // self._num_ic * self._num_ic + r_index
 
             # We always retrieve two paths.
             leaves = [cur_leaf, r_cur_leaf]
 
-            # Interact with server to get path.
+            # Interact with server to get a path.
             path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=leaves)
 
             # Find what leaves for the next iteration.
+            # noinspection PyProtectedMember
             next_cur_leaf, next_new_leaf, r_index, r_cur_leaf, r_new_leaf = (
                 self._pos_maps[pos_map_index]._retrieve_pos_map_block_with_reset(
                     key=cur_key,
@@ -810,7 +811,7 @@ class DAOram(TreeBaseOram):
             else:
                 path = self._pos_maps[pos_map_index]._evict_stash_to_mul(leaves=leaves)
 
-            # Interact with server to write path.
+            # Interact with server to write a path.
             self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=leaves, data=path)
 
             # Update the new leaf to current leaf.
@@ -822,25 +823,25 @@ class DAOram(TreeBaseOram):
         """
         Perform operation on a given key.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
-        # Get current data leaves and reset leaves from position map orams.
+        # Get current data leaves and reset leaves from position map oram.
         cur_leaf, new_leaf, r_index, r_cur_leaf, r_new_leaf = self._get_leaf_from_pos_map(key=key)
 
         # If the reset index is -1, no reset needs to happen and r_key should be None.
         if r_index == -1:
             r_key = None
-        # Otherwise compute the key for the value we are resetting.
+        # Otherwise, compute the key for the value we are resetting.
         else:
             r_key = key // self._num_ic * self._num_ic + r_index
 
         # We always retrieve two paths.
         leaves = [cur_leaf, r_cur_leaf]
 
-        # Interact with server to get path.
+        # Interact with server to get the paths.
         path = self.client.read_query(label="oram", leaf=leaves)
 
         # Read the main oram and give the data of interest a new leaf label.
@@ -864,25 +865,25 @@ class DAOram(TreeBaseOram):
         """
         Perform operation on a given key without writing the data added to the stash back to the server.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
-        # Get current data leaves and reset leaves from position map orams.
+        # Get current data leaves and reset leaves from position map oram.
         cur_leaf, new_leaf, r_index, r_cur_leaf, r_new_leaf = self._get_leaf_from_pos_map(key=key)
 
         # If the reset index is -1, no reset needs to happen and r_key should be None.
         if r_index == -1:
             r_key = None
-        # Otherwise compute the key for the value we are resetting.
+        # Otherwise, compute the key for the value we are resetting.
         else:
             r_key = key // self._num_ic * self._num_ic + r_index
 
         # We always retrieve two paths.
         leaves = [cur_leaf, r_cur_leaf]
 
-        # Interact with server to get path.
+        # Interact with server to get the paths.
         path = self.client.read_query(label="oram", leaf=leaves)
 
         # Read the main oram and give the data of interest a new leaf label.
@@ -899,8 +900,8 @@ class DAOram(TreeBaseOram):
     def eviction_with_update_stash(self, key: int, value: Any) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
-        :param key: the key of the data block of interest.
-        :param value: the value to update the data block of interest.
+        :param key: The key of the data block of interest.
+        :param value: The value to update the data block of interest.
         """
         # Set found the key to False.
         found = False

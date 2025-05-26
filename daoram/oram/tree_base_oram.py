@@ -1,5 +1,5 @@
 """
-Module for defining a parent class for binary tree based oram.
+Module for defining a parent class for binary tree-based oram.
 
 The BaseOram class defines a set of attributes that an oram should have and some basic methods such as encryption, etc.
 Note that we don't use double underscores (name mangling) in this file for private methods because all things defined
@@ -29,15 +29,15 @@ class TreeBaseOram(ABC):
         """
         Defines the base oram, including its attributes and methods.
 
-        :param num_data: the number of data points the oram should store.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param client: the instance we use to interact with server.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param use_encryption: a boolean indicating whether to use encryption.
+        :param num_data: The number of data points the oram should store.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Store the useful input values.
         self._filename: str = filename
@@ -98,10 +98,10 @@ class TreeBaseOram(ABC):
 
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
         """
-        Given buckets, encrypt all data in it.
+        Encrypt all data in given buckets.
 
-        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
-        bucket with desired amount of dummy data.
+        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills
+        the bucket with the desired amount of dummy data.
         """
 
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
@@ -113,7 +113,7 @@ class TreeBaseOram(ABC):
 
             # Compute if dummy block is needed.
             dummy_needed = self._bucket_size - len(bucket)
-            # If needed perform padding.
+            # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
                     self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
@@ -139,10 +139,10 @@ class TreeBaseOram(ABC):
 
     def _look_up_pos_map(self, key: int) -> int:
         """
-        Look up key of a data and get the leaf for where the data is stored.
+        Look up key of data and get the leaf for where the data is stored.
 
-        :param key: a key of a data block.
-        :return: the corresponding leaf if found.
+        :param key: A key of a data block.
+        :return: The corresponding leaf if found.
         """
         # If key can't be found, raise an error.
         if key not in self._pos_map:
@@ -154,8 +154,8 @@ class TreeBaseOram(ABC):
         """
         Initialize a binary tree storage based on the data map.
 
-        :param data_map: a dictionary storing {key: data}.
-        :return: the binary tree storage based on the data map.
+        :param data_map: A dictionary storing {key: data}.
+        :return: The binary tree storage based on the data map.
         """
         # Create the binary tree object.
         tree = BinaryTree(
@@ -171,7 +171,7 @@ class TreeBaseOram(ABC):
             for key, leaf in self._pos_map.items():
                 tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=data_map[key]))
 
-        # Otherwise just fill dummy data at correct places.
+        # Otherwise, fill dummy data at the correct places.
         else:
             for key, leaf in self._pos_map.items():
                 tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=os.urandom(self._data_size)))
@@ -187,7 +187,7 @@ class TreeBaseOram(ABC):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: a dictionary storing {key: data}.
+        :param data_map: A dictionary storing {key: data}.
         """
         raise NotImplementedError
 
@@ -196,8 +196,8 @@ class TreeBaseOram(ABC):
         """
         Perform operation on a given key.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -208,8 +208,8 @@ class TreeBaseOram(ABC):
         """
         Perform operation on a given key without writing the data added to the stash back to the server.
 
-        :param op: an operation, can be "r", "w" or "rw".
-        :param key: the key of the data block of interest.
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
         :param value: If the operation is "w", this is the new value for data block.
         :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
         """
@@ -219,7 +219,7 @@ class TreeBaseOram(ABC):
     def eviction_with_update_stash(self, key: int, value: Any) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
-        :param key: the key of the data block of interest.
-        :param value: the value to update the data block of interest.
+        :param key: The key of the data block of interest.
+        :param value: The value to update the data block of interest.
         """
         raise NotImplementedError

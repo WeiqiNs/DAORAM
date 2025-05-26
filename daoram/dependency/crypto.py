@@ -9,9 +9,9 @@ class Aes:
     def __init__(self, aes_mode=AES.MODE_CBC, key: Optional[bytes] = None, key_byte_length: int = 16):
         """Class for performing AES encryption and decryption.
 
-        :param aes_mode: the mode of AES encryption/decryption, default is CBC.
-        :param key: the AES key to use; it will be randomly sampled unless provided here.
-        :param key_byte_length: the length of AES key to use, default is 16.
+        :param aes_mode: The mode of AES encryption/decryption, default is CBC.
+        :param key: The AES key to use; it will be randomly sampled unless provided here.
+        :param key_byte_length: The length of AES key to use, default is 16.
         """
         # Check if the key length is supported.
         if key_byte_length not in [16, 24, 32]:
@@ -65,7 +65,7 @@ class Prf:
     def __init__(self, key: Optional[bytes] = None):
         """Class for a pseudo-random function.
 
-        :param key: the 16 byte key to use; it will be randomly sampled unless provided here.
+        :param key: The 16-byte key to use; it will be randomly sampled unless provided here.
         """
         # Check if the key length is supported.
         if key is not None and len(key) != 16:

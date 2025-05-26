@@ -1,20 +1,20 @@
-"""This file demonstrates how to set up client for each of the oram we include in this library.
+"""This file demonstrates how to set up a client for each of the oram we include in this library.
 
 Each function shows how the client should initialize the server and how to perform operations.
 """
 
 from daoram.dependency import InteractRemoteServer
-from daoram.orams import DAOram, FreecursiveOram, PathOram, RecursivePathOram
+from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 
 def path_oram_client():
-    # Define number of data to store.
+    # Define the number of data to store.
     num_data = pow(2, 10)
 
     # Create the path oram object.
     oram = PathOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
 
-    # Initialize the client to make connection.
+    # Initialize the client to make a connection.
     oram.client.init_connection()
 
     # Initialize the server storage.
@@ -27,18 +27,18 @@ def path_oram_client():
     for i in range(num_data):
         print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
 
-    # Finally close the connection.
+    # Finally, close the connection.
     oram.client.close_connection()
 
 
 def recursive_oram_client():
-    # Define number of data to store.
+    # Define the number of data to store.
     num_data = pow(2, 10)
 
     # Create the path oram object.
     oram = RecursivePathOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
 
-    # Initialize the client to make connection.
+    # Initialize the client to make a connection.
     oram.client.init_connection()
 
     # Initialize the server storage.
@@ -51,18 +51,18 @@ def recursive_oram_client():
     for i in range(num_data):
         print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
 
-    # Finally close the connection.
+    # Finally, close the connection.
     oram.client.close_connection()
 
 
 def freecursive_oram_client():
-    # Define number of data to store.
+    # Define the number of data to store.
     num_data = pow(2, 10)
 
     # Create the path oram object.
     oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
 
-    # Initialize the client to make connection.
+    # Initialize the client to make a connection.
     oram.client.init_connection()
 
     # Initialize the server storage.
@@ -75,18 +75,18 @@ def freecursive_oram_client():
     for i in range(num_data):
         print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
 
-    # Finally close the connection.
+    # Finally, close the connection.
     oram.client.close_connection()
 
 
 def da_oram_client():
-    # Define number of data to store.
+    # Define the number of data to store.
     num_data = pow(2, 10)
 
     # Create the path oram object.
     oram = DAOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
 
-    # Initialize the client to make connection.
+    # Initialize the client to make a connection.
     oram.client.init_connection()
 
     # Initialize the server storage.
@@ -99,7 +99,7 @@ def da_oram_client():
     for i in range(num_data):
         print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
 
-    # Finally close the connection.
+    # Finally, close the connection.
     oram.client.close_connection()
 
 

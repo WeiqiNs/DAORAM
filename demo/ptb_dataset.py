@@ -8,7 +8,7 @@ PTB_TRAIN = "https://raw.githubusercontent.com/tomsercu/lstm/master/data/ptb.tra
 
 
 def get_ptb_train() -> Counter:
-    # Use requests to obtain the content.
+    # Use requests to get the content.
     response = requests.get(PTB_TRAIN)
     response.raise_for_status()
 

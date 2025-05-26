@@ -14,9 +14,9 @@ class Socket(object):
     def __init__(self, ip: str, port: int, is_server: bool):
         """Initialize the socket object for client or server.
 
-        :param ip: the IP address of the server/client.
-        :param port: the port the server/client is listening/talking.
-        :param is_server: a boolean value indicating whether this socket is a server.
+        :param ip: The IP address of the server/client.
+        :param port: The port the server/client is listening/talking.
+        :param is_server: A boolean value indicating whether this socket is a server.
         """
         if is_server:
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -30,14 +30,14 @@ class Socket(object):
     def __recv_all(self, length: int) -> Optional[bytes]:
         """Receive all bytes from the connected socket."""
         data = bytearray()
-        # When read data is less than desired length, keep reading.
+        # When read data is less than the desired length, keep reading.
         while len(data) < length:
             packet = self.__connected_socket.recv(length - len(data))
             # When no more data is there to receive, return None.
             if not packet:
                 return None
             data.extend(packet)
-        # Otherwise return the read data.
+        # Otherwise, return the read data.
         return data
 
     def send(self, msg: Any) -> None:
@@ -46,12 +46,12 @@ class Socket(object):
         msg_pack = pickle.dumps(msg)
         # Prefix each message with a 4-byte length (network byte order).
         msg = struct.pack('>I', len(msg_pack)) + msg_pack
-        # Send the message to connected socket.
+        # Send the message to the connected socket.
         self.__connected_socket.sendall(msg)
 
     def recv(self) -> Any:
         """Receive a message from the connected socket."""
-        # Read message length and unpack it into an integer
+        # Read the message length and unpack it into an integer
         raw_msg_len = self.__recv_all(4)
         if not raw_msg_len:
             return None

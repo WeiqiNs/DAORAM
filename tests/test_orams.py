@@ -3,9 +3,9 @@ import os
 import random
 
 from daoram.dependency import InteractLocalServer
-from daoram.orams import DAOram, FreecursiveOram, PathOram, RecursivePathOram
+from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
-# Set a global parameter for number of data the server should store.
+# Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)
 TEST_FILE = "oram.bin"
 
@@ -24,7 +24,7 @@ class TestPathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -59,7 +59,7 @@ class TestPathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -76,7 +76,7 @@ class TestPathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -96,7 +96,7 @@ class TestPathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -135,7 +135,7 @@ class TestRecursivePathOram:
         # We check that after compression, the position map is smaller than the default size 10.
         assert len(oram._pos_map) <= 10
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -170,7 +170,7 @@ class TestRecursivePathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -187,7 +187,7 @@ class TestRecursivePathOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -223,10 +223,10 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # We check that after compression, the position map is emtpy; the storage is in on chip mem.
+        # We check that after compression, the position map is empty; the storage is in on chip mem.
         assert oram._pos_map == {}
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -261,7 +261,7 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -278,7 +278,7 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -314,10 +314,10 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # We check that after compression, the position map is emtpy; the storage is in on chip mem.
+        # We check that after compression, the position map is empty; the storage is in on chip mem.
         assert oram._pos_map == {}
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -356,7 +356,7 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -378,7 +378,7 @@ class TestFreecursiveOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -416,10 +416,10 @@ class TestDAOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # We check that after compression, the position map is emtpy; the storage is in on chip mem.
+        # We check that after compression, the position map is empty; the storage is in on chip mem.
         assert oram._pos_map == {}
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -454,7 +454,7 @@ class TestDAOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 
@@ -471,7 +471,7 @@ class TestDAOram:
         # Initialize the server with storage.
         oram.init_server_storage()
 
-        # Issue some write queries.
+        # Issue some queries for writing.
         for i in range(NUM_DATA):
             oram.operate_on_key(op="w", key=i, value=i)
 

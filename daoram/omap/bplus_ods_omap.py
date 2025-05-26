@@ -5,10 +5,8 @@ import os
 from functools import cached_property
 from typing import Any, List, Tuple
 
-from scipy.special import lambertw
-
 from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
-from daoram.omaps.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
 
 
 class BPlusOdsOmap(TreeOdsOmap):
@@ -28,16 +26,16 @@ class BPlusOdsOmap(TreeOdsOmap):
         Initializes the OMAP based on the B+ tree ODS.
 
         :param order: The branching order of the B+ tree.
-        :param num_data: the number of data points the oram should store.
-        :param key_size: the number of bytes the random dummy key should have.
-        :param data_size: the number of bytes the random dummy data should have.
-        :param client: the instance we use to interact with server.
-        :param filename: the filename to save the oram data to.
-        :param bucket_size: the number of data each bucket should have.
-        :param stash_scale: the scaling scale of the stash.
-        :param aes_key: the key to use for the AES instance.
-        :param num_key_bytes: the number of bytes the aes key should have.
-        :param use_encryption: a boolean indicating whether to use encryption.
+        :param num_data: The number of data points the oram should store.
+        :param key_size: The number of bytes the random dummy key should have.
+        :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server.
+        :param filename: The filename to save the oram data to.
+        :param bucket_size: The number of data each bucket should have.
+        :param stash_scale: The scaling scale of the stash.
+        :param aes_key: The key to use for the AES instance.
+        :param num_key_bytes: The number of bytes the aes key should have.
+        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
@@ -66,10 +64,12 @@ class BPlusOdsOmap(TreeOdsOmap):
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
 
-        :param num_tree: number of tree to store, which is the same as number of data in upper level oram.
+        :param num_tree: Number of trees to store, which is the same as number of data in upper level oram.
         """
         # First compute how many are in the buckets, according to https://eprint.iacr.org/2021/1280.
-        tree_size = math.ceil(math.e ** (lambertw(math.e ** -1 * (math.log(num_tree, 2) + 128 - 1)).real + 1))
+        tree_size = math.ceil(
+            math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(num_tree, 2) + 128 - 1)).real + 1)
+        )
 
         # Update the height accordingly.
         self._max_height = math.ceil(math.log(tree_size, math.ceil(self._order / 2)))
@@ -107,15 +107,15 @@ class BPlusOdsOmap(TreeOdsOmap):
 
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
         """
-        Given buckets, encrypt all data in it.
+        Encrypt all data in given buckets.
 
-        Note that we first pad data to desired length and then perform the encryption. This encryption also fills the
-        bucket with desired amount of dummy data.
+        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills
+        the bucket with the desired amount of dummy data.
         """
 
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
             """Helper function to add dummy data and encrypt a bucket."""
-            # First, each data's value is AVLData, we need to dump it.
+            # First, each data's value is AVLData; we need to dump it.
             for data in bucket:
                 data.value = data.value.dump()
 
@@ -128,7 +128,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             # Compute if dummy block is needed.
             dummy_needed = self._bucket_size - len(bucket)
 
-            # If needed perform padding.
+            # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
                     self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
@@ -176,8 +176,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Initialize a binary tree storage to store the B+ tree holding input key-value pairs.
 
-        :param data: a list of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs.
+        :param data: A list of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs.
         """
         # Create the binary tree object.
         tree = BinaryTree(
@@ -222,8 +222,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Initialize a binary tree storage to store multiple B+ trees holding input lists of key-value pairs.
 
-        :param data_list: a list of lists of key-value pairs.
-        :return: the binary tree storage for the input list of key-value pairs and a list of B+ tree roots.
+        :param data_list: A list of lists of key-value pairs.
+        :return: The binary tree storage for the input list of key-value pairs and a list of B+ tree roots.
         """
         # Create the binary tree object.
         tree = BinaryTree(
@@ -275,11 +275,11 @@ class BPlusOdsOmap(TreeOdsOmap):
         return tree, root_list
 
     def _find_leaf(self, key: Any) -> Tuple[int, int]:
-        """Find the leaf containing the desired key, return the leaf node's old path and the number of visited node.
+        """Find the leaf containing the desired key, return the leaf node's old path and the number of visited nodes.
 
-        The difference here is that none of the visited node is added to local.
-        :param key: search key of interest.
-        :return: the leaf node's old path and the total number of visited node.
+        The difference here is that none of the visited nodes is added to local.
+        :param key: Search key of interest.
+        :return: The leaf node's old path and the total number of visited nodes.
         """
         # Make sure that the local is cleared and is empty at the moment.
         if self._local:
@@ -318,7 +318,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
 
-                # If key is smaller, it is on the left.
+                # If the key is smaller, it is on the left.
                 elif key < each_key:
                     # Get the old child leaf.
                     child_key, child_leaf = node.value.values[index]
@@ -350,7 +350,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             old_leaf = node.leaf
             node.leaf = new_leaf
 
-            # Update the number of retrieved node.
+            # Update the number of retrieved nodes.
             num_retrieved_node += 1
 
         return old_leaf, num_retrieved_node
@@ -358,7 +358,7 @@ class BPlusOdsOmap(TreeOdsOmap):
     def _find_leaf_to_local(self, key: Any) -> None:
         """Add all nodes we need to visit to local until finding the leaf storing the key.
 
-        :param key: search key of interest.
+        :param key: Search key of interest.
         """
         # Make sure that the local is cleared and is empty at the moment.
         if self._local:
@@ -387,7 +387,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     # Update the current stored value.
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     break
-                # If key is smaller, it is on the left.
+                # If the key is smaller, it is on the left.
                 elif key < each_key:
                     # Move the next node to local.
                     self._move_node_to_local(key=node.value.values[index][0], leaf=node.value.values[index][1])
@@ -411,10 +411,10 @@ class BPlusOdsOmap(TreeOdsOmap):
         Given a node that is full, split it depends on whether it is a leaf or not.
 
         Note that the node itself is modified in place and the new node is directly added to stash.
-        :param node: the node whose number of keys is same as the branching degree.
-        :return: The information of new node, i.e. its key and leaf is returned.
+        :param node: The node whose number of keys is the same as the branching degree.
+        :return: The information of the new node, i.e., its key and leaf is returned.
         """
-        # We break from middle and create left child node.
+        # We break from the middle and create left child node.
         right_node = self._get_bplus_data()
 
         # Depending on whether the child node is a leaf node, we break it differently.
@@ -446,8 +446,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Insert the child node into the parent node.
 
-        :param child_node: a B+ tree node whose number of keys is same as the branching degree.
-        :param parent_node: a B+ tree node containing the child node.
+        :param child_node: A B+ tree node whose number of keys is the same as the branching degree.
+        :param parent_node: A B+ tree node containing the child node.
         """
         # Store the key to insert to parent.
         insert_key = child_node.value.keys[self._mid]
@@ -474,8 +474,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         When a node has no parent and split is required, create a new parent node for them.
 
-        :param child_node: a B+ tree node whose number of keys is same as the branching degree.
-        :return: a B+ tree node containing the split left and right child nodes.
+        :param child_node: A B+ tree node whose number of keys is the same as the branching degree.
+        :return: A B+ tree node containing the split left and right child nodes.
         """
         # Store the key to insert to parent.
         insert_key = child_node.value.keys[self._mid]
@@ -499,8 +499,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Given key-value pair, insert the pair to the tree.
 
-        :param key: the search key of interest.
-        :param value: the value to insert.
+        :param key: The search key of interest.
+        :param value: The value to insert.
         """
         # If the current root is empty, we simply set root as this new block.
         if self.root is None:
@@ -555,17 +555,17 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._stash += self._local
         self._local = []
 
-        # Perform desired number of dummy evictions.
+        # Perform the desired number of dummy evictions.
         self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
         Given a search key, return its corresponding value.
 
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the updated value.
-        :return: the (old) value corresponding to the search key.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
@@ -599,11 +599,11 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Given a search key, return its corresponding value.
 
-        The difference here is that, fast search will return the node immediately without keeping it in local.
-        If input value is not None, the value corresponding to the search tree will be updated.
-        :param key: the search key of interest.
-        :param value: the value to update.
-        :return: the (old) value corresponding to the search key.
+        The difference here is that fast search will return the node immediately without keeping it in local.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The value to update.
+        :return: The (old) value corresponding to the search key.
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
