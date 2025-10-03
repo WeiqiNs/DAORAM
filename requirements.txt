@@ -1,1 +1,1 @@
-pycryptodomex>=3.20.0
+pycryptodomex>=3.23.0

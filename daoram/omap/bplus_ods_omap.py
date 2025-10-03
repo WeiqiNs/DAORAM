@@ -495,6 +495,28 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Update the root.
         self.root = (parent_node.key, parent_node.leaf)
 
+    def _perform_insertion(self):
+        """Perform the insertion to local nodes."""
+        # We start from the last node.
+        index = len(self._local) - 1
+
+        # Iterate through the leaves.
+        while index >= 0:
+            if len(self._local[index].value.keys) >= self._order:
+                # When insertion is needed, we first locate the parent.
+                if index > 0:
+                    # Perform the insertion.
+                    self._insert_in_parent(child_node=self._local[index], parent_node=self._local[index - 1])
+                    index -= 1
+                # Or we need a new parent node.
+                else:
+                    self._create_parent(child_node=self._local[index])
+                    break
+
+            # We may reach to a point earlier than the root to stop splitting.
+            else:
+                break
+
     def insert(self, key: Any, value: Any) -> None:
         """
         Given key-value pair, insert the pair to the tree.
@@ -530,26 +552,11 @@ class BPlusOdsOmap(TreeOdsOmap):
                 leaf.value.values.append(value)
                 break
 
-        # Set the index and also save the length of the local.
-        index = len(self._local) - 1
+        # Save the length of the local.
         num_retrieved_nodes = len(self._local)
 
-        # Iterate through the leaves.
-        while index >= 0:
-            if len(self._local[index].value.keys) >= self._order:
-                # When insertion is needed, we first locate the parent.
-                if index > 0:
-                    # Perform the insertion.
-                    self._insert_in_parent(child_node=self._local[index], parent_node=self._local[index - 1])
-                    index -= 1
-                # Or we need a new parent node.
-                else:
-                    self._create_parent(child_node=self._local[index])
-                    break
-
-            # We may reach to a point earlier than the root to stop splitting.
-            else:
-                break
+        # Perform the insertion to local nodes.
+        self._perform_insertion()
 
         # Append local data to stash and clear local.
         self._stash += self._local
