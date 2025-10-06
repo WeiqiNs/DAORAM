@@ -117,7 +117,4 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
         # Set the value.
         value = super().fast_search(key=key, value=value)
 
-        # Append one more dummy operation.
-        self._perform_dummy_operation(num_round=1)
-
         return value
