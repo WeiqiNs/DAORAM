@@ -249,7 +249,8 @@ class PathOram(TreeBaseOram):
         return value
 
     def eviction_with_update_stash(self, key: int, value: Any) -> None:
-        """Update a data block stored in the stash and then perform eviction.
+        """
+        Update a data block stored in the stash and then perform eviction.
 
         :param key: The key of the data block of interest.
         :param value: The value to update the data block of interest.
