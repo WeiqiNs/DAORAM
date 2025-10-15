@@ -32,6 +32,7 @@ class FreecursiveOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 name: str = "fc",
                  num_ic: int = 48,
                  ic_length: int = 10,
                  gc_length: int = 32,
@@ -53,6 +54,7 @@ class FreecursiveOram(TreeBaseOram):
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param num_ic: Number of individual counts we store per block.
         :param ic_length: Length of the binary representing individual count.
         :param gc_length: Length of the binary representing group count.
@@ -72,6 +74,7 @@ class FreecursiveOram(TreeBaseOram):
         """
         # Initialize the parent BaseOram class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             filename=filename,
@@ -223,7 +226,7 @@ class FreecursiveOram(TreeBaseOram):
 
             # For the current position map, get its corresponding binary tree.
             tree = BinaryTree(
-                filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
+                filename=f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
                 num_data=pos_map_size,
                 data_size=cur_pos_map_oram._max_block_size,
                 bucket_size=self._bucket_size,
@@ -243,7 +246,7 @@ class FreecursiveOram(TreeBaseOram):
             last_oram_level = cur_pos_map_oram._level
 
             # Save the storage binary tree to server storage.
-            server_storage[f"pos_map_{self._num_oram_pos_map - i - 1}"] = tree
+            server_storage[f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"] = tree
 
             # Clear the current pos map oram and save it.
             cur_pos_map_oram._pos_map = {}
@@ -274,7 +277,7 @@ class FreecursiveOram(TreeBaseOram):
         pos_map_storage_dict = self._compress_pos_map()
 
         # Add the oram storage to the dictionary.
-        pos_map_storage_dict["oram"] = storage
+        pos_map_storage_dict[self._name] = storage
 
         # Let the server hold these storages.
         self.client.init_query(storage=pos_map_storage_dict)
@@ -842,7 +845,7 @@ class FreecursiveOram(TreeBaseOram):
                         leaves = [cl_one]
 
                     # Read the leaves and get data.
-                    path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=leaves)
+                    path = self.client.read_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=leaves)
 
                     # Depends on which one is one we want next, compute next leaves.
                     if ck_one == cur_key:
@@ -868,12 +871,12 @@ class FreecursiveOram(TreeBaseOram):
                     path = self._pos_maps[pos_map_index]._evict_stash_to_mul(leaves=leaves)
 
                     # Write to the server.
-                    self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=leaves, data=path)
+                    self.client.write_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=leaves, data=path)
 
             # Otherwise proceeds as normal.
             else:
                 # Interact with server to get a path.
-                path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf)
+                path = self.client.read_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=cur_leaf)
 
                 # Find what leaves for the next iteration.
                 next_cur_leaf, next_new_leaf, reset_leaves = (
@@ -886,7 +889,7 @@ class FreecursiveOram(TreeBaseOram):
                 path = self._pos_maps[pos_map_index]._evict_stash(leaf=cur_leaf)
 
                 # Interact with server to store a path.
-                self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf, data=path)
+                self.client.write_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=cur_leaf, data=path)
 
             # Update the next values to current.
             cur_leaf, new_leaf = next_cur_leaf, next_new_leaf
@@ -921,7 +924,7 @@ class FreecursiveOram(TreeBaseOram):
                     leaves = [cl_one]
 
                 # Read the leaves and get data.
-                path = self.client.read_query(label="oram", leaf=leaves)
+                path = self.client.read_query(label=self._name, leaf=leaves)
 
                 # Depends on which one is one we want next, compute next leaves.
                 if ck_one == key:
@@ -948,10 +951,10 @@ class FreecursiveOram(TreeBaseOram):
                 path = self._evict_stash_to_mul(leaves=leaves)
 
                 # Interact with the server to store the path.
-                self.client.write_query(label="oram", leaf=leaves, data=path)
+                self.client.write_query(label=self._name, leaf=leaves, data=path)
         else:
             # Interact with server to get a path.
-            path = self.client.read_query(label="oram", leaf=cur_leaf)
+            path = self.client.read_query(label=self._name, leaf=cur_leaf)
 
             # Generate a new leaf and read value from the path and show it.
             value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
@@ -960,7 +963,7 @@ class FreecursiveOram(TreeBaseOram):
             path = self._evict_stash(leaf=cur_leaf)
 
             # Interact with the server to store the path.
-            self.client.write_query(label="oram", leaf=cur_leaf, data=path)
+            self.client.write_query(label=self._name, leaf=cur_leaf, data=path)
 
         return value
 
@@ -992,7 +995,7 @@ class FreecursiveOram(TreeBaseOram):
                     leaves = [cl_one]
 
                 # Read the leaves and get data.
-                path = self.client.read_query(label="oram", leaf=leaves)
+                path = self.client.read_query(label=self._name, leaf=leaves)
 
                 # Depends on which one is one we want next, compute next leaves.
                 if ck_one == key:
@@ -1039,11 +1042,11 @@ class FreecursiveOram(TreeBaseOram):
                     path = self._evict_stash_to_mul(leaves=leaves)
 
                     # Interact with the server to store the path.
-                    self.client.write_query(label="oram", leaf=leaves, data=path)
+                    self.client.write_query(label=self._name, leaf=leaves, data=path)
 
         else:
             # Interact with server to get a path.
-            path = self.client.read_query(label="oram", leaf=cur_leaf)
+            path = self.client.read_query(label=self._name, leaf=cur_leaf)
 
             # Generate a new leaf and read value from the path and show it.
             value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=next_leaf, path=path)
@@ -1078,14 +1081,14 @@ class FreecursiveOram(TreeBaseOram):
             # Perform an eviction and get a new path.
             path = self._evict_stash(leaf=self._tmp_leaf)
             # Interact with server to store a path.
-            self.client.write_query(label="oram", leaf=self._tmp_leaf, data=path)
+            self.client.write_query(label=self._name, leaf=self._tmp_leaf, data=path)
             # Set temporary leaf to None.
             self._tmp_leaf = None
         else:
             # Perform an eviction and get a new path.
             path = self._evict_stash_to_mul(leaves=self._tmp_leaves)
             # Interact with server to store a path.
-            self.client.write_query(label="oram", leaf=self._tmp_leaves, data=path)
+            self.client.write_query(label=self._name, leaf=self._tmp_leaves, data=path)
             # Set temporary leaves to None.
             self._tmp_leaves = None
             # Continue reset if there are values left.
@@ -1103,7 +1106,7 @@ class FreecursiveOram(TreeBaseOram):
                         leaves = [cl_one]
 
                     # Read the leaves and get data.
-                    path = self.client.read_query(label="oram", leaf=leaves)
+                    path = self.client.read_query(label=self._name, leaf=leaves)
 
                     self._update_block_leaves(
                         key_one=ck_one, key_two=ck_two, n_leaf_one=nl_one, n_leaf_two=nl_two, path=path
@@ -1113,7 +1116,7 @@ class FreecursiveOram(TreeBaseOram):
                     path = self._evict_stash_to_mul(leaves=leaves)
 
                     # Interact with the server to store the path.
-                    self.client.write_query(label="oram", leaf=leaves, data=path)
+                    self.client.write_query(label=self._name, leaf=leaves, data=path)
 
             # Set temporary reset leaves to None.
             self._tmp_reset_leaves = None

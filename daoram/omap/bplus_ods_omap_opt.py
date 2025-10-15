@@ -11,6 +11,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "bplus_opt",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -25,6 +26,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         :param key_size: The number of bytes the random dummy key should have.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -34,6 +36,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
+            name=name,
             order=order,
             client=client,
             aes_key=aes_key,
@@ -77,7 +80,6 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             else:
                 # Decrement the index in local.
                 index -= 1
-
 
     def insert(self, key: Any, value: Any) -> None:
         """

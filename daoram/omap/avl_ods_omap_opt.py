@@ -10,6 +10,7 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "avl_opt",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -23,6 +24,7 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
         :param key_size: The number of bytes the random dummy key should have.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -32,6 +34,7 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
         """
         # Initialize the inherited parent class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             num_data=num_data,

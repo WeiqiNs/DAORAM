@@ -24,6 +24,7 @@ class RecursivePathOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 name: str = "rc",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -38,6 +39,7 @@ class RecursivePathOram(TreeBaseOram):
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -50,6 +52,7 @@ class RecursivePathOram(TreeBaseOram):
         """
         # Initialize the parent BaseOram class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             filename=filename,
@@ -136,7 +139,7 @@ class RecursivePathOram(TreeBaseOram):
 
             # For the current position map, get its corresponding binary tree.
             tree = BinaryTree(
-                filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
+                filename=f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
                 num_data=pos_map_size,
                 data_size=cur_pos_map_oram._max_block_size,
                 bucket_size=self._bucket_size,
@@ -162,7 +165,7 @@ class RecursivePathOram(TreeBaseOram):
             cur_pos_map_oram._pos_map = {}
 
             # Save the binary tree and the position map oram.
-            server_storage[f"pos_map_{self._num_oram_pos_map - i - 1}"] = tree
+            server_storage[f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"] = tree
             self._pos_maps.append(cur_pos_map_oram)
 
         # Finally, only store the on chip position maps.
@@ -187,7 +190,7 @@ class RecursivePathOram(TreeBaseOram):
         pos_map_storage_dict = self._compress_pos_map()
 
         # Add the oram storage to the dictionary.
-        pos_map_storage_dict["oram"] = storage
+        pos_map_storage_dict[self._name] = storage
 
         # Let the server hold these storages.
         self.client.init_query(storage=pos_map_storage_dict)
@@ -424,7 +427,7 @@ class RecursivePathOram(TreeBaseOram):
                 if pos_map_index < self._num_oram_pos_map - 1 else self._get_new_leaf()
 
             # Base on the current leaf, get the desired path.
-            path_data = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf)
+            path_data = self.client.read_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=cur_leaf)
 
             # Get the next leaf.
             next_leaf = self._pos_maps[pos_map_index]._retrieve_pos_map_block(
@@ -437,7 +440,7 @@ class RecursivePathOram(TreeBaseOram):
             # Evict stash to current leaf.
             path_data = self._pos_maps[pos_map_index]._evict_stash(leaf=cur_leaf)
 
-            self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=cur_leaf, data=path_data)
+            self.client.write_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=cur_leaf, data=path_data)
 
             # Finally, set the current leaf to the next leaf.
             cur_leaf, new_cur_leaf = next_leaf, new_next_leaf
@@ -457,7 +460,7 @@ class RecursivePathOram(TreeBaseOram):
         leaf, new_leaf = self._get_leaf_from_pos_map(key=key)
 
         # We read the path from the server.
-        path = self.client.read_query(label="oram", leaf=leaf)
+        path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
         value = self._retrieve_data_block(op=op, key=key, path=path, value=value, new_leaf=new_leaf)
@@ -466,7 +469,7 @@ class RecursivePathOram(TreeBaseOram):
         path = self._evict_stash(leaf=leaf)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=leaf, data=path)
+        self.client.write_query(label=self._name, leaf=leaf, data=path)
 
         return value
 
@@ -483,7 +486,7 @@ class RecursivePathOram(TreeBaseOram):
         leaf, new_leaf = self._get_leaf_from_pos_map(key=key)
 
         # We read the path from the server.
-        path = self.client.read_query(label="oram", leaf=leaf)
+        path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
         value = self._retrieve_data_block(op=op, key=key, path=path, value=value, new_leaf=new_leaf)
@@ -517,7 +520,7 @@ class RecursivePathOram(TreeBaseOram):
         path = self._evict_stash(leaf=self._tmp_leaf)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=self._tmp_leaf, data=path)
+        self.client.write_query(label=self._name, leaf=self._tmp_leaf, data=path)
 
         # Set temporary leaf to None.
         self._tmp_leaf = None

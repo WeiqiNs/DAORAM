@@ -15,6 +15,7 @@ class AVLOdsOmap(TreeOdsOmap):
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "avl",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -28,6 +29,7 @@ class AVLOdsOmap(TreeOdsOmap):
         :param key_size: The number of bytes the random dummy key should have.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -37,6 +39,7 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             filename=filename,
@@ -555,7 +558,9 @@ class AVLOdsOmap(TreeOdsOmap):
 
                     # Append the node to stash and write them back to server.
                     self._stash.append(node_to_return)
-                    self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+                    self._client.write_query(
+                        label=self._name, leaf=old_child_path, data=self._evict_stash(old_child_path)
+                    )
 
                     # Get the next node to check to local.
                     self._move_node_to_local_without_eviction(
@@ -580,7 +585,9 @@ class AVLOdsOmap(TreeOdsOmap):
 
                     # Append the node to stash and write them back to server.
                     self._stash.append(node_to_return)
-                    self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+                    self._client.write_query(
+                        label=self._name, leaf=old_child_path, data=self._evict_stash(old_child_path)
+                    )
 
                     # Get the next node to check to local.
                     self._move_node_to_local_without_eviction(
@@ -609,7 +616,7 @@ class AVLOdsOmap(TreeOdsOmap):
         self._local = []
 
         # Write the new node back to storage.
-        self._client.write_query(label="ods", leaf=old_child_path, data=self._evict_stash(old_child_path))
+        self._client.write_query(label=self._name, leaf=old_child_path, data=self._evict_stash(old_child_path))
 
         # Perform desired number of dummy finds.
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)

@@ -16,6 +16,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "bplus",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -30,6 +31,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param key_size: The number of bytes the random dummy key should have.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -39,6 +41,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             filename=filename,
@@ -313,7 +316,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label="ods", leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -326,7 +329,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     node.value.values[index] = (node.value.values[index][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label="ods", leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -339,7 +342,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label="ods", leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -636,7 +639,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._stash += self._local
         self._local = []
         # Perform one eviction.
-        self._client.write_query(label="ods", leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+        self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
         # And then the dummy evictions.
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
 

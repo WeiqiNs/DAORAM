@@ -17,6 +17,7 @@ from daoram.dependency import Aes, BinaryTree, Buckets, Data, Helper, InteractSe
 
 class TreeBaseOram(ABC):
     def __init__(self,
+                 name: str,
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
@@ -29,6 +30,7 @@ class TreeBaseOram(ABC):
         """
         Defines the base oram, including its attributes and methods.
 
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
@@ -40,6 +42,7 @@ class TreeBaseOram(ABC):
         :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Store the useful input values.
+        self._name: str = name
         self._filename: str = filename
         self._num_data: int = num_data
         self._data_size: int = data_size

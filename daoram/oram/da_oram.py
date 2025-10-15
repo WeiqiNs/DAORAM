@@ -31,6 +31,7 @@ class DAOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 name: str = "da",
                  num_ic: int = 64,
                  ic_length: int = 6,
                  gc_length: int = 64,
@@ -51,6 +52,7 @@ class DAOram(TreeBaseOram):
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param num_ic: Number of individual counts we store per block.
         :param ic_length: Length of the binary representing individual count.
         :param gc_length: Length of the binary representing group count.
@@ -69,6 +71,7 @@ class DAOram(TreeBaseOram):
         """
         # Initialize the parent BaseOram class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             filename=filename,
@@ -215,7 +218,7 @@ class DAOram(TreeBaseOram):
 
             # For the current position map, get its corresponding binary tree.
             tree = BinaryTree(
-                filename=f"pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
+                filename=f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None,
                 num_data=pos_map_size,
                 data_size=cur_pos_map_oram._max_block_size,
                 bucket_size=self._bucket_size,
@@ -235,7 +238,7 @@ class DAOram(TreeBaseOram):
             last_oram_level = cur_pos_map_oram._level
 
             # Save the binary tree.
-            server_storage[f"pos_map_{self._num_oram_pos_map - i - 1}"] = tree
+            server_storage[f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"] = tree
 
             # Clear the current pos map oram and save it.
             cur_pos_map_oram.pos_map = {}
@@ -266,7 +269,7 @@ class DAOram(TreeBaseOram):
         pos_map_storage_dict = self._compress_pos_map()
 
         # Add the oram storage to the dictionary.
-        pos_map_storage_dict["oram"] = storage
+        pos_map_storage_dict[self._name] = storage
 
         # Let the server hold these storages.
         self.client.init_query(storage=pos_map_storage_dict)
@@ -790,7 +793,7 @@ class DAOram(TreeBaseOram):
             leaves = [cur_leaf, r_cur_leaf]
 
             # Interact with server to get a path.
-            path = self.client.read_query(label=f"pos_map_{pos_map_index}", leaf=leaves)
+            path = self.client.read_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=leaves)
 
             # Find what leaves for the next iteration.
             # noinspection PyProtectedMember
@@ -812,7 +815,7 @@ class DAOram(TreeBaseOram):
                 path = self._pos_maps[pos_map_index]._evict_stash_to_mul(leaves=leaves)
 
             # Interact with server to write a path.
-            self.client.write_query(label=f"pos_map_{pos_map_index}", leaf=leaves, data=path)
+            self.client.write_query(label=f"{self._name}_pos_map_{pos_map_index}", leaf=leaves, data=path)
 
             # Update the new leaf to current leaf.
             cur_leaf, new_leaf = next_cur_leaf, next_new_leaf
@@ -842,7 +845,7 @@ class DAOram(TreeBaseOram):
         leaves = [cur_leaf, r_cur_leaf]
 
         # Interact with server to get the paths.
-        path = self.client.read_query(label="oram", leaf=leaves)
+        path = self.client.read_query(label=self._name, leaf=leaves)
 
         # Read the main oram and give the data of interest a new leaf label.
         value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=new_leaf, path=path)
@@ -857,7 +860,7 @@ class DAOram(TreeBaseOram):
             path = self._evict_stash_to_mul(leaves=leaves)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=leaves, data=path)
+        self.client.write_query(label=self._name, leaf=leaves, data=path)
 
         return value
 
@@ -884,7 +887,7 @@ class DAOram(TreeBaseOram):
         leaves = [cur_leaf, r_cur_leaf]
 
         # Interact with server to get the paths.
-        path = self.client.read_query(label="oram", leaf=leaves)
+        path = self.client.read_query(label=self._name, leaf=leaves)
 
         # Read the main oram and give the data of interest a new leaf label.
         value = self._retrieve_data_block(op=op, key=key, value=value, new_leaf=new_leaf, path=path)
@@ -921,7 +924,7 @@ class DAOram(TreeBaseOram):
         path = self._evict_stash_to_mul(leaves=self._tmp_leaves)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=self._tmp_leaves, data=path)
+        self.client.write_query(label=self._name, leaf=self._tmp_leaves, data=path)
 
         # Set temporary leaves to None.
         self._tmp_leaves = None

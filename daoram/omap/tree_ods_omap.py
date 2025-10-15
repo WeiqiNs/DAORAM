@@ -19,6 +19,7 @@ KV_LIST = List[Tuple[Any, Any]]
 
 class TreeOdsOmap(ABC):
     def __init__(self,
+                 name: str,
                  num_data: int,
                  key_size: int,
                  data_size: int,
@@ -32,6 +33,7 @@ class TreeOdsOmap(ABC):
         """
         Defines the base omap, including its attributes and methods.
 
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param num_data: The number of data points the oram should store.
         :param key_size: The number of bytes the random key should have.
         :param data_size: The number of bytes the random dummy data should have.
@@ -44,6 +46,7 @@ class TreeOdsOmap(ABC):
         :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Store the useful input values.
+        self._name: str = name
         self._filename: str = filename
         self._num_data: int = num_data
         self._key_size: int = key_size
@@ -140,7 +143,7 @@ class TreeOdsOmap(ABC):
         self._move_node_to_local_without_eviction(key=key, leaf=leaf)
 
         # Perform eviction and write the path back.
-        self._client.write_query(label="ods", leaf=leaf, data=self._evict_stash(leaf=leaf))
+        self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
 
     def _move_node_to_local_without_eviction(self, key: Any, leaf: Any) -> None:
         """
@@ -156,7 +159,7 @@ class TreeOdsOmap(ABC):
         to_index = len(self._stash)
 
         # Get the desired path and perform decryption as needed.
-        path = self._decrypt_buckets(buckets=self._client.read_query(label="ods", leaf=leaf))
+        path = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf))
 
         # Find the desired data in the path.
         for bucket in path:
@@ -227,7 +230,7 @@ class TreeOdsOmap(ABC):
             leaf = self._get_new_leaf()
 
             # Read a path from the ODS storage and decrypt it.
-            path = self._decrypt_buckets(buckets=self._client.read_query(label="ods", leaf=leaf))
+            path = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf))
 
             # Add all real data to the stash.
             for bucket in path:
@@ -239,7 +242,7 @@ class TreeOdsOmap(ABC):
                 raise MemoryError("Stash overflow!")
 
             # Evict the stash and write the path back to the ODS storage.
-            self._client.write_query(label="ods", leaf=leaf, data=self._evict_stash(leaf=leaf))
+            self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
 
     @abstractmethod
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
@@ -258,7 +261,7 @@ class TreeOdsOmap(ABC):
         :param data: A list of key-value pairs.
         """
         # Let the server store the binary tree.
-        self._client.init_query(storage={"ods": self._init_ods_storage(data=data)})
+        self._client.init_query(storage={self._name: self._init_ods_storage(data=data)})
 
     @abstractmethod
     def _init_mul_tree_ods_storage(self, data_list: List[KV_LIST]) -> Tuple[BinaryTree, List[ROOT]]:
@@ -280,7 +283,7 @@ class TreeOdsOmap(ABC):
         # Initialize the server binary tree storage and get a list of roots of AVL trees.
         tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
         # Let the server store the binary tree.
-        self._client.init_query(storage={"ods": tree})
+        self._client.init_query(storage={self._name: tree})
         # Return list of roots.
         return root_list
 

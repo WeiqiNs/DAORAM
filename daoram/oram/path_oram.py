@@ -7,7 +7,6 @@ Path oram has two public methods:
     - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
         data points stored in the storage.
 """
-
 from typing import Any, Optional
 
 from daoram.dependency import BinaryTree, Buckets, InteractServer
@@ -19,6 +18,7 @@ class PathOram(TreeBaseOram):
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "po",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -31,6 +31,7 @@ class PathOram(TreeBaseOram):
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
@@ -40,6 +41,7 @@ class PathOram(TreeBaseOram):
         """
         # Initialize the parent BaseOram class.
         super().__init__(
+            name=name,
             client=client,
             aes_key=aes_key,
             num_data=num_data,
@@ -64,7 +66,7 @@ class PathOram(TreeBaseOram):
         :param data_map: A dictionary storing {key: data}.
         """
         # Get the storage.
-        storage = {"oram": self._init_storage_on_pos_map(data_map=data_map)}
+        storage = {self._name: self._init_storage_on_pos_map(data_map=data_map)}
 
         # Initialize the storage and send it to the server.
         self.client.init_query(storage=storage)
@@ -212,7 +214,7 @@ class PathOram(TreeBaseOram):
         leaf = self._look_up_pos_map(key=key)
 
         # We read the path from the server.
-        path = self.client.read_query(label="oram", leaf=leaf)
+        path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
         value = self.__retrieve_block(op=op, key=key, path=path, value=value)
@@ -221,7 +223,7 @@ class PathOram(TreeBaseOram):
         path = self.__evict_stash(leaf=leaf)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=leaf, data=path)
+        self.client.write_query(label=self._name, leaf=leaf, data=path)
 
         return value
 
@@ -238,7 +240,7 @@ class PathOram(TreeBaseOram):
         leaf = self._look_up_pos_map(key=key)
 
         # We read the path from the server.
-        path = self.client.read_query(label="oram", leaf=leaf)
+        path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
         value = self.__retrieve_block(op=op, key=key, path=path, value=value)
@@ -273,7 +275,7 @@ class PathOram(TreeBaseOram):
         path = self.__evict_stash(leaf=self.__tmp_leaf)
 
         # Write the path back to the server.
-        self.client.write_query(label="oram", leaf=self.__tmp_leaf, data=path)
+        self.client.write_query(label=self._name, leaf=self.__tmp_leaf, data=path)
 
         # Set temporary leaf to None.
         self.__tmp_leaf = None

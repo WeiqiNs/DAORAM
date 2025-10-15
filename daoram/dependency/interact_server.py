@@ -71,6 +71,14 @@ class InteractServer(ABC):
         """
         raise NotImplementedError
 
+    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
+        """Issues a read query that contains multiple sub-queries."""
+        raise NotImplementedError
+
+    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
+        """Issues a write query that contains multiple sub-queries."""
+        raise NotImplementedError
+
     @abstractmethod
     def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
         """
@@ -158,6 +166,22 @@ class InteractRemoteServer(InteractServer):
 
         return response
 
+    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
+        """Issues a read query; telling the server to read one/multiple paths from some storage."""
+        # Check for connection.
+        self.__check_client()
+
+        # Create the init query.
+        query = [{"type": "r", "label": label[index], "leaf": each_leaf} for index, each_leaf in enumerate(leaf)]
+
+        # Send the query to server.
+        self.__client.send(query)
+
+        # Get the server response.
+        response = self.__client.recv()
+
+        return response
+
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
         """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
         # Check for connection.
@@ -165,6 +189,22 @@ class InteractRemoteServer(InteractServer):
 
         # Create the init query.
         query = {"type": "w", "label": label, "leaf": leaf, "data": data}
+
+        # Send the query to server.
+        self.__client.send(query)
+
+        # Check for response.
+        self.__check_response()
+
+    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
+        # Check for connection.
+        self.__check_client()
+
+        # Create the init query.
+        query = [
+            {"type": "w", "label": label[index], "leaf": each_leaf, "data": data[index]}
+            for index, each_leaf in enumerate(leaf)
+        ]
 
         # Send the query to server.
         self.__client.send(query)
@@ -286,7 +326,7 @@ class RemoteServer(InteractLocalServer):
         """Shuts off the server."""
         self.__server.close()
 
-    def __process_query(self, query: dict) -> Union[str, Block, Buckets]:
+    def __process_query(self, query: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
         """Process client's queries based on their types."""
         if query["type"] == "i":
             self.init_query(storage=query["storage"])
@@ -295,8 +335,16 @@ class RemoteServer(InteractLocalServer):
         elif query["type"] == "r":
             return self.read_query(label=query["label"], leaf=query["leaf"])
 
+        elif query["type"] == "rm":
+            return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
+
         elif query["type"] == "w":
             self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
+            return SERVER_DEFAULT_RESPONSE
+
+        elif query["type"] == "rw":
+            for each_query in query:
+                self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
             return SERVER_DEFAULT_RESPONSE
 
         elif query["type"] == "rb":

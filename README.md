@@ -8,8 +8,8 @@ We list the maintainer’s related publications, which motivated the development
 - [Towards Practical Oblivious Map (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235)
 
 ## Oblivious Graph Methods
-- [GraphOS (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf).
-- [Grove with Delayed Duplications]().
+- [GraphOS (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf), implemented [here](/daoram/graph/graphos.py).
+- [Grove with delayed duplications](Full_Version_Enabling_Index_free_Adjacency_in_Oblivious_Graph_Processing_with_Delayed_Duplications.pdf), implemented [here](/daoram/graph/grove.py).
 
 ## ORAM Methods
 
