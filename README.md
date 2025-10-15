@@ -4,7 +4,7 @@ This library implements a series of classic oblivious algorithms, covering obliv
 
 We list the maintainer’s related publications, which motivated the development of this library, and then provide a detailed overview of all included algorithms.
 
-- Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed Duplications
+- Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed Duplications ([Full Version](Full_Version_Enabling_Index_free_Adjacency_in_Oblivious_Graph_Processing_with_Delayed_Duplications.pdf))
 - [Towards Practical Oblivious Map (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235)
 
 ## Oblivious Graph Methods
