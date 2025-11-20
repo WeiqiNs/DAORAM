@@ -58,6 +58,7 @@ class PathOram(TreeBaseOram):
 
         # In path oram, we initialize the position map.
         self._init_pos_map()
+        self.label = name
 
     def init_server_storage(self, data_map: dict = None) -> None:
         """
@@ -69,7 +70,7 @@ class PathOram(TreeBaseOram):
         storage = {self._name: self._init_storage_on_pos_map(data_map=data_map)}
 
         # Initialize the storage and send it to the server.
-        self.client.init_query(storage=storage)
+        self.client.init_query(label=self.label,storage=storage)
 
     def __retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
         """

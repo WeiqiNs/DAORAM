@@ -25,7 +25,7 @@ class InteractServer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def init_query(self, storage: ServerStorage) -> None:
+    def init_query(self, label: str, storage: ServerStorage) -> None:
         """
         Issues an init query; sending some storage over to the server.
 
@@ -105,6 +105,8 @@ class InteractRemoteServer(InteractServer):
         self.__ip = ip
         self.__port = port
         self.__client = None
+        self.pb_query = None
+        
 
     def update_ip(self, ip: str) -> None:
         """Updates the ip address of the server."""
@@ -136,17 +138,18 @@ class InteractRemoteServer(InteractServer):
         """Close the connection to the server."""
         self.__client.close()
 
-    def init_query(self, storage: ServerStorage) -> None:
+    def init_query(self, label: str ,storage: ServerStorage) -> None:
         """Issues an init query; sending some storage over to the server."""
         # Check for connection.
         self.__check_client()
 
         # Create the init query.
-        query = {"type": "i", "storage": storage}
+        query = [{"type": "i", "storage": storage}]
 
         # Send the query to server.
         self.__client.send(query)
-
+        # Add a dummy request
+        self.pb_query =  {"type": "w", "label": label, "leaf": 0, "data": None}
         # Check for response.
         self.__check_response()
 
@@ -155,8 +158,8 @@ class InteractRemoteServer(InteractServer):
         # Check for connection.
         self.__check_client()
 
-        # Create the init query.
-        query = {"type": "r", "label": label, "leaf": leaf}
+        # Merge the write-back of the previous request with this request for a random number
+        query = [self.pb_query, {"type": "r", "label": label, "leaf": leaf}]
 
         # Send the query to server.
         self.__client.send(query)
@@ -186,15 +189,12 @@ class InteractRemoteServer(InteractServer):
         """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
         # Check for connection.
         self.__check_client()
-
+        
         # Create the init query.
         query = {"type": "w", "label": label, "leaf": leaf, "data": data}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
+        # Temporarily store this write-back request for merging with the next random number request
+        self.pb_query = query
+        
 
     def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
         # Check for connection.
@@ -270,6 +270,9 @@ class InteractLocalServer(InteractServer):
 
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
         """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
+        # Skip it when writing a dummy 
+        if data is None:
+            return
         # Check if the requested storage exists.
         if label not in self.__storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
@@ -326,48 +329,45 @@ class RemoteServer(InteractLocalServer):
         """Shuts off the server."""
         self.__server.close()
 
-    def __process_query(self, query: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
+    def __process_query(self, queries: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
         """Process client's queries based on their types."""
-        if query["type"] == "i":
-            self.init_query(storage=query["storage"])
-            return SERVER_DEFAULT_RESPONSE
+        for query in queries:
+            if query["type"] == "i":
+                self.init_query(storage=query["storage"])
+            elif query["type"] == "r":
+                return self.read_query(label=query["label"], leaf=query["leaf"])
 
-        elif query["type"] == "r":
-            return self.read_query(label=query["label"], leaf=query["leaf"])
+            elif query["type"] == "rm":
+                return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
 
-        elif query["type"] == "rm":
-            return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
+            elif query["type"] == "w":
+                self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
+                
 
-        elif query["type"] == "w":
-            self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
-            return SERVER_DEFAULT_RESPONSE
+            elif query["type"] == "rw":
+                for each_query in query:
+                    self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
+      
+            elif query["type"] == "rb":
+                return self.read_block_query(
+                    label=query["label"],
+                    leaf=query["leaf"],
+                    block_id=query["block_id"],
+                    bucket_id=query["bucket_id"],
+                )
 
-        elif query["type"] == "rw":
-            for each_query in query:
-                self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
-            return SERVER_DEFAULT_RESPONSE
-
-        elif query["type"] == "rb":
-            return self.read_block_query(
-                label=query["label"],
-                leaf=query["leaf"],
-                block_id=query["block_id"],
-                bucket_id=query["bucket_id"],
-            )
-
-        elif query["type"] == "wb":
-            self.write_block_query(
-                label=query["label"],
-                leaf=query["leaf"],
-                bucket_id=query["bucket_id"],
-                block_id=query["block_id"],
-                data=query["data"]
-            )
-            return SERVER_DEFAULT_RESPONSE
-
-        else:
-            raise ValueError("Invalid query type was given.")
-
+            elif query["type"] == "wb":
+                self.write_block_query(
+                    label=query["label"],
+                    leaf=query["leaf"],
+                    bucket_id=query["bucket_id"],
+                    block_id=query["block_id"],
+                    data=query["data"]
+                )
+                
+            else:
+                raise ValueError("Invalid query type was given.")
+        return SERVER_DEFAULT_RESPONSE
     def run(self) -> None:
         """Run the server to listen to client queries."""
         # Initialize the socket and hearing to port.
@@ -379,7 +379,7 @@ class RemoteServer(InteractLocalServer):
             query = self.__server.recv()
             # If the query has content, we process it.
             if query:
-                self.__server.send(self.__process_query(query=query))
+                self.__server.send(self.__process_query(queries=query))
             else:
                 break
 
