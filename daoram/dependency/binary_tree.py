@@ -1,7 +1,7 @@
 """This module implements a simple binary tree data structure that fits our need."""
 import math
-from typing import Dict, List, Union
-
+from typing import Any, Dict, List, Union
+import pickle
 from daoram.dependency.helper import Block, Buckets, Data, Storage
 
 
@@ -309,7 +309,7 @@ class BinaryTree:
 
         # If the leaf is a list, we read multiple paths.
         elif isinstance(leaf, list):
-            path_to_read = self.get_mul_leaf_path(leaves=leaf)
+            path_to_read = self.get_mul_leaf_path(leaves=leaf) 
 
         # Otherwise, raise a type error.
         else:
@@ -380,3 +380,66 @@ class BinaryTree:
         bucket_data[block_id] = data
         # Write it back.
         self._storage[index_to_write] = bucket_data
+
+    def __getstate__(self) -> Dict[str, Any]:
+        """Custom serialization method"""
+        return {
+            # Basic parameters
+            '_num_data': self._num_data,
+            '_bucket_size': self._bucket_size,
+            '_level': self._level,
+            '_size': self._size,
+            '_start_leaf': self._start_leaf,
+            
+            # Storage configuration
+            '_filename': self._storage._Storage__filename,
+            '_data_size': self._storage._Storage__data_size,
+            '_encryption': self._storage._Storage__encryption,
+            '_total_size': self._storage._Storage__total_size,
+            
+            # Storage data
+            '_storage_data': self._serialize_storage_data()
+        }
+    
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Custom deserialization method"""
+        # Restore basic parameters
+        self._num_data = state['_num_data']
+        self._bucket_size = state['_bucket_size']
+        self._level = state['_level']
+        self._size = state['_size']
+        self._start_leaf = state['_start_leaf']
+        
+        # Re-create the Storage object
+        self._storage = Storage(
+            size=state['_size'],
+            filename=state['_filename'],
+            data_size=state['_data_size'],
+            bucket_size=state['_bucket_size']
+        )
+        
+        # Restore storage data
+        self._deserialize_storage_data(state['_storage_data'])
+    
+    def _serialize_storage_data(self) -> bytes:
+        """Serialize storage data"""
+        if self._storage._Storage__filename is None:
+            # In-memory storage: directly serialize the internal data
+            return pickle.dumps(self._storage._Storage__internal_data)
+        else:
+            # File-based storage: read file content and serialize it
+            self._storage._Storage__file.seek(0)
+            file_data = self._storage._Storage__file.read()
+            return pickle.dumps(file_data)
+    
+    def _deserialize_storage_data(self, data: bytes) -> None:
+        """Deserialize storage data"""
+        storage_data = pickle.loads(data)
+        
+        if self._storage._Storage__filename is None:
+            # In-memory storage: directly restore the internal data
+            self._storage._Storage__internal_data = storage_data
+        else:
+            # File-based storage: write to the file
+            self._storage._Storage__file.seek(0)
+            self._storage._Storage__file.write(storage_data)
