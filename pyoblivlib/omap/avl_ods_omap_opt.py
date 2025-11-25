@@ -1,7 +1,7 @@
 from typing import Any
 
-from daoram.dependency import InteractServer
-from daoram.omap import AVLOdsOmap
+from pyoblivlib.dependency import InteractServer
+from pyoblivlib.omap import AVLOdsOmap
 
 
 class AVLOdsOmapOptimized(AVLOdsOmap):

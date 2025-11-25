@@ -3,9 +3,9 @@
 Each function shows how the client should initialize the server and how to perform operations.
 """
 
-from daoram.dependency import InteractRemoteServer
-from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
-from daoram.oram import DAOram
+from pyoblivlib.dependency import InteractRemoteServer
+from pyoblivlib.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
+from pyoblivlib.oram import DAOram
 
 
 def avl_ods_omap_client():

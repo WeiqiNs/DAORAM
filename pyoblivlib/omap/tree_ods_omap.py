@@ -9,7 +9,7 @@ import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import Aes, BinaryTree, Buckets, Data, InteractServer
+from pyoblivlib.dependency import Aes, BinaryTree, Buckets, Data, InteractServer
 
 # Root contains the data key and the path.
 ROOT = Tuple[Any, int]

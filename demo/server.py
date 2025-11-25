@@ -1,6 +1,6 @@
 """This file simulates a universal server for either an ORAM or an OMAP instance."""
 
-from daoram.dependency import RemoteServer
+from pyoblivlib.dependency import RemoteServer
 
 
 def simulate():

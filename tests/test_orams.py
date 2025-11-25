@@ -2,8 +2,8 @@ import glob
 import os
 import random
 
-from daoram.dependency import InteractLocalServer
-from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
+from pyoblivlib.dependency import InteractLocalServer
+from pyoblivlib.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 # Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)

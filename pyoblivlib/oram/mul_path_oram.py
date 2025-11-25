@@ -9,8 +9,8 @@ Path oram has two public methods:
 """
 from typing import List
 
-from daoram.dependency import BinaryTree, InteractServer, Data, Buckets
-from daoram.oram.path_oram import PathOram
+from pyoblivlib.dependency import BinaryTree, InteractServer, Data, Buckets
+from pyoblivlib.oram.path_oram import PathOram
 
 
 class MulPathOram(PathOram):

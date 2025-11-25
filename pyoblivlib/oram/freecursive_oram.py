@@ -19,8 +19,8 @@ import secrets
 from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
-from daoram.oram.tree_base_oram import TreeBaseOram
+from pyoblivlib.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
+from pyoblivlib.oram.tree_base_oram import TreeBaseOram
 
 # Reset values is a list of the following [(key, cl, nl), (key, cl, nl)]; where only cl always has a value.
 RESET_LEAVES = List[List[Tuple[Optional[int], int, Optional[int]]]]

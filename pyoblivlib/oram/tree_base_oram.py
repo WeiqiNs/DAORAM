@@ -12,7 +12,7 @@ import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from daoram.dependency import Aes, BinaryTree, Buckets, Data, Helper, InteractServer
+from pyoblivlib.dependency import Aes, BinaryTree, Buckets, Data, Helper, InteractServer
 
 
 class TreeBaseOram(ABC):

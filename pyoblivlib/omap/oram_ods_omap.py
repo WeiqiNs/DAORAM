@@ -1,8 +1,8 @@
 from typing import Any, List, Optional, Tuple, Union
 
-from daoram.dependency import Helper, Prf
-from daoram.omap.tree_ods_omap import TreeOdsOmap
-from daoram.oram.tree_base_oram import TreeBaseOram
+from pyoblivlib.dependency import Helper, Prf
+from pyoblivlib.omap.tree_ods_omap import TreeOdsOmap
+from pyoblivlib.oram.tree_base_oram import TreeBaseOram
 
 
 class OramTreeOdsOmap:

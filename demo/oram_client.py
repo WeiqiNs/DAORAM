@@ -3,8 +3,8 @@
 Each function shows how the client should initialize the server and how to perform operations.
 """
 
-from daoram.dependency import InteractRemoteServer
-from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
+from pyoblivlib.dependency import InteractRemoteServer
+from pyoblivlib.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 
 def path_oram_client():

@@ -1,6 +1,6 @@
 import os
 
-from daoram.dependency import Aes, Data, Helper, Storage
+from pyoblivlib.dependency import Aes, Data, Helper, Storage
 
 TEST_FILE = "test.bin"
 

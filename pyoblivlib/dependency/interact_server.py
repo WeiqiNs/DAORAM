@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Union
 
-from daoram.dependency.binary_tree import BinaryTree, Buckets
-from daoram.dependency.helper import Block
-from daoram.dependency.sockets import Socket
+from pyoblivlib.dependency.binary_tree import BinaryTree, Buckets
+from pyoblivlib.dependency.helper import Block
+from pyoblivlib.dependency.sockets import Socket
 
 # Set a default response for the server.
 SERVER_DEFAULT_RESPONSE = "Done!"

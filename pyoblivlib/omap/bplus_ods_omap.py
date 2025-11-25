@@ -5,8 +5,8 @@ import os
 from functools import cached_property
 from typing import Any, List, Tuple
 
-from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
-from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+from pyoblivlib.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
+from pyoblivlib.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
 
 
 class BPlusOdsOmap(TreeOdsOmap):

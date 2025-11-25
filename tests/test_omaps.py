@@ -2,11 +2,11 @@ import glob
 import math
 import os
 
-from daoram.dependency import InteractLocalServer
-from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
-from daoram.omap.bplus_ods_omap_opt import BPlusOdsOmapOptimized
-from daoram.oram import DAOram
+from pyoblivlib.dependency import InteractLocalServer
+from pyoblivlib.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
+from pyoblivlib.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
+from pyoblivlib.omap.bplus_ods_omap_opt import BPlusOdsOmapOptimized
+from pyoblivlib.oram import DAOram
 
 # Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)

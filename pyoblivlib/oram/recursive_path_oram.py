@@ -16,8 +16,8 @@ import secrets
 from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, Buckets, Data, InteractServer, ServerStorage
-from daoram.oram.tree_base_oram import TreeBaseOram
+from pyoblivlib.dependency import BinaryTree, Buckets, Data, InteractServer, ServerStorage
+from pyoblivlib.oram.tree_base_oram import TreeBaseOram
 
 
 class RecursivePathOram(TreeBaseOram):

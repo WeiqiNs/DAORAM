@@ -18,8 +18,8 @@ import secrets
 from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
-from daoram.oram.tree_base_oram import TreeBaseOram
+from pyoblivlib.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
+from pyoblivlib.oram.tree_base_oram import TreeBaseOram
 
 # Reset leaf is a tuple (index, cur_leaf, new_leaf). The new_leaf would be None when the index is -1.
 RESET_LEAF = Tuple[int, int, Optional[int]]

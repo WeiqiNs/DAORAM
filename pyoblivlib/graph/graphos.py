@@ -3,10 +3,10 @@ import random
 import secrets
 from typing import Any, List
 
-from daoram.dependency import InteractServer, Data
-from daoram.dependency.graph import Graph
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
-from daoram.oram.mul_path_oram import MulPathOram
+from pyoblivlib.dependency import InteractServer, Data
+from pyoblivlib.dependency.graph import Graph
+from pyoblivlib.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
+from pyoblivlib.oram.mul_path_oram import MulPathOram
 
 
 class GraphOS:

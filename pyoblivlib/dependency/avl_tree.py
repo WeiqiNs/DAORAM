@@ -6,7 +6,7 @@ import secrets
 from dataclasses import astuple, dataclass
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency.helper import Data
+from pyoblivlib.dependency.helper import Data
 
 # Set the values to extract information from a KV pair.
 K = 0

@@ -1,6 +1,6 @@
 import random
 
-from daoram.dependency import AVLTree, BinaryTree, BPlusTree, BPlusTreeNode, Data
+from pyoblivlib.dependency import AVLTree, BinaryTree, BPlusTree, BPlusTreeNode, Data
 
 
 class TestBinaryTree:

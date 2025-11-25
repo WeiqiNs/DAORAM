@@ -1,7 +1,7 @@
 import os
 import pickle
 
-from daoram.dependency import Aes, Prf
+from pyoblivlib.dependency import Aes, Prf
 
 
 class TestCrypto:

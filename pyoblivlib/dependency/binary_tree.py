@@ -2,7 +2,7 @@
 import math
 from typing import Any, Dict, List, Union
 import pickle
-from daoram.dependency.helper import Block, Buckets, Data, Storage
+from pyoblivlib.dependency.helper import Block, Buckets, Data, Storage
 
 
 class BinaryTree:

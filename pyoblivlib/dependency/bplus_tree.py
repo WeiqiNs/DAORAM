@@ -6,8 +6,8 @@ import secrets
 from dataclasses import astuple, dataclass
 from typing import Any, List, Optional
 
-from daoram.dependency import Data
-from daoram.dependency.avl_tree import KV_PAIR
+from pyoblivlib.dependency import Data
+from pyoblivlib.dependency.avl_tree import KV_PAIR
 
 
 @dataclass

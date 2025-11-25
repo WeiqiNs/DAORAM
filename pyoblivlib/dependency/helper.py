@@ -6,7 +6,7 @@ import pickle
 from dataclasses import astuple, dataclass
 from typing import Any, BinaryIO, List, Optional, Tuple, Union
 
-from daoram.dependency.crypto import Aes, Prf
+from pyoblivlib.dependency.crypto import Aes, Prf
 
 
 @dataclass

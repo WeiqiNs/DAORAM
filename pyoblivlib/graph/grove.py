@@ -4,9 +4,9 @@ import secrets
 from decimal import Decimal, localcontext
 from typing import List, Any, Optional, Dict
 
-from daoram.dependency import InteractServer, Data
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
-from daoram.oram.mul_path_oram import MulPathOram
+from pyoblivlib.dependency import InteractServer, Data
+from pyoblivlib.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
+from pyoblivlib.oram.mul_path_oram import MulPathOram
 
 
 class Grove:
