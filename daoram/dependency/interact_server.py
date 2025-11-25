@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Union
 
 from daoram.dependency.binary_tree import BinaryTree, Buckets
-from daoram.dependency.helper import Block
+from daoram.dependency.helper import Block, Query
 from daoram.dependency.sockets import Socket
 
 # Set a default response for the server.
@@ -10,10 +10,15 @@ SERVER_DEFAULT_RESPONSE = "Done!"
 # Set a default port for the server and client to connect to.
 PORT = 10000
 # Define the type of storage the server should hold.
-ServerStorage = Dict[str, BinaryTree]
+ServerStorage = Dict[str, Union[BinaryTree, List]]
 
 
 class InteractServer(ABC):
+    # All class inherits this list.
+    read_queries: List[Query] = []
+    write_queries: List[Query] = []
+
+    """This abstract class defines the interface for interacting with the server."""
     @abstractmethod
     def init_connection(self) -> None:
         """Initialize the connection to the server."""
@@ -25,72 +30,26 @@ class InteractServer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def init_query(self, label: str, storage: ServerStorage) -> None:
+    def init(self, storage: ServerStorage) -> None:
         """
         Issues an init query; sending some storage over to the server.
 
-        Note that storage is either one BinaryTree or a list of BinaryTrees, in the case of position map oram storages.
+        Note that storage is a map, each storage type has a unique label.
         :param storage: The storage client wants server to hold.
         :return: No return, but should check whether the query is successfully issued.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
-        """
-        Issues a read query; telling the server to read one/multiple path from some storage.
-
-        :param label: The label indicating what kind of storage is being loaded.
-        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
-        :return: The desired path data.
-        """
+    def add_query(self, query: Query) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-        """
-        Issues a "write" query; telling the server to write one/multiple paths to some storage.
-
-        :param label: The label indicating what kind of storage is being loaded.
-        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
-        :param data: The data to write to the path(s).
-        :return: No return, but should check whether the query is successfully issued.
-        """
+    def merge_and_sort_query(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def read_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int) -> Block:
-        """
-        Issues a read query; telling the server to read one block from some storage.
-
-        :param label: The label indicating what kind of storage is being loaded.
-        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
-        :param bucket_id: The index of which bucket on the path is of interest.
-        :param block_id: The index of which block in the bucket is of interest.
-        :return: The desired block data.
-        """
-        raise NotImplementedError
-
-    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
-        """Issues a read query that contains multiple sub-queries."""
-        raise NotImplementedError
-
-    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
-        """Issues a write query that contains multiple sub-queries."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
-        """
-        Issues a "write" query; telling the server to write one block to some storage.
-
-        :param label: The label indicating what kind of storage is being loaded.
-        :param leaf: The leaf of one path or leaves of multiple paths to retrieve data.
-        :param bucket_id: The index of which bucket on the path is of interest.
-        :param block_id: The index of which block in the bucket is of interest.
-        :param data: The data to write to the block.
-        :return: No return, but should check whether the query is successfully issued.
-        """
+    def execute_query(self) -> None:
         raise NotImplementedError
 
 
@@ -138,7 +97,7 @@ class InteractRemoteServer(InteractServer):
         """Close the connection to the server."""
         self.__client.close()
 
-    def init_query(self, label: str ,storage: ServerStorage) -> None:
+    def init(self, label: str, storage: ServerStorage) -> None:
         """Issues an init query; sending some storage over to the server."""
         # Check for connection.
         self.__check_client()
@@ -254,7 +213,7 @@ class InteractLocalServer(InteractServer):
         """Since the server is local, pass."""
         pass
 
-    def init_query(self, storage: ServerStorage) -> None:
+    def init(self, storage: ServerStorage) -> None:
         """Issues an init query; sending some storage over to the server."""
         # Save the storage.
         self.__storage.update(storage)
@@ -333,7 +292,7 @@ class RemoteServer(InteractLocalServer):
         """Process client's queries based on their types."""
         for query in queries:
             if query["type"] == "i":
-                self.init_query(storage=query["storage"])
+                self.init(storage=query["storage"])
             elif query["type"] == "r":
                 return self.read_query(label=query["label"], leaf=query["leaf"])
 
