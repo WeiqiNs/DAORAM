@@ -19,7 +19,7 @@ import secrets
 from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
+from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Blake2Prf, ServerStorage
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 # Reset values is a list of the following [(key, cl, nl), (key, cl, nl)]; where only cl always has a value.
@@ -104,7 +104,7 @@ class FreecursiveOram(TreeBaseOram):
         self._tmp_reset_leaves: Optional[RESET_LEAVES] = None
 
         # Create the prf instance.
-        self._prf = Prf(key=prf_key)
+        self._prf = Blake2Prf(key=prf_key)
 
         # Need to store a list of oram, and the on-chip storage is empty by default.
         self._on_chip_storage: List[bytes] = []

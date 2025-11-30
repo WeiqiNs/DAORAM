@@ -127,4 +127,3 @@ class TestBPlusTree:
         assert data_list[1].key == 3
         assert data_list[1].value.keys == [14, 16, 18]
         assert len(data_list[1].value.values) == 4
-

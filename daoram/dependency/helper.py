@@ -1,32 +1,40 @@
 from __future__ import annotations
 
 import math
+import struct
 from typing import List, Tuple, Union, Any
 
-from daoram.dependency.crypto import Prf
+from daoram.dependency.crypto import Blake2Prf
 
 
 class Helper:
+    # Fixed-size header for storing payload length; keeps unpadding lossless.
+    LENGTH_HEADER_SIZE = 4
+
     @staticmethod
     def pad_pickle(data: bytes, length: int) -> bytes:
         """
-        Pad pickled data to the desired length with trailing zeros.
+        Pad pickled data to the desired length with a length header and trailing zeros.
 
-        Note that if the data to pad has trailing zeros already, the padding would fail.
         :param data: Data to pad.
         :param length: Desired length of the padded data.
         :return: Padded data.
         """
-        if len(data) > length:
-            # If the data length is too long, return an error.
+        header = struct.pack("!I", len(data))
+        body = header + data
+        if len(body) > length:
             raise ValueError("Data length is longer than the desired padded length.")
-        else:
-            return data + b"\x00" * (length - len(data))
+        return body + b"\x00" * (length - len(body))
 
     @staticmethod
     def unpad_pickle(data: bytes) -> bytes:
-        """Remove trailing zeros from padded data."""
-        return data.rstrip(b"\x00")
+        """Restore original bytes from padded data using the stored length header."""
+        if len(data) < Helper.LENGTH_HEADER_SIZE:
+            raise ValueError("Padded data too short to contain length header.")
+        (orig_len,) = struct.unpack("!I", data[:Helper.LENGTH_HEADER_SIZE])
+        if orig_len > len(data) - Helper.LENGTH_HEADER_SIZE:
+            raise ValueError("Invalid length header in padded data.")
+        return data[Helper.LENGTH_HEADER_SIZE: Helper.LENGTH_HEADER_SIZE + orig_len]
 
     """A wrapper for the helper functions. They are wrapped in a class for neater importing statements."""
 
@@ -41,7 +49,7 @@ class Helper:
         return bin(int.from_bytes(binary_bytes, byteorder="big"))[2:]
 
     @staticmethod
-    def hash_data_to_leaf(prf: Prf, map_size: int, data: Union[str, int, bytes]) -> int:
+    def hash_data_to_leaf(prf: Blake2Prf, map_size: int, data: Union[str, int, bytes]) -> int:
         """Compute H(data) % map_size."""
         # Convert data to bytes depend on their types.
         if type(data) is int:
@@ -57,7 +65,7 @@ class Helper:
         return prf.digest_mod_n(message=byte_data, mod=map_size)
 
     @staticmethod
-    def hash_data_to_map(prf: Prf, map_size: int, data: List[Tuple[Union[str, int, bytes], Any]]) -> dict:
+    def hash_data_to_map(prf: Blake2Prf, map_size: int, data: List[Tuple[Union[str, int, bytes], Any]]) -> dict:
         """
         Given a list of data, map them to the correct integer bucket.
 

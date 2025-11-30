@@ -81,15 +81,15 @@ class TestBinaryTree:
         # Fill some data
         for i in range(4):
             tree.fill_data_to_storage_leaf(data=Data(key=i, leaf=0, value=i))
-        
+
         # Read path as dict
         path_data = tree.read_path([0])
         assert isinstance(path_data, dict)
-        
+
         # Extract and verify
         path = tree.extract_path(0, path_data)
         assert len(path) == tree.level
-        
+
         # Modify and write back
         tree.write_path(path_data)
 
@@ -97,12 +97,12 @@ class TestBinaryTree:
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
         # Fill some data
         tree.fill_data_to_storage_leaf(data=Data(key=0, leaf=0, value="test"))
-        
+
         # Read bucket
         bucket_data = tree.read_bucket([(0, 0), (0, 1)])
         assert isinstance(bucket_data, dict)
         assert (0, 0) in bucket_data
-        
+
         # Write bucket back
         tree.write_bucket(bucket_data)
 
@@ -110,12 +110,11 @@ class TestBinaryTree:
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
         # Fill some data
         tree.fill_data_to_storage_leaf(data=Data(key=0, leaf=0, value="test"))
-        
+
         # Read block
         block_data = tree.read_block([(0, tree.level - 1, 0)])
         assert isinstance(block_data, dict)
         assert (0, tree.level - 1, 0) in block_data
-        
+
         # Write block
         tree.write_block(block_data)
-

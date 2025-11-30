@@ -1,1 +1,1 @@
-pycryptodomex>=3.23.0
+cryptography>=45.0.0

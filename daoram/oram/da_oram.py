@@ -18,7 +18,7 @@ import secrets
 from functools import cached_property
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Prf, ServerStorage
+from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Blake2Prf, ServerStorage
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 # Reset leaf is a tuple (index, cur_leaf, new_leaf). The new_leaf would be None when the index is -1.
@@ -95,7 +95,7 @@ class DAOram(TreeBaseOram):
         self._tmp_leaves: Optional[List[int]] = None
 
         # Create the prf instance.
-        self._prf: Prf = Prf(key=prf_key)
+        self._prf: Blake2Prf = Blake2Prf(key=prf_key)
 
         # Need to store a list of oram, and the on-chip storage is empty by default.
         self._on_chip_storage: List[bytes] = []

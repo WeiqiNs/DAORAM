@@ -1,6 +1,6 @@
 from typing import Any, List, Optional, Tuple, Union
 
-from daoram.dependency import Helper, Prf
+from daoram.dependency import Helper, Blake2Prf
 from daoram.omap.tree_ods_omap import TreeOdsOmap
 from daoram.oram.tree_base_oram import TreeBaseOram
 
@@ -22,7 +22,7 @@ class OramTreeOdsOmap:
         self.__ods.update_mul_tree_height(num_tree=num_data)
 
         # A new PRF used to hash the input keys.
-        self.__prf: Prf = Prf()
+        self.__prf: Blake2Prf = Blake2Prf()
 
     def init_server_storage(self, data: Optional[List[Tuple[Union[str, int, bytes], Any]]] = None) -> None:
         """

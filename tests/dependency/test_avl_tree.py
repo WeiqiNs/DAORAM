@@ -146,4 +146,3 @@ class TestAVLTree:
         assert data_list[1].value.l_key == 5
         assert data_list[1].value.r_height == 2
         assert data_list[1].value.l_height == 2
-
