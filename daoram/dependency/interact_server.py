@@ -2,9 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Union
 
 from daoram.dependency.binary_tree import BinaryTree
-from daoram.dependency import Buckets
-from daoram.dependency.types import Block, Query
 from daoram.dependency.sockets import Socket
+from daoram.dependency.types import Block, Buckets, Query
 
 # Set a default response for the server.
 SERVER_DEFAULT_RESPONSE = "Done!"
@@ -20,6 +19,7 @@ class InteractServer(ABC):
     write_queries: List[Query] = []
 
     """This abstract class defines the interface for interacting with the server."""
+
     @abstractmethod
     def init_connection(self) -> None:
         """Initialize the connection to the server."""
@@ -66,7 +66,6 @@ class InteractRemoteServer(InteractServer):
         self.__port = port
         self.__client = None
         self.pb_query = None
-        
 
     def update_ip(self, ip: str) -> None:
         """Updates the ip address of the server."""
@@ -109,7 +108,7 @@ class InteractRemoteServer(InteractServer):
         # Send the query to server.
         self.__client.send(query)
         # Add a dummy request
-        self.pb_query =  {"type": "w", "label": label, "leaf": 0, "data": None}
+        self.pb_query = {"type": "w", "label": label, "leaf": 0, "data": None}
         # Check for response.
         self.__check_response()
 
@@ -149,12 +148,11 @@ class InteractRemoteServer(InteractServer):
         """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
         # Check for connection.
         self.__check_client()
-        
+
         # Create the init query.
         query = {"type": "w", "label": label, "leaf": leaf, "data": data}
         # Temporarily store this write-back request for merging with the next random number request
         self.pb_query = query
-        
 
     def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
         # Check for connection.
@@ -302,12 +300,12 @@ class RemoteServer(InteractLocalServer):
 
             elif query["type"] == "w":
                 self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
-                
+
 
             elif query["type"] == "rw":
                 for each_query in query:
                     self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
-      
+
             elif query["type"] == "rb":
                 return self.read_block_query(
                     label=query["label"],
@@ -324,10 +322,11 @@ class RemoteServer(InteractLocalServer):
                     block_id=query["block_id"],
                     data=query["data"]
                 )
-                
+
             else:
                 raise ValueError("Invalid query type was given.")
         return SERVER_DEFAULT_RESPONSE
+
     def run(self) -> None:
         """Run the server to listen to client queries."""
         # Initialize the socket and hearing to port.

@@ -4,16 +4,10 @@ from __future__ import annotations
 import pickle
 import secrets
 from dataclasses import astuple, dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional
 
-from daoram.dependency.helper import Data
-
-# Set the values to extract information from a KV pair.
-K = 0
-V = 1
-
-# Define the KV pair as a tuple contain two values.
-KV_PAIR = Tuple[Any, Any]
+from daoram.dependency.storage import Data
+from daoram.dependency.types import KVPair
 
 
 @dataclass
@@ -43,18 +37,18 @@ class AVLData:
 
 
 class AVLTreeNode:
-    def __init__(self, kv_pair: KV_PAIR):
+    def __init__(self, kv_pair: KVPair):
         """
         Given a key-value pair, create a new AVL tree node.
 
         Comparing to the standard tree node, we add two fields:
             - Value, which holds the value from the input key-value pair.
             - Path, which can store the random path the oram will store the node.
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         """
-        self.key: Any = kv_pair[K]
+        self.key: Any = kv_pair.key
         self.leaf: Optional[int] = None
-        self.value: Any = kv_pair[V]
+        self.value: Any = kv_pair.value
         self.height: int = 1
         self.left_node: Optional[AVLTreeNode] = None
         self.right_node: Optional[AVLTreeNode] = None
@@ -166,12 +160,12 @@ class AVLTree:
 
         return node
 
-    def insert(self, root: Optional[AVLTreeNode], kv_pair: KV_PAIR) -> AVLTreeNode:
+    def insert(self, root: Optional[AVLTreeNode], kv_pair: KVPair) -> AVLTreeNode:
         """
         Inserts a new node into the tree, which is represented by the root.
 
         :param root: The root node of the AVL tree.
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         :return: The updated AVL tree root node.
         """
         # If the tree is empty, the new node becomes the root.
@@ -187,7 +181,7 @@ class AVLTree:
             # Add visited node to stack.
             stack.append(node)
             # If the value is smaller, we go left.
-            if kv_pair[K] < node.key:
+            if kv_pair.key < node.key:
                 if not node.left_node:
                     node.left_node = AVLTreeNode(kv_pair)
                     stack.append(node.left_node)
@@ -221,20 +215,20 @@ class AVLTree:
         # The code should not exist the while loop without returning.
         raise ValueError("The node was not successfully inserted.")
 
-    def recursive_insert(self, root: Optional[AVLTreeNode], kv_pair: KV_PAIR) -> AVLTreeNode:
+    def recursive_insert(self, root: Optional[AVLTreeNode], kv_pair: KVPair) -> AVLTreeNode:
         """
         Inserts a new node into the tree, which is represented by the root.
 
         We also provide the recursive algorithm to validate the correctness of the non-recursive approach.
         :param root: The root node of the AVL tree.
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         :return: The updated AVL tree root node.
         """
         # When we reach an empty root, create a new tree node to store the KV pair.
         if root is None:
             return AVLTreeNode(kv_pair)
         # If not an empty node, we compare the key.
-        elif kv_pair[K] < root.key:
+        elif kv_pair.key < root.key:
             root.left_node = self.recursive_insert(root=root.left_node, kv_pair=kv_pair)
         else:
             root.right_node = self.recursive_insert(root=root.right_node, kv_pair=kv_pair)

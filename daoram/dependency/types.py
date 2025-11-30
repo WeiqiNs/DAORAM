@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Tuple, Dict, Union, List, TypeVar, Generic, Any
 
-from daoram.dependency import Data
-
+from daoram.dependency.storage import Data
 
 BucketKey = Tuple[int, int]
 BlockKey = Tuple[int, int, int]
@@ -19,6 +18,17 @@ BlockData = Dict[BlockKey, Block]
 
 # Define the payload type.
 PL = TypeVar("PL")
+
+
+@dataclass
+class KVPair:
+    """A key-value pair with named access."""
+    key: Any
+    value: Any
+
+    def to_tuple(self) -> Tuple[Any, Any]:
+        """Convert to a tuple (key, value)."""
+        return self.key, self.value
 
 
 @dataclass(frozen=True)

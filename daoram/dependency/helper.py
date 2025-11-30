@@ -1,19 +1,9 @@
 from __future__ import annotations
 
 import math
-import pickle
-from dataclasses import astuple, dataclass
-from typing import List, Optional, Tuple, Union, Any
+from typing import List, Tuple, Union, Any
 
 from daoram.dependency.crypto import Prf
-
-
-
-
-
-# Define some common structures that would be used.
-
-# Define the payload type.
 
 
 class Helper:

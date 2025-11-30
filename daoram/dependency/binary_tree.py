@@ -3,8 +3,7 @@ import math
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from daoram.dependency.helper import Data
-from daoram.dependency.storage import Storage
+from daoram.dependency.storage import Storage, Data
 from daoram.dependency.types import BucketKey, BlockKey, PathData, BucketData, BlockData, Block, Buckets
 
 

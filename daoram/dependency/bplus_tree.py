@@ -6,8 +6,8 @@ import secrets
 from dataclasses import astuple, dataclass
 from typing import Any, List, Optional
 
-from daoram.dependency import Data
-from daoram.dependency.avl_tree import KV_PAIR
+from daoram.dependency.storage import Data
+from daoram.dependency.types import KVPair
 
 
 @dataclass
@@ -47,14 +47,14 @@ class BPlusTreeNode:
         self.is_leaf: bool = True
 
     # Insert at the leaf
-    def add_kv_pair(self, kv_pair: KV_PAIR):
+    def add_kv_pair(self, kv_pair: KVPair):
         """
         Add a key-value pair to this node.
 
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         """
         # Unpack the key, value pair.
-        key, value = kv_pair
+        key, value = kv_pair.key, kv_pair.value
 
         # If keys is not empty, we find the correct place to insert the input value.
         if self.keys:
@@ -237,16 +237,16 @@ class BPlusTree:
 
         return parent_node
 
-    def insert(self, root: BPlusTreeNode, kv_pair: KV_PAIR) -> BPlusTreeNode:
+    def insert(self, root: BPlusTreeNode, kv_pair: KVPair) -> BPlusTreeNode:
         """
         Inserts a new node into the tree, which is represented by the root.
 
         :param root: The root node of the B+ tree.
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         :return: The updated B+ tree root node.
         """
         # Find which leaf to insert.
-        leaves = self.__find_leaf_path(root=root, key=kv_pair[0])
+        leaves = self.__find_leaf_path(root=root, key=kv_pair.key)
         # Add kv pair to the leaf node, which has to be the last one.
         leaves[-1].add_kv_pair(kv_pair=kv_pair)
 

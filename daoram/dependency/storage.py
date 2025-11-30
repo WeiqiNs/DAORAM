@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import os
 import pickle
-from dataclasses import dataclass
-from typing import BinaryIO, Optional, Any
+from dataclasses import astuple, dataclass
+from typing import BinaryIO, Optional, Any, List
 
-from daoram.dependency import Buckets, Helper, Aes
-from daoram.dependency.types import Bucket
+from daoram.dependency.crypto import Aes
+from daoram.dependency.helper import Helper
 
 
-@dataclass(frozen=True)
+@dataclass
 class Data:
     """
     Create the data structure to hold a data record that should be put into a complete binary tree.
@@ -76,7 +76,7 @@ class Storage:
         # Whether the filename is provided determines how we store things.
         if self.__filename is None:
             # Create a list of empty lists.
-            self.__internal_data: Buckets = [[] for _ in range(size)]
+            self.__internal_data: List[list] = [[] for _ in range(size)]
         else:
             # When the file name is not None, data size must be provided.
             if data_size is None:

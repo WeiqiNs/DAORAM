@@ -27,3 +27,4 @@ class TestCrypto:
         prf = Prf()
         # We need to make sure this algorithm is deterministic.
         assert prf.digest("Hello".encode()) == prf.digest("Hello".encode())
+

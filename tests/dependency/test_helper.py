@@ -117,3 +117,4 @@ class TestHelper:
 
         data = b"data"
         assert Helper.unpad_pickle(Helper.pad_pickle(data=data, length=100)) == data
+
