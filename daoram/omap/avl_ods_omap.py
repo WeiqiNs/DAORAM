@@ -5,7 +5,8 @@ import os
 from functools import cached_property
 from typing import Any, List, Tuple
 
-from daoram.dependency import AVLData, AVLTree, BinaryTree, Buckets, Data, Helper, InteractServer
+from daoram.dependency import AVLData, AVLTree, BinaryTree, Data, Helper, InteractServer
+from daoram.dependency.types import Buckets
 from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
 
 

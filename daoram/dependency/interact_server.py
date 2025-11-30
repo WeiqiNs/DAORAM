@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Union
 
-from daoram.dependency.binary_tree import BinaryTree, Buckets
-from daoram.dependency.helper import Block, Query
+from daoram.dependency.binary_tree import BinaryTree
+from daoram.dependency import Buckets
+from daoram.dependency.types import Block, Query
 from daoram.dependency.sockets import Socket
 
 # Set a default response for the server.
