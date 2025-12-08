@@ -160,18 +160,18 @@ class InteractRemoteServer(InteractServer):
         return response
 
     def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-            """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
+        """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
             # Check for connection.
-            self.__check_client()
+        self.__check_client()
 
             # Create the init query.
-            query = {"type": "w", "label": label, "leaf": leaf, "data": data}
+        query = {"type": "w", "label": label, "leaf": leaf, "data": data}
 
             # Send the query to server.
-            self.__client.send(query)
+        self.__client.send(query)
 
             # Check for response.
-            self.__check_response()
+        self.__check_response()
 
     def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
         # Check for connection.
@@ -399,19 +399,19 @@ class RemoteServer(InteractLocalServer):
                 self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
         elif query["type"] == "rb":
             return self.read_block_query(
-                    label=query["label"],
-                    leaf=query["leaf"],
-                    block_id=query["block_id"],
-                    bucket_id=query["bucket_id"],
-                )
+                label=query["label"],
+                leaf=query["leaf"],
+                block_id=query["block_id"],
+                bucket_id=query["bucket_id"],
+            )
         elif query["type"] == "wb":
-                self.write_block_query(
-                    label=query["label"],
-                    leaf=query["leaf"],
-                    bucket_id=query["bucket_id"],
-                    block_id=query["block_id"],
-                    data=query["data"]
-                )
+            self.write_block_query(
+                label=query["label"],
+                leaf=query["leaf"],
+                bucket_id=query["bucket_id"],
+                block_id=query["block_id"],
+                data=query["data"]
+            )
         elif query["type"] == "li":
                 self.list_insert(label=query["label"], index=query["index"], value=query["value"])
         elif query["type"] == "lp":
