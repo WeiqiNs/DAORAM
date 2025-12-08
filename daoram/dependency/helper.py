@@ -9,7 +9,7 @@ from typing import BinaryIO, List, Optional, Tuple, Union, Any, Dict, Generic, T
 from daoram.dependency.crypto import Aes, Prf
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class Data:
     """
     Create the data structure to hold a data record that should be put into a complete binary tree.
