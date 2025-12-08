@@ -90,7 +90,7 @@ class MulPathOram(PathOram):
             tree.storage.encrypt(aes=self._cipher)
 
         # Initialize the storage and send it to the server.
-        self.client.init_query(storage={self._name: tree})
+        self.client.init(storage={self._name: tree})
 
     def process_path_to_stash(self, path: Buckets):
         """Decrypt path and add real data to stash."""

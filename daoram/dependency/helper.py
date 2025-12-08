@@ -4,12 +4,12 @@ import math
 import os
 import pickle
 from dataclasses import astuple, dataclass
-from typing import Any, BinaryIO, List, Optional, Tuple, Union
+from typing import BinaryIO, List, Optional, Tuple, Union, Any, Dict, Generic, TypeVar
 
 from daoram.dependency.crypto import Aes, Prf
 
 
-@dataclass
+@dataclass(frozen=False)
 class Data:
     """
     Create the data structure to hold a data record that should be put into a complete binary tree.
@@ -36,6 +36,20 @@ class Data:
 Block = Union[Data, bytes]
 Bucket = List[Block]
 Buckets = List[Bucket]
+
+# Define the payload type.
+PL = TypeVar("PL")
+
+
+@dataclass(frozen=True)
+class Query(Generic[PL]):
+    payload: PL
+    query_type: str
+    storage_label: str
+
+    def envelope(self) -> Dict[str, Any]:
+        """Envelope the payload of the query to the storage."""
+        return {"payload": self.payload, "query_type": self.query_type, "storage_label": self.storage_label}
 
 
 class Storage:

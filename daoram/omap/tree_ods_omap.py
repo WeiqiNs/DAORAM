@@ -261,7 +261,7 @@ class TreeOdsOmap(ABC):
         :param data: A list of key-value pairs.
         """
         # Let the server store the binary tree.
-        self._client.init_query(storage={self._name: self._init_ods_storage(data=data)})
+        self._client.init(storage={self._name: self._init_ods_storage(data=data)})
 
     @abstractmethod
     def _init_mul_tree_ods_storage(self, data_list: List[KV_LIST]) -> Tuple[BinaryTree, List[ROOT]]:
@@ -283,7 +283,7 @@ class TreeOdsOmap(ABC):
         # Initialize the server binary tree storage and get a list of roots of AVL trees.
         tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
         # Let the server store the binary tree.
-        self._client.init_query(storage={self._name: tree})
+        self._client.init(storage={self._name: tree})
         # Return list of roots.
         return root_list
 

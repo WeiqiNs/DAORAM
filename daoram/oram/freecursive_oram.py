@@ -280,7 +280,7 @@ class FreecursiveOram(TreeBaseOram):
         pos_map_storage_dict[self._name] = storage
 
         # Let the server hold these storages.
-        self.client.init_query(storage=pos_map_storage_dict)
+        self.client.init(storage=pos_map_storage_dict)
 
     def _evict_stash(self, leaf: int) -> Buckets:
         """

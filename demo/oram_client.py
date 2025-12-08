@@ -2,14 +2,14 @@
 
 Each function shows how the client should initialize the server and how to perform operations.
 """
-
+import time
 from daoram.dependency import InteractRemoteServer
 from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 
 def path_oram_client():
     # Define the number of data to store.
-    num_data = pow(2, 10)
+    num_data = pow(2, 14)
 
     # Create the path oram object.
     oram = PathOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
@@ -57,7 +57,7 @@ def recursive_oram_client():
 
 def freecursive_oram_client():
     # Define the number of data to store.
-    num_data = pow(2, 10)
+    num_data = pow(2, 14)
 
     # Create the path oram object.
     oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
@@ -104,7 +104,10 @@ def da_oram_client():
 
 
 if __name__ == '__main__':
-    # path_oram_client()
+    start = time.time()
+    path_oram_client()
+    end = time.time()
+    print(f"Path Oram takes {end - start} seconds to run.")
     # recursive_oram_client()
     # freecursive_oram_client()
-    da_oram_client()
+    # da_oram_client()
