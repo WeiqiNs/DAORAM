@@ -17,6 +17,10 @@ def remove_file():
 
 
 class TestPathOram:
+    def setup_method(self):
+        """make sure the test file is removed before each test"""
+        remove_file()
+         
     def test_without_init(self):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=False)

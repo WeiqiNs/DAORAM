@@ -1,5 +1,4 @@
 from typing import Any
-
 from daoram.dependency import InteractServer
 from daoram.omap import AVLOdsOmap
 
@@ -47,61 +46,6 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
             use_encryption=use_encryption
         )
 
-    def insert(self, key: Any, value: Any) -> None:
-        """
-        Given key-value pair, insert the pair to the tree.
-
-        :param key: the search key of interest.
-        :param value: the value to insert.
-        """
-        # Create a new data block that holds the data to insert to tree.
-        data_block = self._get_avl_data(key=key, value=value)
-
-        # If the current root is empty, we simply set root as this new block.
-        if self.root is None:
-            # Add the data to stash and update root.
-            self._stash.append(data_block)
-            self.root = (data_block.key, data_block.leaf)
-            # Perform the desired number of dummy operations.
-            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
-            return
-
-        # If the current root is not empty, we might have cache.
-        self._stash += self._local
-        self._local = []
-
-        # Get the node information from oram storage.
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
-
-        # Keep adding node to local until we find a place to insert the new node.
-        while True:
-            # Save the last node data and its value.
-            node = self._local[-1]
-
-            # If a node key is smaller, we go right and check whether a child is already there.
-            if node.key < key:
-                # If the child is there, we keep grabbing the next node.
-                if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
-                # Else we store link the parent with the new node, other information will be updated during balance.
-                else:
-                    node.value.r_key = data_block.key
-                    break
-
-            # If the key is not smaller, we go left and check the same as above.
-            else:
-                if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
-                else:
-                    node.value.l_key = data_block.key
-                    break
-
-        # Append the newly inserted node to local as well and perform balance.
-        self._local.append(data_block)
-        self._balance_local()
-
-        # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
-        self._perform_dummy_operation(num_round=self._max_height + 1 - len(self._local))
 
     def search(self, key: Any, value: Any = None) -> Any:
         """

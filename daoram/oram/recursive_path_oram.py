@@ -193,7 +193,7 @@ class RecursivePathOram(TreeBaseOram):
         pos_map_storage_dict[self._name] = storage
 
         # Let the server hold these storages.
-        self.client.init_query(storage=pos_map_storage_dict)
+        self.client.init(storage=pos_map_storage_dict)
 
     def _retrieve_pos_map_stash(self, key: int, value: int, offset: int, new_leaf: int, to_index: int) -> int:
         """
