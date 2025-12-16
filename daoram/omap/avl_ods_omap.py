@@ -85,7 +85,7 @@ class AVLOdsOmap(TreeOdsOmap):
                     l_leaf=self._num_data - 1,
                     l_height=self._max_height
                 ).dump()
-            ).dump()
+            ).dump_pad()
         )
 
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
@@ -104,7 +104,7 @@ class AVLOdsOmap(TreeOdsOmap):
 
             # Perform encryption.
             enc_bucket = [
-                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump(), length=self._max_block_size))
+                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump_pad(), length=self._max_block_size))
                 for data in bucket
             ]
 
@@ -114,7 +114,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
-                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
+                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump_pad(), length=self._max_block_size))
                     for _ in range(dummy_needed)
                 ])
 
@@ -132,7 +132,7 @@ class AVLOdsOmap(TreeOdsOmap):
             # Perform encryption.
             dec_bucket = [
                 dec for data in bucket
-                if (dec := Data.from_pickle(
+                if (dec := Data.load_unpad(
                     Helper.unpad_pickle(data=self._cipher.dec(ciphertext=data)))
                     ).key is not None
             ]
@@ -186,7 +186,7 @@ class AVLOdsOmap(TreeOdsOmap):
 
         # Encryption and fill with dummy data if needed.
         if self._use_encryption:
-            tree.storage.encrypt(aes=self._cipher)
+            tree.storage.encrypt(encryptor=self._cipher)
 
         return tree
 
@@ -234,7 +234,7 @@ class AVLOdsOmap(TreeOdsOmap):
 
         # Encryption and fill with dummy data if needed.
         if self._use_encryption:
-            tree.storage.encrypt(aes=self._cipher)
+            tree.storage.encrypt(encryptor=self._cipher)
 
         return tree, root_list
 

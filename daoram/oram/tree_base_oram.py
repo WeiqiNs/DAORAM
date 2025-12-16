@@ -65,7 +65,7 @@ class TreeBaseOram(ABC):
 
         # Compute the padded total data size, which at largest would be (biggest_key, biggest_leaf, biggest_data).
         self._max_block_size: int = len(
-            Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(data_size)).dump()
+            Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(data_size)).dump_pad()
         )
 
         # Use encryption if required.
@@ -110,7 +110,7 @@ class TreeBaseOram(ABC):
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
             """Helper function to add dummy data and encrypt a bucket."""
             enc_bucket = [
-                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump(), length=self._max_block_size))
+                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump_pad(), length=self._max_block_size))
                 for data in bucket
             ]
 
@@ -119,7 +119,7 @@ class TreeBaseOram(ABC):
             # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
-                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
+                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump_pad(), length=self._max_block_size))
                     for _ in range(dummy_needed)
                 ])
 
@@ -133,7 +133,7 @@ class TreeBaseOram(ABC):
         # Return the decrypted list of data.
         return [[
             dec for data in bucket
-            if (dec := Data.from_pickle(Helper.unpad_pickle(data=self._cipher.dec(ciphertext=data)))).key is not None
+            if (dec := Data.load_unpad(Helper.unpad_pickle(data=self._cipher.dec(ciphertext=data)))).key is not None
         ] for bucket in buckets] if self._use_encryption else buckets
 
     def _get_new_leaf(self) -> int:
@@ -181,7 +181,7 @@ class TreeBaseOram(ABC):
 
         # Encrypt the tree storage if needed.
         if self._use_encryption:
-            tree.storage.encrypt(aes=self._cipher)
+            tree.storage.encrypt(encryptor=self._cipher)
 
         return tree
 

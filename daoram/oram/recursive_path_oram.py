@@ -158,7 +158,7 @@ class RecursivePathOram(TreeBaseOram):
 
             # Encryption and fill with dummy data if needed.
             if self._use_encryption:
-                tree.storage.encrypt(aes=self._cipher)
+                tree.storage.encrypt(encryptor=self._cipher)
 
             # We update the last position map to the current one and delete it by setting it to an empty dict.
             last_pos_map = cur_pos_map_oram._pos_map

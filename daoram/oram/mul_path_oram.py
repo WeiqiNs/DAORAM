@@ -87,7 +87,7 @@ class MulPathOram(PathOram):
 
         # Encrypt the tree storage if needed.
         if self._use_encryption:
-            tree.storage.encrypt(aes=self._cipher)
+            tree.storage.encrypt(encryptor=self._cipher)
 
         # Initialize the storage and send it to the server.
         self.client.init(storage={self._name: tree})

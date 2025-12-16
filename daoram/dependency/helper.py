@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 import math
+import pickle
 import struct
-from typing import List, Tuple, Union, Any
+from dataclasses import astuple, dataclass
+from typing import List, Tuple, Union, Any, Optional
 
-from daoram.dependency.crypto import Blake2Prf
+from daoram.dependency.crypto import PseudoRandomFunction, Encryptor
+
+
+@dataclass
+class Data:
+    """
+    Create the data structure to hold a data record that should be put into a complete binary tree.
+
+    It has three fields: key, leaf, and value, where key and value could be anything, but the leaf needs to be an int.
+    By default, (when used as a dummy), when initialize the fields to None.
+    """
+    key: Optional[Any] = None
+    leaf: Optional[int] = None
+    value: Optional[Any] = None
+
+    @classmethod
+    def load_unpad(cls, data: bytes) -> Data:
+        """Unpad some bytes and load into the Data structure."""
+        # Load from pickle and remove padding if necessary.
+        return cls(*pickle.loads(Helper.unpad_pickle(data=data)))
+
+    def dump_pad(self, length: int) -> bytes:
+        """Dump the data structure to desired number of bytes."""
+        return Helper.pad_pickle(data=pickle.dumps(astuple(self)), length=length)
 
 
 class Helper:
+    """A wrapper for the helper functions. They are wrapped in a class for neater importing statements."""
+
     # Fixed-size header for storing payload length; keeps unpadding lossless.
     LENGTH_HEADER_SIZE = 4
 
@@ -17,26 +44,44 @@ class Helper:
         Pad pickled data to the desired length with a length header and trailing zeros.
 
         :param data: Data to pad.
-        :param length: Desired length of the padded data.
+        :param length: Desired length of the padded data, the desired length include the header!
         :return: Padded data.
         """
-        header = struct.pack("!I", len(data))
-        body = header + data
-        if len(body) > length:
-            raise ValueError("Data length is longer than the desired padded length.")
-        return body + b"\x00" * (length - len(body))
+        # Note that for the desired length, we only count the body of the data.
+        if len(data) + Helper.LENGTH_HEADER_SIZE > length:
+            raise ValueError("The desired length is too short, must be at least 4 + data length.")
+
+        # Header to denote the original length for safe unpad.
+        return struct.pack("!I", len(data)) + data + b"\x00" * (length - len(data) - Helper.LENGTH_HEADER_SIZE)
 
     @staticmethod
     def unpad_pickle(data: bytes) -> bytes:
         """Restore original bytes from padded data using the stored length header."""
         if len(data) < Helper.LENGTH_HEADER_SIZE:
             raise ValueError("Padded data too short to contain length header.")
-        (orig_len,) = struct.unpack("!I", data[:Helper.LENGTH_HEADER_SIZE])
+
+        # Read the original length.
+        orig_len, = struct.unpack("!I", data[:Helper.LENGTH_HEADER_SIZE])
+
+        # Check if the object has been trimmed.
         if orig_len > len(data) - Helper.LENGTH_HEADER_SIZE:
             raise ValueError("Invalid length header in padded data.")
+
+        # Return the unpadded data.
         return data[Helper.LENGTH_HEADER_SIZE: Helper.LENGTH_HEADER_SIZE + orig_len]
 
-    """A wrapper for the helper functions. They are wrapped in a class for neater importing statements."""
+    @staticmethod
+    def compute_data_size(data: Data) -> int:
+        """Given a data record, find the size of the data record."""
+        return len(pickle.dumps(astuple(data))) + Helper.LENGTH_HEADER_SIZE
+
+    @staticmethod
+    def compute_disk_size(data: Data, encryptor: Optional[Encryptor] = None) -> int:
+        """Given a data record and an encryptor, find the size required to store the encrypted data on disk."""
+        if encryptor is None:
+            return Helper.compute_data_size(data)
+        else:
+            return encryptor.ciphertext_length(plaintext_length=Helper.compute_data_size(data))
 
     @staticmethod
     def binary_str_to_bytes(binary_str: str) -> bytes:
@@ -49,7 +94,7 @@ class Helper:
         return bin(int.from_bytes(binary_bytes, byteorder="big"))[2:]
 
     @staticmethod
-    def hash_data_to_leaf(prf: Blake2Prf, map_size: int, data: Union[str, int, bytes]) -> int:
+    def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: Union[str, int, bytes]) -> int:
         """Compute H(data) % map_size."""
         # Convert data to bytes depend on their types.
         if type(data) is int:
@@ -65,7 +110,11 @@ class Helper:
         return prf.digest_mod_n(message=byte_data, mod=map_size)
 
     @staticmethod
-    def hash_data_to_map(prf: Blake2Prf, map_size: int, data: List[Tuple[Union[str, int, bytes], Any]]) -> dict:
+    def hash_data_to_map(
+            prf: PseudoRandomFunction,
+            map_size: int,
+            data: List[Tuple[Union[str, int, bytes], Any]]
+    ) -> dict:
         """
         Given a list of data, map them to the correct integer bucket.
 

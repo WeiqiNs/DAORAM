@@ -231,7 +231,7 @@ class DAOram(TreeBaseOram):
 
             # Encryption and fill with dummy data if needed.
             if self._use_encryption:
-                tree.storage.encrypt(aes=self._cipher)
+                tree.storage.encrypt(encryptor=self._cipher)
 
             # Update the last map used and last oram level.
             last_oram_data = pos_map_size
