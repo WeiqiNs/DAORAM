@@ -1,9 +1,25 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
 from daoram.dependency.binary_tree import BinaryTree
 from daoram.dependency.sockets import Socket
-from daoram.dependency.types import Block, Buckets, Query
+from daoram.dependency.types import (
+    Query,
+    TREE_READ_PATH,
+    TREE_WRITE_PATH,
+    TREE_READ_BUCKET,
+    TREE_WRITE_BUCKET,
+    TREE_READ_BLOCK,
+    TREE_WRITE_BLOCK,
+    TREE_INIT,
+    LIST_READ,
+    LIST_WRITE,
+    LIST_INIT,
+    TreeReadPathPayload,
+    TreeWritePathPayload,
+    Buckets,
+    PathData,
+)
 
 # Set a default response for the server.
 SERVER_DEFAULT_RESPONSE = "Done!"
@@ -14,11 +30,40 @@ ServerStorage = Dict[str, Union[BinaryTree, List]]
 
 
 class InteractServer(ABC):
-    # All class inherits this list.
-    read_queries: List[Query] = []
-    write_queries: List[Query] = []
-
     """This abstract class defines the interface for interacting with the server."""
+
+    def __init__(self):
+        """Initialize the query lists for batching."""
+        self._read_queries: List[Query] = []
+        self._write_queries: List[Query] = []
+
+    @property
+    def read_queries(self) -> List[Query]:
+        """Get the list of pending read queries."""
+        return self._read_queries
+
+    @property
+    def write_queries(self) -> List[Query]:
+        """Get the list of pending write queries."""
+        return self._write_queries
+
+    def add_query(self, query: Query) -> None:
+        """
+        Add a query to the appropriate pending list for batch execution.
+
+        :param query: The query to add.
+        """
+        # Note that we don't handle duplications, and allow for duplicated read.
+        if query.query_type in (TREE_READ_PATH, TREE_READ_BUCKET, TREE_READ_BLOCK, LIST_READ):
+            self._read_queries.append(query)
+        else:
+            # Duplicated writes will be overwritten with the later ones.
+            self._write_queries.append(query)
+
+    def clear_queries(self) -> None:
+        """Clear all pending queries."""
+        self._read_queries.clear()
+        self._write_queries.clear()
 
     @abstractmethod
     def init_connection(self) -> None:
@@ -31,27 +76,64 @@ class InteractServer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def init(self, storage: ServerStorage) -> None:
+    def init_storage(self, storage: ServerStorage) -> None:
         """
-        Issues an init query; sending some storage over to the server.
+        Initialize storages from a dictionary.
 
-        Note that storage is a map, each storage type has a unique label.
-        :param storage: The storage client wants server to hold.
-        :return: No return, but should check whether the query is successfully issued.
+        :param storage: Dict mapping labels to storage objects (BinaryTree or List).
         """
         raise NotImplementedError
 
     @abstractmethod
-    def add_query(self, query: Query) -> None:
+    def execute_query(self, query: Query) -> Any:
+        """
+        Execute a single query against the appropriate storage.
+
+        :param query: The query to execute.
+        :return: The result of the query (if any).
+        """
         raise NotImplementedError
 
     @abstractmethod
-    def merge_and_sort_query(self) -> None:
+    def execute_queries(self) -> List[Any]:
+        """
+        Execute all pending queries (writes first, then reads) and clear the lists.
+
+        :return: List of results from read queries.
+        """
         raise NotImplementedError
 
-    @abstractmethod
-    def execute_query(self) -> None:
-        raise NotImplementedError
+    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
+        """
+        Convenience method: Read path(s) from a BinaryTree storage.
+
+        :param label: The storage label.
+        :param leaf: A single leaf index or a list of leaf indices.
+        :return: The buckets read from the path(s).
+        """
+        # Normalize leaf to list
+        leaves = [leaf] if isinstance(leaf, int) else leaf
+
+        query = Query(
+            payload=TreeReadPathPayload(leaves=leaves),
+            query_type=TREE_READ_PATH,
+            storage_label=label
+        )
+        return self.execute_query(query)
+
+    def write_query(self, label: str, data: PathData) -> None:
+        """
+        Convenience method: Write path(s) to a BinaryTree storage.
+
+        :param label: The storage label.
+        :param data: PathData dict mapping storage index to bucket.
+        """
+        query = Query(
+            payload=TreeWritePathPayload(data=data),
+            query_type=TREE_WRITE_PATH,
+            storage_label=label
+        )
+        self.execute_query(query)
 
 
 class InteractRemoteServer(InteractServer):
@@ -61,11 +143,10 @@ class InteractRemoteServer(InteractServer):
         :param ip: The IP address of the remote server.
         :param port: The port the remote server is listening on.
         """
-        # Save the connection information.
+        super().__init__()
         self.__ip = ip
         self.__port = port
         self.__client = None
-        self.pb_query = None
 
     def update_ip(self, ip: str) -> None:
         """Updates the ip address of the server."""
@@ -82,179 +163,159 @@ class InteractRemoteServer(InteractServer):
 
     def __check_response(self) -> None:
         """Check whether the server successfully executes the request."""
-        # Get response from server.
         response = self.__client.recv()
-        # Check if it is the default response.
         if response != SERVER_DEFAULT_RESPONSE:
             raise ValueError("Server did not give an expected response, the operation may have failed.")
 
     def init_connection(self) -> None:
         """Initialize the connection to the server."""
-        # To make sure the socket won't close, we return it to the place where this is called.
         self.__client = Socket(ip=self.__ip, port=self.__port, is_server=False)
 
     def close_connection(self) -> None:
         """Close the connection to the server."""
         self.__client.close()
 
-    def init(self, label: str, storage: ServerStorage) -> None:
-        """Issues an init query; sending some storage over to the server."""
-        # Check for connection.
+    def init_storage(self, storage: ServerStorage) -> None:
+        """Initialize storages on the remote server."""
         self.__check_client()
 
-        # Create the init query.
-        query = [{"type": "i", "storage": storage}]
+        for label, store in storage.items():
+            if isinstance(store, BinaryTree):
+                query = Query(payload=store, query_type=TREE_INIT, storage_label=label)
+            else:
+                query = Query(payload=store, query_type=LIST_INIT, storage_label=label)
 
-        # Send the query to server.
-        self.__client.send(query)
-        # Add a dummy request
-        self.pb_query = {"type": "w", "label": label, "leaf": 0, "data": None}
-        # Check for response.
-        self.__check_response()
+            self.__client.send(query)
+            self.__check_response()
 
-    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check for connection.
+    def execute_query(self, query: Query) -> Any:
+        """Execute a single query on the remote server."""
         self.__check_client()
 
-        # Merge the write-back of the previous request with this request for a random number
-        query = [self.pb_query, {"type": "r", "label": label, "leaf": leaf}]
-
-        # Send the query to server.
+        # Send the query directly to the server
         self.__client.send(query)
 
-        # Get the server response.
+        # For write operations, just check response; for reads, return the data
+        if query.query_type in (TREE_WRITE_PATH, TREE_WRITE_BUCKET, TREE_WRITE_BLOCK, LIST_WRITE):
+            self.__check_response()
+            return None
+        else:
+            return self.__client.recv()
+
+    def execute_queries(self) -> List[Any]:
+        """Execute all pending queries (writes first, then reads) and clear the lists."""
+        self.__check_client()
+
+        # Combine writes and reads (writes first, then reads)
+        all_queries = self._write_queries + self._read_queries
+
+        if not all_queries:
+            return []
+
+        # Send all queries as a batch
+        self.__client.send(all_queries)
+
+        # Receive the response
         response = self.__client.recv()
 
-        return response
+        # Clear the query lists
+        self.clear_queries()
 
-    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = [{"type": "r", "label": label[index], "leaf": each_leaf} for index, each_leaf in enumerate(leaf)]
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Get the server response.
-        response = self.__client.recv()
-
-        return response
-
-    def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-        """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "w", "label": label, "leaf": leaf, "data": data}
-        # Temporarily store this write-back request for merging with the next random number request
-        self.pb_query = query
-
-    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = [
-            {"type": "w", "label": label[index], "leaf": each_leaf, "data": data[index]}
-            for index, each_leaf in enumerate(leaf)
-        ]
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
-
-    def read_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int) -> Block:
-        """Issues a read block query; telling the server to read one block from some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "rb", "label": label, "leaf": leaf, "bucket_id": bucket_id, "block_id": block_id}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Get the server response.
-        return self.__client.recv()
-
-    def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a "write" block query; telling the server to write one block to some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "wb", "label": label, "leaf": leaf, "bucket_id": bucket_id, "block_id": block_id, "data": data}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
+        # Return results (server returns list of read results)
+        return response if isinstance(response, list) else []
 
 
 class InteractLocalServer(InteractServer):
     def __init__(self):
         """Create an instance for the local server with storages."""
-        self.__storage: Dict[str, BinaryTree] = {}
+        super().__init__()
+        self._storage: ServerStorage = {}
 
     def init_connection(self) -> None:
-        """Since the server is local, pass."""
+        """Since the server is local, no connection needed."""
         pass
 
     def close_connection(self) -> None:
-        """Since the server is local, pass."""
+        """Since the server is local, no connection to close."""
         pass
 
-    def init(self, storage: ServerStorage) -> None:
-        """Issues an init query; sending some storage over to the server."""
-        # Save the storage.
-        self.__storage.update(storage)
+    def init_storage(self, storage: ServerStorage) -> None:
+        """Register storages from a dictionary."""
+        self._storage.update(storage)
 
-    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
+    def _get_storage(self, label: str) -> Union[BinaryTree, List]:
+        """Get storage by label, raising KeyError if not found."""
+        if label not in self._storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
+        return self._storage[label]
 
-        # Depends on the label, read the storage.
-        return self.__storage[label].read_path(leaf=leaf)
+    def execute_query(self, query: Query) -> Any:
+        """Execute a single query against the appropriate storage."""
+        storage = self._get_storage(query.storage_label)
 
-    def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
-        """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
-        # Skip it when writing a dummy 
-        if data is None:
-            return
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        # Dispatch based on storage type
+        if isinstance(storage, BinaryTree):
+            return self._handle_tree_query(storage, query)
+        elif isinstance(storage, list):
+            return self._handle_list_query(storage, query)
+        else:
+            raise TypeError(f"Unknown storage type: {type(storage)}")
 
-        # Depends on the label, write the storage.
-        self.__storage[label].write_path(leaf=leaf, data=data)
+    def execute_queries(self) -> List[Any]:
+        """Execute all pending queries (writes first, then reads) and clear the lists."""
+        results = []
 
-    def read_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int) -> Block:
-        """Issues a read block query; telling the server to read one block from some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        # Execute write queries first
+        for query in self._write_queries:
+            self.execute_query(query)
 
-        # Depends on the label, read the storage.
-        return self.__storage[label].read_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id)
+        # Execute read queries
+        for query in self._read_queries:
+            result = self.execute_query(query)
+            results.append(result)
 
-    def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a "write" block query; telling the server to write one block to some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        # Clear the query lists
+        self.clear_queries()
 
-        # Depends on the label, write the storage.
-        self.__storage[label].write_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id, data=data)
+        return results
+
+    @staticmethod
+    def _handle_tree_query(tree: BinaryTree, query: Query) -> Any:
+        """Handle queries for BinaryTree storage."""
+        payload = query.payload
+        query_type = query.query_type
+
+        if query_type == TREE_READ_PATH:
+            return tree.read_path(payload.leaves)
+        elif query_type == TREE_WRITE_PATH:
+            tree.write_path(payload.data)
+        elif query_type == TREE_READ_BUCKET:
+            return tree.read_bucket(payload.keys)
+        elif query_type == TREE_WRITE_BUCKET:
+            tree.write_bucket(payload.data)
+        elif query_type == TREE_READ_BLOCK:
+            return tree.read_block(payload.keys)
+        elif query_type == TREE_WRITE_BLOCK:
+            tree.write_block(payload.data)
+        else:
+            raise ValueError(f"Unknown tree query type: {query_type}")
+
+    @staticmethod
+    def _handle_list_query(lst: list, query: Query) -> Any:
+        """Handle queries for List storage."""
+        payload = query.payload
+        query_type = query.query_type
+
+        if query_type == LIST_READ:
+            return {i: lst[i] for i in payload.indices}
+
+        elif query_type == LIST_WRITE:
+            for idx, val in payload.data.items():
+                lst[idx] = val
+            return None
+
+        else:
+            raise ValueError(f"Unknown list query type: {query_type}")
 
 
 class RemoteServer(InteractLocalServer):
@@ -264,9 +325,7 @@ class RemoteServer(InteractLocalServer):
         :param ip: The ip address of the remote server.
         :param port: The port the remote server is listening on.
         """
-        # Initialize the super class to create the storages.
         super().__init__()
-        # Create the server instance and have it running.
         self.__server = None
         self.__port = port
         self.__ip = ip
@@ -287,60 +346,31 @@ class RemoteServer(InteractLocalServer):
         """Shuts off the server."""
         self.__server.close()
 
-    def __process_query(self, queries: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
+    def __process_query(self, query_data: Union[Query, List[Query]]) -> Any:
         """Process client's queries based on their types."""
+        queries = query_data if isinstance(query_data, list) else [query_data]
+
+        # Handle init queries separately, add others to batch
         for query in queries:
-            if query["type"] == "i":
-                self.init(storage=query["storage"])
-            elif query["type"] == "r":
-                return self.read_query(label=query["label"], leaf=query["leaf"])
-
-            elif query["type"] == "rm":
-                return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
-
-            elif query["type"] == "w":
-                self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
-
-
-            elif query["type"] == "rw":
-                for each_query in query:
-                    self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
-
-            elif query["type"] == "rb":
-                return self.read_block_query(
-                    label=query["label"],
-                    leaf=query["leaf"],
-                    block_id=query["block_id"],
-                    bucket_id=query["bucket_id"],
-                )
-
-            elif query["type"] == "wb":
-                self.write_block_query(
-                    label=query["label"],
-                    leaf=query["leaf"],
-                    bucket_id=query["bucket_id"],
-                    block_id=query["block_id"],
-                    data=query["data"]
-                )
-
+            if query.query_type in (TREE_INIT, LIST_INIT):
+                self.init_storage({query.storage_label: query.payload})
             else:
-                raise ValueError("Invalid query type was given.")
-        return SERVER_DEFAULT_RESPONSE
+                self.add_query(query)
+
+        # Execute all batched queries and get results
+        results = self.execute_queries()
+
+        return results if results else SERVER_DEFAULT_RESPONSE
 
     def run(self) -> None:
         """Run the server to listen to client queries."""
-        # Initialize the socket and hearing to port.
         self.__init_connection()
 
-        # Keep receiving queries.
         while True:
-            # Receive a query from the client.
             query = self.__server.recv()
-            # If the query has content, we process it.
             if query:
-                self.__server.send(self.__process_query(queries=query))
+                self.__server.send(self.__process_query(query_data=query))
             else:
                 break
 
-        # Close the connection.
         self.__close_connection()

@@ -152,7 +152,3 @@ class Blake2Prf(PseudoRandomFunction):
         :return: Hash value mod n.
         """
         return int.from_bytes(self.digest(message), "big") % mod
-
-
-# Backward compatibility alias
-Aes = AesGcm

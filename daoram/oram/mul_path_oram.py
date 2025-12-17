@@ -76,7 +76,7 @@ class MulPathOram(PathOram):
         tree = BinaryTree(
             filename=self._filename,
             num_data=self._num_data,
-            data_size=self._max_block_size,
+            data_size=self._dumped_data_size,
             bucket_size=self._bucket_size,
             enc_key_size=self._num_key_bytes if self._use_encryption else None,
         )

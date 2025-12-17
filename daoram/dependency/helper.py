@@ -27,9 +27,13 @@ class Data:
         # Load from pickle and remove padding if necessary.
         return cls(*pickle.loads(Helper.unpad_pickle(data=data)))
 
+    def dump(self) -> bytes:
+        """Dump the data structure to bytes without padding."""
+        return pickle.dumps(astuple(self))
+
     def dump_pad(self, length: int) -> bytes:
         """Dump the data structure to desired number of bytes."""
-        return Helper.pad_pickle(data=pickle.dumps(astuple(self)), length=length)
+        return Helper.pad_pickle(data=self.dump(), length=length)
 
 
 class Helper:

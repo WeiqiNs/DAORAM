@@ -9,7 +9,8 @@ Path oram has two public methods:
 """
 from typing import Any, Optional
 
-from daoram.dependency import BinaryTree, Buckets, InteractServer
+from daoram.dependency import BinaryTree, Buckets, InteractServer, Encryptor, PathData, Query, TreeReadPathPayload, \
+    TREE_READ_PATH
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
@@ -22,35 +23,29 @@ class PathOram(TreeBaseOram):
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 aes_key: bytes = None,
-                 num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 encryptor: Encryptor = None):
         """
         Defines the path oram, including its attributes and methods.
 
-        :param num_data: The number of data points the oram should store.
-        :param data_size: The number of bytes the random dummy data should have.
-        :param client: The instance we use to interact with server.
         :param name: The name of the protocol, this should be unique if multiple schemes are used together.
+        :param client: The instance we use to interact with server.
+        :param num_data: The number of data points the oram should store.
         :param filename: The filename to save the oram data to.
+        :param encryptor: The encryptor to use for encryption.
+        :param data_size: The number of bytes the random dummy data should have.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
-        :param aes_key: The key to use for the AES instance.
-        :param num_key_bytes: The number of bytes the aes key should have.
-        :param use_encryption: A boolean indicating whether to use encryption.
         """
         # Initialize the parent BaseOram class.
         super().__init__(
             name=name,
             client=client,
-            aes_key=aes_key,
             num_data=num_data,
             filename=filename,
+            encryptor=encryptor,
             data_size=data_size,
             bucket_size=bucket_size,
-            stash_scale=stash_scale,
-            num_key_bytes=num_key_bytes,
-            use_encryption=use_encryption
+            stash_scale=stash_scale
         )
 
         # This attribute is used to store a leaf temporarily for reading a path without evicting it immediately.
@@ -58,7 +53,6 @@ class PathOram(TreeBaseOram):
 
         # In path oram, we initialize the position map.
         self._init_pos_map()
-        self.label = name
 
     def init_server_storage(self, data_map: dict = None) -> None:
         """
@@ -70,7 +64,7 @@ class PathOram(TreeBaseOram):
         storage = {self._name: self._init_storage_on_pos_map(data_map=data_map)}
 
         # Initialize the storage and send it to the server.
-        self.client.init(label=self.label, storage=storage)
+        self.client.init_storage(storage=storage)
 
     def __retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
         """
@@ -173,23 +167,23 @@ class PathOram(TreeBaseOram):
         # Return the read value, which maybe None in case of write operation.
         return read_value
 
-    def __evict_stash(self, leaf: int) -> Buckets:
+    def __evict_stash(self, leaf: int) -> PathData:
         """
         Evict data blocks in the stash while maintaining correctness.
 
         :param leaf: The leaf label of the path we are evicting data to.
-        :return: The leaf label and the path we should write there.
+        :return: PathData dict mapping storage index to encrypted bucket.
         """
         # Create a temporary stash.
         temp_stash = []
-        # Create a placeholder for the new path.
-        path = [[] for _ in range(self._level)]
+        # Get path dictionary to hold the data.
+        path = BinaryTree.get_mul_path_dict(level=self._level, indices=[leaf])
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
             # Attempt to insert actual data to a path.
             inserted = BinaryTree.fill_data_to_path(
-                data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
+                data=data, path=path, leaves=[leaf], level=self._level, bucket_size=self._bucket_size
             )
 
             # If we were not able to insert data, overflow happened, put the block to the temp stash.
@@ -199,8 +193,7 @@ class PathOram(TreeBaseOram):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we write a path from bottom up.
-        return self._encrypt_buckets(buckets=path[::-1])
+        return self._encrypt_path_data(path=path)
 
     def operate_on_key(self, op: str, key: int, value: Any = None) -> Any:
         """
@@ -215,7 +208,11 @@ class PathOram(TreeBaseOram):
         leaf = self._look_up_pos_map(key=key)
 
         # We read the path from the server.
-        path = self.client.read_query(label=self._name, leaf=leaf)
+        path = self.client.execute_query(query=Query(
+            payload=TreeReadPathPayload(leaves=[leaf]),
+            query_type=TREE_READ_PATH,
+            storage_label=self._name
+        ))
 
         # Retrieve value from the path, or write to it.
         value = self.__retrieve_block(op=op, key=key, path=path, value=value)
@@ -223,8 +220,10 @@ class PathOram(TreeBaseOram):
         # Perform an eviction and get a new path.
         path = self.__evict_stash(leaf=leaf)
 
+
+
         # Write the path back to the server.
-        self.client.write_query(label=self._name, leaf=leaf, data=path)
+        self.client.add_query(label=self._name, leaf=leaf, data=path)
 
         return value
 
