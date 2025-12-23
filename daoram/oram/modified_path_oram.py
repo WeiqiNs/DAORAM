@@ -1,19 +1,13 @@
-"""
-This module defines the path oram class.
-
-Path oram has two public methods:
-    - init_storage_on_pos_map: this should be called first after the class object is created. This method constructs the
-        storage the server should hold for the client.
-    - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
-        data points stored in the storage.
-"""
-from typing import Any, Optional
-
+import math
+import os
+from typing import Any, Optional, Tuple, Union
 from daoram.dependency import BinaryTree, Buckets, InteractServer
+from daoram.dependency.flexible_binary_tree import FlexibleBinaryTree
+from daoram.dependency.helper import Data
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
-class PathOram(TreeBaseOram):
+class ModifiedPathOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
@@ -24,7 +18,7 @@ class PathOram(TreeBaseOram):
                  stash_scale: int = 4,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 use_encryption: bool = False):
         """
         Defines the path oram, including its attributes and methods.
 
@@ -54,11 +48,35 @@ class PathOram(TreeBaseOram):
         )
 
         # This attribute is used to store a leaf temporarily for reading a path without evicting it immediately.
-        self.__tmp_leaf: Optional[int] = None
-
+        self.__tmp_leaf: Optional[Any] = None
+        # Recalculate _max_block_size to account for tuple in leaf field
+        self._max_block_size: int = len(
+            Data(key=self._num_data - 1, leaf=(self._num_data - 1, self._level), value=os.urandom(self._data_size)).dump()
+        )
+        
+        # Compute the level of the binary tree needed.
+        self._level = int(math.ceil(math.log(num_data, 2))) + 1
         # In path oram, we initialize the position map.
         self._init_pos_map()
         self.label = name
+    def scale_up(self) -> bool:
+        if(self.client.scale_up(label = self.label)):
+            self._level +=1
+            self._stash_size = self._stash_scale * (self._level - 1) if self._level > 1 else self._stash_scale
+            self._leaf_range = pow(2, self._level - 1) 
+            return True
+        return False
+    
+    def scale_down(self) -> bool:
+        if(self.client.scale_down(label = self.label)):
+            self._level -=1
+            self._stash_size = self._stash_scale * (self._level - 1) if self._level > 1 else self._stash_scale
+            self._leaf_range = pow(2, self._level - 1)    
+            return True
+        return False
+    def _init_pos_map(self) -> None:
+        """Initialize the default position map where {i : random_leaf}, for i in [0, leaf_range)."""
+        self._pos_map = {i: (self._get_new_leaf(), self._level) for i in range(self._num_data)}
 
     def init_server_storage(self, data_map: dict = None) -> None:
         """
@@ -72,7 +90,38 @@ class PathOram(TreeBaseOram):
         # Initialize the storage and send it to the server.
         self.client.init(storage=storage)
 
-    def _retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
+    def _init_storage_on_pos_map(self, data_map: dict = None) -> FlexibleBinaryTree:
+        """
+        Initialize a binary tree storage based on the data map.
+
+        :param data_map: A dictionary storing {key: data}.
+        :return: The binary tree storage based on the data map.
+        """
+        # Create the binary tree object.
+        tree = FlexibleBinaryTree(
+            filename=self._filename,
+            num_data=self._num_data,
+            data_size=self._max_block_size,
+            bucket_size=self._bucket_size,
+            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+        )
+
+        # Fill the data to leaf according to the provided data_map.
+        if data_map:
+            for key, leaf in self._pos_map.items():
+                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=data_map[key]))
+
+        # Otherwise, fill dummy data at the correct places.
+        else:
+            for key, leaf in self._pos_map.items():
+                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=os.urandom(self._data_size)))
+
+        # Encrypt the tree storage if needed.
+        if self._use_encryption:
+            tree.storage.encrypt(aes=self._cipher)
+
+        return tree
+    def __retrieve_stash(self, op: str, key: int, to_index: int, value: Any = None) -> int:
         """
         Given a key and an operation, retrieve the block from the stash and apply the operation to it.
 
@@ -101,9 +150,10 @@ class PathOram(TreeBaseOram):
                 else:
                     raise ValueError("The provided operation is not valid.")
                 # Get a new path and update the position map.
-                data.leaf = self._get_new_leaf()
+                new_leaf = (self._get_new_leaf(), self._level)
+                data.leaf = new_leaf
                 # Update the position map.
-                self._pos_map[key] = data.leaf
+                self._pos_map[key] = new_leaf
                 # Set found to true.
                 found = True
                 # Break the for loop.
@@ -115,7 +165,7 @@ class PathOram(TreeBaseOram):
 
         return read_value
 
-    def _retrieve_block(self, op: str, key: int, path: Buckets, value: Any = None) -> Any:
+    def __retrieve_block(self, op: str, key: int, path: Buckets, value: Any = None) -> Any:
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
@@ -153,10 +203,10 @@ class PathOram(TreeBaseOram):
                     else:
                         raise ValueError("The provided operation is not valid.")
                     # Get a new path and update the position map.
-                    data.leaf = self._get_new_leaf()
+                    new_leaf = (self._get_new_leaf(), self._level)
+                    data.leaf = new_leaf
                     # Update the position map.
-                    self._pos_map[key] = data.leaf
-                    # Set found to True.
+                    self._pos_map[key] = new_leaf
                     found = True
 
                 # And all real data to the stash.
@@ -168,12 +218,12 @@ class PathOram(TreeBaseOram):
 
         # If the value is not found, it might be in the stash.
         if not found:
-            read_value = self._retrieve_stash(op=op, key=key, to_index=to_index, value=value)
+            read_value = self.__retrieve_stash(op=op, key=key, to_index=to_index, value=value)
 
         # Return the read value, which maybe None in case of write operation.
         return read_value
 
-    def _evict_stash(self, leaf: int) -> Buckets:
+    def _evict_stash(self, leaf: Tuple[int, int]) -> Buckets:
         """
         Evict data blocks in the stash while maintaining correctness.
 
@@ -188,8 +238,8 @@ class PathOram(TreeBaseOram):
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
             # Attempt to insert actual data to a path.
-            inserted = BinaryTree.fill_data_to_path(
-                data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
+            inserted = FlexibleBinaryTree.fill_data_to_path(
+                data=data, path=path, leaf=leaf, bucket_size=self._bucket_size, level=self._level
             )
 
             # If we were not able to insert data, overflow happened, put the block to the temp stash.
@@ -213,12 +263,11 @@ class PathOram(TreeBaseOram):
         """
         # Find which path the data of interest lies on.
         leaf = self._look_up_pos_map(key=key)
-
         # We read the path from the server.
         path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
-        value = self._retrieve_block(op=op, key=key, path=path, value=value)
+        value = self.__retrieve_block(op=op, key=key, path=path, value=value)
 
         # Perform an eviction and get a new path.
         path = self._evict_stash(leaf=leaf)
@@ -244,7 +293,7 @@ class PathOram(TreeBaseOram):
         path = self.client.read_query(label=self._name, leaf=leaf)
 
         # Retrieve value from the path, or write to it.
-        value = self._retrieve_block(op=op, key=key, path=path, value=value)
+        value = self.__retrieve_block(op=op, key=key, path=path, value=value)
 
         # Temporarily save the leaf for future eviction.
         self.__tmp_leaf = leaf
@@ -273,7 +322,7 @@ class PathOram(TreeBaseOram):
             raise KeyError(f"Key {key} not found.")
 
         # Perform an eviction and get a new path.
-        path = self._evict_stash(leaf=self.__tmp_leaf)
+        path = self.__evict_stash(leaf=self.__tmp_leaf)
 
         # Write the path back to the server.
         self.client.write_query(label=self._name, leaf=self.__tmp_leaf, data=path)
