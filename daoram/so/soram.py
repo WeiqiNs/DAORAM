@@ -1,12 +1,8 @@
 """
-This module defines the SORAM (Snapshot-Oblivious RAM) class.
-
 SORAM is a type of ORAM that provides access pattern protection under a weaker threat model
 where the adversary can only observe access patterns of consecutive c operations.
 It is more efficient than traditional ORAM while still providing security guarantees.
 """
-
-
 import os
 from queue import Queue
 from typing import Any, List
@@ -23,7 +19,7 @@ class Soram():
                  name: str = "sor",
                  filename: str = None,
                  bucket_size: int = 10,
-                 stash_scale: int = 100,
+                 stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
@@ -170,9 +166,7 @@ class Soram():
         :param value: The value to write (for write operations).
         :return: the old value of the key
         """
-        if (key==12):
-            print("key is 12")
-        # 1.  The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
+        # The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
         value_old1 = self._Ow.search(key)
         value_old2 = self._Or.search(key)
         value_old = None
@@ -183,7 +177,7 @@ class Soram():
             self.operate_on_list(label='DB', op='get', pos=self._num_data+self._dummy_index)
             #If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             if op == 'read':
-                self._Ow.search(key, value_old)
+                self._Ow.search(key)
             else:
                 self._Ow.search(key, value)
             self.operate_on_list(label= self._Qw_name, op='insert', data=self._num_data + self._dummy_index)
@@ -222,8 +216,8 @@ class Soram():
 
         # pop from Qw, push what have been poped into Qr
         key = self.operate_on_list(self._Qw_name, 'pop')
-        value = self._Ow.search(key)
-        self._Ow.delete(key) 
+        value = self._Ow.delete(key) 
+
         self.operate_on_list(self._Qr_name, 'insert', data = key)
 
         # delete what have been poped from Ow and insert into Or and DB
@@ -236,5 +230,3 @@ class Soram():
         self._Or.delete(key)
 
         return value_old
-
-

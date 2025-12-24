@@ -715,6 +715,9 @@ class AVLOdsOmap(TreeOdsOmap):
         :param key: The search key of interest.
         :return: The value of the deleted node.
         """
+        if key == None:
+            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
+            return None
         # If the current root is empty, we can't perform deletion.
         if self.root is None:
             raise ValueError(f"It seems the tree is empty and can't perform deletion.")
@@ -754,7 +757,7 @@ class AVLOdsOmap(TreeOdsOmap):
                     return None
 
         # At this point, node contains the key to delete
-        deleted_value = node.key
+        deleted_value = node.value.value
         # Case 1: Node has no children (leaf node)
         if node.value.l_key is None and node.value.r_key is None:
             # If deleting the root
