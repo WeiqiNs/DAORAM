@@ -6,6 +6,7 @@ This client demonstrates the usage of the Bottom-to-Up SOMAP protocol, which pro
 oblivious access to a key-value store with dynamic security level adjustment.
 """
 import os
+import random
 import sys
 
 from daoram.dependency.interact_server import InteractLocalServer
@@ -23,9 +24,9 @@ def main():
     # client = InteractRemoteServer()
     client = InteractLocalServer()
     # BottomUpSomap parameters
-    num_data = pow(2, 10)
-    cache_size = 50  # Cache size (window parameter c)
-    data_size = 20  # Data block size in bytes
+    num_data = pow(2, 14)
+    cache_size = 200  # Cache size (window parameter c)
+    data_size = 1024  # Data block size in bytes
     
     # Create BottomUpSomap instance
     somap = BottomUpSomap(
@@ -42,19 +43,26 @@ def main():
         data_map[i] = i
     somap.setup(data_map=data_map)
 
-    for i in range(100):
+    for i in range(num_data):
+        start_time = time.time()
         value = somap.access(key=i, op="write", value=i+1)
         value = somap.access(key=i, op="read")
+        end_time = time.time() - start_time
+        print(f"Updated key {i} value:{value} in {end_time:.2f} seconds")
         
-    somap.adjust_cache_size(5)
+    somap.adjust_cache_size(40)
 
     for i in range(num_data):
         value = somap.access(key=i, op="read")
         print(f"Read key {i}: {value}...")
-
-    for i in range(100):
-        vlaue = somap.access(key=0, op="read")
-        print(f"Read key {i}: {vlaue}...")
+    for i in range(num_data):
+        # Get random value between 0-20
+        random_key = random.randint(0, 120)
+        # Write random value
+        somap.access(key=random_key, op="write", value=f"Random value {random_key}".encode())
+        # Read and verify
+        read_value = somap.access(key=random_key, op="read")
+        print(f"Loop progress: {i}, Random key: {random_key}, Read value: {read_value}")
 
 if __name__ == "__main__":
     start_time = time.time()

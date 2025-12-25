@@ -1,9 +1,11 @@
 import os
 from daoram.dependency.interact_server import InteractServer, ServerStorage
+from daoram.dependency.crypto import Aes
 from daoram.omap.avl_ods_omap import AVLOdsOmap
 from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
 from daoram.oram.static_oram import StaticOram
 from typing import Any, Dict
+import pickle
 
 class BottomUpSomap:
     """
@@ -22,7 +24,7 @@ class BottomUpSomap:
                  name: str = "busomap",
                  filename: str = None,
                  bucket_size: int = 10,
-                 stash_scale: int = 400,
+                 stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
@@ -53,6 +55,9 @@ class BottomUpSomap:
         self._num_key_bytes = num_key_bytes
         self._use_encryption = use_encryption
         
+        # Initialize encryption for list data
+        self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        
         # OMAP caches
         self._Ow: AVLOdsOmap = None  
         self._Or: AVLOdsOmap = None  
@@ -82,6 +87,35 @@ class BottomUpSomap:
         """Return the client object."""
         return self._client
     
+    def _encrypt_data(self, data: Any) -> Any:
+        """Encrypt data if encryption is enabled"""
+        if not self._use_encryption or self._list_cipher is None:
+            return data
+        
+        try:
+            # Serialize the data
+            serialized_data = pickle.dumps(data)
+            # Encrypt the serialized data
+            encrypted_data = self._list_cipher.enc(serialized_data)
+            return encrypted_data
+        except Exception as e:
+            print(f"Error encrypting data: {e}")
+            return data
+    
+    def _decrypt_data(self, encrypted_data: Any) -> Any:
+        """Decrypt data if encryption is enabled"""
+        if not self._use_encryption or self._list_cipher is None:
+            return encrypted_data
+        
+        try:
+            # Decrypt the data
+            decrypted_data = self._list_cipher.dec(encrypted_data)
+            # Deserialize the data
+            data = pickle.loads(decrypted_data)
+            return data
+        except Exception as e:
+            print(f"Error decrypting data: {e}")
+            return encrypted_data
     
     def setup(self, data_map: Dict[int, Any] = None) -> None:
         """
@@ -138,7 +172,7 @@ class BottomUpSomap:
         # Initialize OMAP storage
         st_ow = self._Ow._init_ods_storage([])
         st_or = self._Or._init_ods_storage([])
-        
+
         # Upload server state
         server_storage: ServerStorage = {
             self._Ow_name: st_ow,
@@ -288,11 +322,21 @@ class BottomUpSomap:
     def operate_on_list(self, label:str, op: str, pos: int = None, data: Any = None)-> Any:
         """Perform an operation on a list stored on the server"""
         if op == 'insert':
-            self._client.list_insert(label=label, value=data)
+            # Encrypt data before inserting if encryption is enabled
+            encrypted_data = self._encrypt_data(data)
+            self._client.list_insert(label=label, value=encrypted_data)
         elif op == 'pop':            
-            return self._client.list_pop(label=label)
+            # Get the encrypted data from the list
+            encrypted_data = self._client.list_pop(label=label)
+            # Decrypt the data if encryption is enabled
+            return self._decrypt_data(encrypted_data)
         elif op == 'all':
-            return self._client.list_all(label=label)
+            # Get all encrypted data from the list
+            encrypted_data_list = self._client.list_all(label=label)
+            # Decrypt each item if encryption is enabled
+            if self._use_encryption:
+                return [self._decrypt_data(item) for item in encrypted_data_list]
+            return encrypted_data_list
         else:
             print(f"error: unknown operation '{op}'")
         return None

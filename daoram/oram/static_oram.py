@@ -187,8 +187,6 @@ class StaticOram(PathOram):
         """
         # Find which path the data of interest lies on.
         leaf = self._get_path_number(key)
-        if key == 2:
-            print(f"Leaf for key {key} is {leaf}")
 
         # We read the path from the server.
         path = self.client.read_query(label=self._name, leaf=leaf)
