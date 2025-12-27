@@ -18,7 +18,7 @@ class Data:
     By default, (when used as a dummy), when initialize the fields to None.
     """
     key: Optional[Any] = None
-    leaf: Optional[int] = None
+    leaf: Optional[Any] = None
     value: Optional[Any] = None
 
     @classmethod

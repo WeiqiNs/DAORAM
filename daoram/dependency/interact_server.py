@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Tuple, Union
 
+from daoram.dependency.flexible_binary_tree import FlexibleBinaryTree
 from daoram.dependency.binary_tree import BinaryTree, Buckets
 from daoram.dependency.helper import Block, Query
 from daoram.dependency.sockets import Socket
@@ -10,7 +11,7 @@ SERVER_DEFAULT_RESPONSE = "Done!"
 # Set a default port for the server and client to connect to.
 PORT = 10000
 # Define the type of storage the server should hold.
-ServerStorage = Dict[str, Union[BinaryTree, List]]
+ServerStorage = Dict[str, Union[BinaryTree, FlexibleBinaryTree, list]]
 
 
 class InteractServer(ABC):
@@ -34,7 +35,7 @@ class InteractServer(ABC):
         """
         Issues an init query; sending some storage over to the server.
 
-        Note that storage is a map, each storage type has a unique label.
+        Note that storage is either one BinaryTree or a list of BinaryTrees, in the case of position map oram storages.
         :param storage: The storage client wants server to hold.
         :return: No return, but should check whether the query is successfully issued.
         """
@@ -56,6 +57,14 @@ class InteractServer(ABC):
     def list_update(self, label: str, index:int, value:Any) -> None :
         raise NotImplementedError
 
+    def list_all(self, label: str) -> List[Any] :
+        raise NotImplementedError
+    
+    def scale_up(self, label: str) -> bool:
+        raise NotImplementedError
+    
+    def scale_down(self, label: str) -> bool:
+        raise NotImplementedError   
     # @abstractmethod
     # def add_query(self, query: Query) -> None:
     #     raise NotImplementedError
@@ -103,6 +112,15 @@ class InteractRemoteServer(InteractServer):
         # Check if it is the default response.
         if response != SERVER_DEFAULT_RESPONSE:
             raise ValueError("Server did not give an expected response, the operation may have failed.")
+    
+    def __check_scale(self) -> None:
+        """Check whether the server successfully scales up or down."""
+        # Get response from server.
+        response = self.__client.recv()
+        # Check if the response is False.
+        if response is False:
+            return False
+        return True
 
     def init_connection(self) -> None:
         """Initialize the connection to the server."""
@@ -127,7 +145,7 @@ class InteractRemoteServer(InteractServer):
         # Check for response.
         self.__check_response()
 
-    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
+    def read_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]]) -> Buckets:
         """Issues a read query; telling the server to read one/multiple paths from some storage."""
         # Check for connection.
         self.__check_client()
@@ -159,18 +177,18 @@ class InteractRemoteServer(InteractServer):
 
         return response
 
-    def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
+    def write_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]], data: Buckets) -> None:
         """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
-            # Check for connection.
+        # Check for connection.
         self.__check_client()
 
-            # Create the init query.
+        # Create the init query.
         query = {"type": "w", "label": label, "leaf": leaf, "data": data}
 
-            # Send the query to server.
+        # Send the query to server.
         self.__client.send(query)
 
-            # Check for response.
+        # Check for response.
         self.__check_response()
 
     def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
@@ -189,7 +207,7 @@ class InteractRemoteServer(InteractServer):
         # Check for response.
         self.__check_response()
 
-    def read_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int) -> Block:
+    def read_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int) -> Block:
         """Issues a read block query; telling the server to read one block from some storage."""
         # Check for connection.
         self.__check_client()
@@ -203,7 +221,7 @@ class InteractRemoteServer(InteractServer):
         # Get the server response.
         return self.__client.recv()
 
-    def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
+    def write_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int, data: Block) -> None:
         """Issues a "write" block query; telling the server to write one block to some storage."""
         # Check for connection.
         self.__check_client()
@@ -263,7 +281,41 @@ class InteractRemoteServer(InteractServer):
         self.__client.send(query)
         self.__check_response()
 
+    def list_all(self, label: str) -> List[Any] :
+        """Issues a list all query; telling the server to return all values from some list."""
+        # Check if the requested storage exists.
+        self.__check_client()
 
+        # Create the all query.
+        query = {"type": "la", "label": label}
+
+        # Send the query to server.
+        self.__client.send(query)
+        return self.__client.recv()
+
+    def scale_up(self, label: str) -> bool:
+        """Issues a scale up query; telling the server to scale up some storage."""
+        # Check if the requested storage exists.
+        self.__check_client()
+
+        # Create the scale up query.
+        query = {"type": "su", "label": label}
+
+        # Send the query to server.
+        self.__client.send(query)
+        return self.__check_scale()
+
+    def scale_down(self, label: str) -> bool:
+        """Issues a scale down query; telling the server to scale down some storage."""
+        # Check if the requested storage exists.
+        self.__check_client()
+
+        # Create the scale down query.
+        query = {"type": "sd", "label": label}
+
+        # Send the query to server.
+        self.__client.send(query)
+        return self.__check_scale()
 
 class InteractLocalServer(InteractServer):
     def __init__(self):
@@ -283,7 +335,7 @@ class InteractLocalServer(InteractServer):
         # Save the storage.
         self.__storage.update(storage)
 
-    def read_query(self, label: str, leaf: Union[int, List[int]]) -> Buckets:
+    def read_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]]) -> Buckets:
         """Issues a read query; telling the server to read one/multiple paths from some storage."""
         # Check if the requested storage exists.
         if label not in self.__storage:
@@ -292,7 +344,7 @@ class InteractLocalServer(InteractServer):
         # Depends on the label, read the storage.
         return self.__storage[label].read_path(leaf=leaf)
 
-    def write_query(self, label: str, leaf: Union[int, List[int]], data: Buckets) -> None:
+    def write_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]], data: Buckets) -> None:
         """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
         # Skip it when writing a dummy 
         if data is None:
@@ -304,7 +356,7 @@ class InteractLocalServer(InteractServer):
         # Depends on the label, write the storage.
         self.__storage[label].write_path(leaf=leaf, data=data)
 
-    def read_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int) -> Block:
+    def read_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int) -> Block:
         """Issues a read block query; telling the server to read one block from some storage."""
         # Check if the requested storage exists.
         if label not in self.__storage:
@@ -313,7 +365,7 @@ class InteractLocalServer(InteractServer):
         # Depends on the label, read the storage.
         return self.__storage[label].read_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id)
 
-    def write_block_query(self, label: str, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
+    def write_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int, data: Block) -> None:
         """Issues a "write" block query; telling the server to write one block to some storage."""
         # Check if the requested storage exists.
         if label not in self.__storage:
@@ -353,6 +405,24 @@ class InteractLocalServer(InteractServer):
 
         # Depends on the label, write the storage.
         self.__storage[label][index] = value
+    
+    def list_all(self, label:str) -> List[Any] :
+        if label not in self.__storage:
+            raise KeyError(f"Label {label} is not hosted in the server storage.")
+
+        # Depends on the label, write the storage.
+        return self.__storage[label]
+    
+    def scale_up(self, label: str) -> bool:
+        if label not in self.__storage:
+            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        return self.__storage[label].scale_up()
+    
+    def scale_down(self, label: str) -> bool:
+        if label not in self.__storage:
+            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        return self.__storage[label].scale_down()
+    
 class RemoteServer(InteractLocalServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
         """Creates a remote server instance that will answer client's queries.
@@ -385,7 +455,7 @@ class RemoteServer(InteractLocalServer):
 
     def __process_query(self, query: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
         """Process client's queries based on their types."""
-        print(f"Received query: {query}")
+        # print(f"Received query: {query}")
         if query["type"] == "i":
             self.init(storage=query["storage"])
         elif query["type"] == "r":
@@ -412,6 +482,10 @@ class RemoteServer(InteractLocalServer):
                 block_id=query["block_id"],
                 data=query["data"]
             )
+        elif query["type"] == "su":
+                return self.scale_up(label=query["label"])
+        elif query["type"] == "sd":
+                return self.scale_down(label=query["label"])
         elif query["type"] == "li":
                 self.list_insert(label=query["label"], index=query["index"], value=query["value"])
         elif query["type"] == "lp":
@@ -420,6 +494,8 @@ class RemoteServer(InteractLocalServer):
                 return self.list_get(label=query["label"], index=query["index"])
         elif query["type"] == "lu":
                 self.list_update(label=query["label"], index=query["index"], value=query["value"])
+        elif query["type"] == "la":
+                return self.list_all(label=query["label"])
         else:
             raise ValueError("Invalid query type was given.")
         return SERVER_DEFAULT_RESPONSE
