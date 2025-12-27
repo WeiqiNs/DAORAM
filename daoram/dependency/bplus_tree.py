@@ -4,7 +4,7 @@ from __future__ import annotations
 import pickle
 import secrets
 from dataclasses import astuple, dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from daoram.dependency import Data
 from daoram.dependency.avl_tree import KV_PAIR
@@ -288,6 +288,184 @@ class BPlusTree:
                 return leaf.values[index]
 
         raise KeyError(f"The key {key} is not found.")
+
+    def __find_leaf_with_indices(self, key: Any, root: BPlusTreeNode) -> Tuple[List[BPlusTreeNode], List[int]]:
+        """
+        Find the path to the leaf and track child indices at each level.
+
+        :param key: The key to search for.
+        :param root: The root node of the B+ tree.
+        :return: A tuple of (path, indices) where path is list of nodes and indices tracks which child was taken.
+        """
+        path = [root]
+        indices = []
+        cur_node = root
+
+        while not cur_node.is_leaf:
+            child_index = len(cur_node.keys)  # Default to rightmost child.
+            for index, each_key in enumerate(cur_node.keys):
+                if key < each_key:
+                    child_index = index
+                    break
+                elif key == each_key:
+                    child_index = index + 1
+                    break
+
+            indices.append(child_index)
+            cur_node = cur_node.values[child_index]
+            path.append(cur_node)
+
+        return path, indices
+
+    def __get_min_keys(self, is_leaf: bool) -> int:
+        """Get the minimum number of keys a node must have."""
+        if is_leaf:
+            return (self.__order - 1) // 2
+        return self.__mid - 1 if self.__order > 3 else 1
+
+    def __update_parent_key(self, parent: BPlusTreeNode, old_key: Any, new_key: Any) -> None:
+        """Update a key in the parent node when the first key of a child changes."""
+        for i, k in enumerate(parent.keys):
+            if k == old_key:
+                parent.keys[i] = new_key
+                return
+
+    def delete(self, root: BPlusTreeNode, key: Any) -> Optional[BPlusTreeNode]:
+        """
+        Deletes a key from the B+ tree using an iterative approach.
+
+        :param root: The root node of the B+ tree.
+        :param key: The key to delete.
+        :return: The updated B+ tree root node, or None if tree becomes empty.
+        """
+        # Find the path to the leaf and the child indices taken at each level.
+        path, indices = self.__find_leaf_with_indices(key, root)
+        leaf = path[-1]
+
+        # Find and remove the key from the leaf.
+        key_index = -1
+        for i, k in enumerate(leaf.keys):
+            if k == key:
+                key_index = i
+                break
+
+        if key_index == -1:
+            raise KeyError(f"The key {key} is not found.")
+
+        # Remove the key-value pair.
+        deleted_key = leaf.keys.pop(key_index)
+        leaf.values.pop(key_index)
+
+        # If this is the root and it's a leaf, handle specially.
+        if len(path) == 1:
+            return root if leaf.keys else None
+
+        # Track if we need to update a parent key (when first key of leaf changes).
+        if key_index == 0 and leaf.keys:
+            # The first key changed, may need to update ancestor.
+            new_first_key = leaf.keys[0]
+            for level in range(len(path) - 2, -1, -1):
+                parent = path[level]
+                for i, k in enumerate(parent.keys):
+                    if k == deleted_key:
+                        parent.keys[i] = new_first_key
+                        break
+                else:
+                    continue
+                break
+
+        # Handle underflow starting from the leaf going up.
+        min_keys_leaf = self.__get_min_keys(is_leaf=True)
+        min_keys_internal = self.__get_min_keys(is_leaf=False)
+
+        level = len(path) - 1
+
+        while level > 0:
+            node = path[level]
+            parent = path[level - 1]
+            child_idx = indices[level - 1]
+            min_keys = min_keys_leaf if node.is_leaf else min_keys_internal
+
+            # Check if node has underflow.
+            if len(node.keys) >= min_keys:
+                break
+
+            # Try to borrow from left sibling.
+            if child_idx > 0:
+                left_sibling = parent.values[child_idx - 1]
+                if len(left_sibling.keys) > min_keys:
+                    # Borrow from left sibling.
+                    if node.is_leaf:
+                        # Move last key-value from left sibling to this node.
+                        node.keys.insert(0, left_sibling.keys.pop())
+                        node.values.insert(0, left_sibling.values.pop())
+                        # Update parent key.
+                        parent.keys[child_idx - 1] = node.keys[0]
+                    else:
+                        # For internal node: rotate through parent.
+                        node.keys.insert(0, parent.keys[child_idx - 1])
+                        node.values.insert(0, left_sibling.values.pop())
+                        parent.keys[child_idx - 1] = left_sibling.keys.pop()
+                    break
+
+            # Try to borrow from right sibling.
+            if child_idx < len(parent.values) - 1:
+                right_sibling = parent.values[child_idx + 1]
+                if len(right_sibling.keys) > min_keys:
+                    # Borrow from right sibling.
+                    if node.is_leaf:
+                        # Move first key-value from right sibling to this node.
+                        node.keys.append(right_sibling.keys.pop(0))
+                        node.values.append(right_sibling.values.pop(0))
+                        # Update parent key.
+                        parent.keys[child_idx] = right_sibling.keys[0]
+                    else:
+                        # For internal node: rotate through parent.
+                        node.keys.append(parent.keys[child_idx])
+                        node.values.append(right_sibling.values.pop(0))
+                        parent.keys[child_idx] = right_sibling.keys.pop(0)
+                    break
+
+            # Must merge - prefer merging with left sibling.
+            if child_idx > 0:
+                left_sibling = parent.values[child_idx - 1]
+                # Merge node into left sibling.
+                if node.is_leaf:
+                    left_sibling.keys.extend(node.keys)
+                    left_sibling.values.extend(node.values)
+                else:
+                    # For internal node, bring down parent key.
+                    left_sibling.keys.append(parent.keys[child_idx - 1])
+                    left_sibling.keys.extend(node.keys)
+                    left_sibling.values.extend(node.values)
+                # Remove the merged child and corresponding key from parent.
+                parent.keys.pop(child_idx - 1)
+                parent.values.pop(child_idx)
+                # Update indices for next iteration.
+                indices[level - 1] = child_idx - 1
+            else:
+                # Merge with right sibling.
+                right_sibling = parent.values[child_idx + 1]
+                if node.is_leaf:
+                    node.keys.extend(right_sibling.keys)
+                    node.values.extend(right_sibling.values)
+                else:
+                    # For internal node, bring down parent key.
+                    node.keys.append(parent.keys[child_idx])
+                    node.keys.extend(right_sibling.keys)
+                    node.values.extend(right_sibling.values)
+                # Remove the merged child and corresponding key from parent.
+                parent.keys.pop(child_idx)
+                parent.values.pop(child_idx + 1)
+
+            # Move up to handle potential parent underflow.
+            level -= 1
+
+        # Check if root needs to shrink.
+        if not root.keys and not root.is_leaf:
+            return root.values[0] if root.values else None
+
+        return root
 
     def get_data_list(self, root: BPlusTreeNode, block_id: int = 0, encryption: bool = False) -> List[Data]:
         """From root, expand the AVL tree as a list of Data objects.

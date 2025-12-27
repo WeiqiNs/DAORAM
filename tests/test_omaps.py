@@ -514,6 +514,34 @@ class TestBPlusOdsOmap:
 
 
 class TestBPlusOdsOmapOptimized:
+    def test_delete_int_key(self):
+        # Create the omap instance.
+        omap = BPlusOdsOmapOptimized(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+
+        # Initialize an empty storage.
+        omap.init_server_storage()
+
+        # Issue some insert queries.
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+
+        # Delete some keys.
+        deleted_keys = [0, 5, 10, 50, 100, 500]
+        for key in deleted_keys:
+            deleted_value = omap.delete(key=key)
+            assert deleted_value == key
+
+        # Verify deleted keys return None.
+        for key in deleted_keys:
+            assert omap.search(key=key) is None
+
+        # Verify non-deleted keys still exist.
+        for i in range(NUM_DATA):
+            if i not in deleted_keys:
+                assert omap.search(key=i) == i
+
     def test_int_key(self):
         # Create the omap instance.
         omap = BPlusOdsOmapOptimized(
