@@ -256,7 +256,42 @@ class AVLOdsOmap(TreeOdsOmap):
                 else:
                     parent.value.r_leaf = child.leaf
 
-    def _rotate_left(self, index: int, in_node: Data) -> Tuple[Any, int, int]:
+    def _update_leaves_one(self, index: int) -> None:
+        """Update the leaves of the node at the given index and its parent."""
+        # Set the current node as child node and sample a new leaf for it.
+        child = self._local[index]
+        child.leaf = self._get_new_leaf()
+
+        # If parent exists, we update the parent information.
+        parent = self._local[index - 1]
+
+        # Update the child leaf.
+        if parent.value.l_key == child.key:
+                parent.value.l_leaf = child.leaf
+        else:
+                parent.value.r_leaf = child.leaf
+
+    def _update_height(self) ->None:
+        """Traverse the nodes in local and update their heights accordingly."""
+        for i in range(len(self._local)-1, -1, -1):
+            node = self._local[i]
+
+            # Calculate new height based on children
+            l_height = node.value.l_height if node.value.l_key is not None else 0
+            r_height = node.value.r_height if node.value.r_key is not None else 0
+            new_height = 1 + max(l_height, r_height)
+                
+            # Update the node's height property
+            if i > 0:  # Not root
+                parent = self._local[i-1]
+                if parent.value.l_key == node.key:
+                    parent.value.l_height = new_height
+                else:
+                    parent.value.r_height = new_height
+            else:  # Root node
+                    pass 
+        
+    def _rotate_left(self, index: int, in_node: Data, is_delete = False) -> Tuple[Any, int, int]:
         """
         Perform a left rotation at the provided input node.
 
@@ -264,8 +299,12 @@ class AVLOdsOmap(TreeOdsOmap):
         :param in_node: Some AVLTreeNode to rotate.
         :return: The (key, leaf, height) of the new parent node after rotation.
         """
-        # The right child should exist in the next location.
-        p_node = self._local[index + 1]
+        if is_delete:
+            # p_node should be sibling node when deleting
+            p_node = self._local[-1]
+        else:
+            # The right child should exist in the next location.
+            p_node = self._local[index + 1]
 
         # Verify that this is the right node.
         if p_node.key != in_node.value.r_key:
@@ -286,13 +325,15 @@ class AVLOdsOmap(TreeOdsOmap):
         p_node.value.l_leaf = in_node.leaf
         p_node.value.l_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
 
+        if not is_delete:
         # Switch node stored in local around.
-        self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
-
+            self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
+        else:
+            self._local[-1], self._local[-2] = self._local[-2], self._local[-1]
         # Return the new parent node.
         return p_node.key, p_node.leaf, 1 + max(p_node.value.l_height, in_node.value.r_height)
 
-    def _rotate_right(self, index: int, in_node: Data) -> Tuple[Any, int, int]:
+    def _rotate_right(self, index: int, in_node: Data, is_delete = False) -> Tuple[Any, int, int]:
         """
         Perform a left rotation at the provided input node.
 
@@ -300,8 +341,13 @@ class AVLOdsOmap(TreeOdsOmap):
         :param in_node: Some AVLTreeNode to rotate.
         :return: The (key, leaf, height) of the new parent node after rotation.
         """
-        # The right child should exist in the next location.
-        p_node = self._local[index + 1]
+        if is_delete:
+            # p_node should be sibling node when deleting
+            p_node = self._local[-1]
+        
+        else:
+            # The right child should exist in the next location.
+            p_node = self._local[index + 1]
 
         # Verify that this is the right node.
         if p_node.key != in_node.value.l_key:
@@ -323,62 +369,87 @@ class AVLOdsOmap(TreeOdsOmap):
         p_node.value.r_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
 
         # Switch node stored in local around.
-        self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
-
+        if not is_delete:
+            self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
+        else:
+            self._local[-1], self._local[-2] = self._local[-2], self._local[-1]
         # Return the new parent node.
         return p_node.key, p_node.leaf, 1 + max(p_node.value.l_height, in_node.value.r_height)
 
-    def _balance_node(self, index: int, node: Data):
+    def _balance_node(self, index: int, node: Data, is_delete= False):
         """Re-balance a node if it is unbalanced."""
         # Get the balance factor.
         balance = node.value.l_height - node.value.r_height
-
         # Left heavy subtree rotation.
         if balance > 1:
             # The left-right case. Get left node.
-            left_node = self._local[index + 1]
+            # need to load the extra sibling node when deleting
+            if is_delete:
+                self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                left_node = self._local[-1]
+            else:
+                left_node = self._local[index + 1]
             if left_node.key != node.value.l_key:
                 raise ValueError("Left node is not loaded when it is supposed to.")
 
             # Find the balance of the left node.
             if left_node.value.l_height - left_node.value.r_height < 0:
+                # need to load the extra sibling node when deleting
+                if is_delete:
+                    self._move_node_to_local(key=left_node.value.r_key, leaf=left_node.value.r_leaf)
                 # Get the updated left node.
-                key, leaf, height = self._rotate_left(index=index + 1, in_node=left_node)
+                key, leaf, height = self._rotate_left(index=index + 1, in_node=left_node, is_delete=is_delete)
                 # Assign left node to the node.
                 node.value.l_key, node.value.l_leaf, node.value.l_height = key, leaf, height
+                if is_delete:
+                    #update the leaf of the sibling node and move to stash
+                    self._update_leaves_one(-1)
+                    self._stash.append(self._local.pop())
+           
             # The left-left case.
-            return self._rotate_right(index=index, in_node=node)
+            return self._rotate_right(index=index, in_node=node, is_delete=is_delete)
 
         # Right heavy subtree rotation.
         if balance < -1:
             # The right-left case. Get the right node.
-            right_node = self._local[index + 1]
+            if is_delete:
+                self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                right_node = self._local[-1]
+            else:
+                right_node = self._local[index + 1]
             if right_node.key != node.value.r_key:
                 raise ValueError("Right node is not loaded when it is supposed to.")
 
             # Find the balance of the right node.
             if right_node.value.l_height - right_node.value.r_height > 0:
+                if is_delete:
+                    self._move_node_to_local(key=right_node.value.l_key, leaf=right_node.value.l_leaf)
                 # Get the updated right node.
-                key, leaf, height = self._rotate_right(index=index + 1, in_node=right_node)
+                key, leaf, height = self._rotate_right(index=index + 1, in_node=right_node, is_delete = is_delete)
                 # Assign the right node to the node.
                 node.value.r_key, node.value.r_leaf, node.value.r_height = key, leaf, height
+                if is_delete:
+                    #update the leaf of the sibling node and move to stash
+                    self._update_leaves_one(-1)
+                    self._stash.append(self._local.pop())
 
             # The right-right case.
-            return self._rotate_left(index=index, in_node=node)
+            return self._rotate_left(index=index, in_node=node, is_delete=is_delete)
 
         return node.key, node.leaf, 1 + max(node.value.l_height, node.value.r_height)
 
-    def _balance_local(self):
+    def _balance_local(self, is_delete= False):
         """Balance the AVL tree path downloaded to local."""
         # Perform rotation on the nodes stored in local.
         node_index = len(self._local) - 1
-
+        key = None
+        leaf = None
         while node_index >= 0:
             # Get the current node of interest.
             node = self._local[node_index]
 
             # Get balanced information.
-            key, leaf, height = self._balance_node(index=node_index, node=node)
+            key, leaf, height = self._balance_node(index=node_index, node=node, is_delete=is_delete)
 
             # If the parent exists, update which node the parent should point to.
             if node_index > 0:
@@ -401,7 +472,10 @@ class AVLOdsOmap(TreeOdsOmap):
             node_index -= 1
 
         # Update the root after balance.
-        self.root = (self._local[0].key, self._local[0].leaf)
+        if is_delete:
+            self.root = (key,leaf)
+        else:
+            self.root = (self._local[0].key, self._local[0].leaf)
 
     def insert(self, key: Any, value: Any) -> None:
         """
@@ -452,10 +526,15 @@ class AVLOdsOmap(TreeOdsOmap):
                     node.value.l_key = data_block.key
                     break
 
-        # Append the newly inserted node to local as well and perform balance.
+        # Append the newly inserted node to local as well
         self._local.append(data_block)
+        # Update the heights
+        self._update_height()
+        # Update the leaves
+        self._update_leaves()
+        # Perform balance 
         self._balance_local()
-
+        
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
         self._stash += self._local
@@ -488,18 +567,21 @@ class AVLOdsOmap(TreeOdsOmap):
                 if node.value.r_key is not None:
                     self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
                 else:
-                    raise KeyError(f"The search key {key} is not found.")
+                    break
             # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
                     self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
                 else:
-                    raise KeyError(f"The search key {key} is not found.")
+                    break
             # Update the node to keep searching.
             node = self._local[-1]
 
         # Get the desired search value and update the stored value if needed.
-        search_value = node.value.value
+        if node.key == key:
+            search_value = node.value.value
+        else:
+            search_value = None
         if value is not None:
             node.value.value = value
 
@@ -529,7 +611,7 @@ class AVLOdsOmap(TreeOdsOmap):
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform search.")
+            return None
 
         # If root is not None, move its content to local.
         self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
@@ -572,7 +654,7 @@ class AVLOdsOmap(TreeOdsOmap):
                     old_child_path = self._local[0].value.r_leaf
                     del self._local[0]
                 else:
-                    raise KeyError(f"The search key {key} is not found.")
+                    break
             else:
                 if self._local[0].value.l_key is not None:
                     # Deep copy needed because of sublist structures.
@@ -598,12 +680,15 @@ class AVLOdsOmap(TreeOdsOmap):
                     # Store the old child path and then delete the current node.
                     old_child_path = self._local[0].value.l_leaf
                     del self._local[0]
+
                 else:
-                    raise KeyError(f"The search key {key} is not found.")
-
+                    break
+        if self._local[0].key == key:
         # Per design, the value of interest is the only one stored in local.
-        search_value = self._local[0].value.value
+            search_value = self._local[0].value.value
 
+        else:
+            search_value = None
         # If the provided value is not None, update the data.
         if value is not None:
             self._local[0].value.value = value
@@ -615,11 +700,213 @@ class AVLOdsOmap(TreeOdsOmap):
         # Add the node to stash and clear local storage.
         self._stash.append(node_to_return)
         self._local = []
-
         # Write the new node back to storage.
         self._client.write_query(label=self._name, leaf=old_child_path, data=self._evict_stash(old_child_path))
 
         # Perform desired number of dummy finds.
-        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
 
         return search_value
+    
+            
+    def delete(self, key: Any) -> Any:
+        """
+        Given a search key, delete the corresponding node from the tree.
+
+        :param key: The search key of interest.
+        :return: The value of the deleted node.
+        """
+        if key == None:
+            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
+            return None
+        # If the current root is empty, we can't perform deletion.
+        if self.root is None:
+            raise ValueError(f"It seems the tree is empty and can't perform deletion.")
+
+        # First, find the node to delete by traversing the tree
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+        node = self._local[-1]
+        # Track the index of the node to delete in local
+        node_index = 0  
+
+        # Find the node to delete
+        while node.key != key:
+            if node.key < key:
+                if node.value.r_key is not None:
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                    node = self._local[-1]
+                    node_index = len(self._local) - 1
+                else:
+                    # Key not found, return None
+                    num_retrieved_nodes = len(self._local)
+                    self._stash += self._local
+                    self._local = []
+                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+                    return None
+                    
+            else:
+                if node.value.l_key is not None:
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                    node = self._local[-1]
+                    node_index = len(self._local) - 1
+                else:
+                    # Key not found, return None
+                    num_retrieved_nodes = len(self._local)
+                    self._stash += self._local
+                    self._local = []
+                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+                    return None
+
+        # At this point, node contains the key to delete
+        deleted_value = node.value.value
+        # Case 1: Node has no children (leaf node)
+        if node.value.l_key is None and node.value.r_key is None:
+            # If deleting the root
+            if len(self._local) == 1:
+                self.root = None
+                self._local = []
+                self._perform_dummy_operation(num_round=2 * self._max_height)
+                return deleted_value
+
+            if node_index != len(self._local) -1:
+                raise ValueError("node_index is not the last index in local")
+            
+            # Remove the node from its parent
+            parent = self._local[node_index - 1]
+            
+            if parent.value.l_key == node.key:
+                parent.value.l_key = None
+                parent.value.l_leaf = None
+                parent.value.l_height = 0
+
+            else:
+                parent.value.r_key = None
+                parent.value.r_leaf = None
+                parent.value.r_height = 0
+
+            # Remove the node from local
+            self._local.pop()
+            
+            
+        # Case 2: Node has one child
+        elif node.value.l_key is None or node.value.r_key is None:
+            # Find the replacement child
+            child_key = node.value.l_key if node.value.l_key is not None else node.value.r_key
+            child_leaf = node.value.l_leaf if node.value.l_key is not None else node.value.r_leaf
+            child_height = node.value.l_height if node.value.l_key is not None else node.value.r_height
+
+            # If deleting the root
+            if len(self._local) == 1:
+                # update root
+                self.root = (child_key, child_leaf)
+                self._local = []
+                self._perform_dummy_operation(num_round=2 * self._max_height)
+                return deleted_value
+            
+            else:
+                if node_index != len(self._local) -1:
+                    raise ValueError("node_index is not the last index in local")
+                # Replace the node with its child in the parent
+                parent = self._local[node_index - 1]
+
+                if parent.value.l_key == node.key:
+                    parent.value.l_key = child_key
+                    parent.value.l_leaf = child_leaf
+                    parent.value.l_height = child_height
+
+                else:
+                    parent.value.r_key = child_key
+                    parent.value.r_leaf = child_leaf
+                    parent.value.r_height = child_height
+
+                # Remove the successor node
+                self._local.pop()
+                                      
+        # Case 3: Node has two children
+        else:
+            # Find the inorder successor (largest in the left subtree)
+            if len(self._local) == 1:
+                # If deleting the root
+                gradparent_of_predelete = copy.copy(self._local[node_index-1])
+
+            else:
+                gradparent_of_predelete = self._local[node_index-1]
+
+            predelete = copy.copy(self._local[-1])
+            left_child_key = node.value.l_key
+            left_child_leaf = node.value.l_leaf
+            
+            # Load the left subtree to find the successor
+            self._move_node_to_local(key=left_child_key, leaf=left_child_leaf)
+            
+            # Find the rightmost node in the left subtree (inorder successor)
+            while self._local[-1].value.r_key is not None:
+                self._move_node_to_local(key=self._local[-1].value.r_key, leaf=self._local[-1].value.r_leaf)
+            
+            # The last node in local is the inorder successor
+            successor = self._local[-1]
+            successor_index = len(self._local) - 1
+            
+            # replace the node to delete with the successor
+            node.key = successor.key
+            node.leaf = successor.leaf
+            node.value.value = successor.value.value
+
+            if successor_index != len(self._local) -1:
+                raise ValueError("successor_index is not the last index in local")
+
+            if successor.value.l_key is None:
+                # Successor is a leaf, remove it from its parent
+                if successor_index > 0:
+                    parent = self._local[successor_index - 1]
+                    if parent.value.l_key == successor.key:
+                        parent.value.l_key = None
+                        parent.value.l_leaf = None
+                        parent.value.l_height = 0
+                    else:
+                        parent.value.r_key = None
+                        parent.value.r_leaf = None
+                        parent.value.r_height = 0
+                self._local.pop()
+
+            else:
+                # Successor has a left child, replace successor with its left child
+                child_key = successor.value.l_key
+                child_leaf = successor.value.l_leaf
+                child_height = successor.value.l_height
+                
+                if successor_index > 0:
+                    parent = self._local[successor_index - 1]
+                    if parent.value.l_key == successor.key:
+                        parent.value.l_key = child_key
+                        parent.value.l_leaf = child_leaf
+                        parent.value.l_height = child_height
+                    else:
+                        parent.value.r_key = child_key
+                        parent.value.r_leaf = child_leaf
+                        parent.value.r_height = child_height
+                self._local.pop()
+
+            # Update the parent of the node to delete
+            if  gradparent_of_predelete != predelete:
+                if gradparent_of_predelete.value.l_key == predelete.key:
+                    gradparent_of_predelete.value.l_key = node.key
+                    gradparent_of_predelete.value.l_leaf = node.leaf
+                        
+                else:
+                    gradparent_of_predelete.value.r_key = node.key
+                    gradparent_of_predelete.value.r_leaf = node.leaf
+                       
+        # Update heights
+        self._update_height()
+        # Update leaves
+        self._update_leaves()
+        # Balance the tree
+        self._balance_local(True)
+
+        # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
+        num_retrieved_nodes = len(self._local)
+        self._stash += self._local
+        self._local = []
+        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+        return deleted_value
