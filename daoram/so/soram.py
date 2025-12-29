@@ -1,16 +1,13 @@
 """
-This module defines the SORAM (Snapshot-Oblivious RAM) class.
-
 SORAM is a type of ORAM that provides access pattern protection under a weaker threat model
 where the adversary can only observe access patterns of consecutive c operations.
 It is more efficient than traditional ORAM while still providing security guarantees.
 """
-
-
 import os
+import pickle
 from queue import Queue
 from typing import Any, List
-from daoram.dependency import InteractServer, ServerStorage
+from daoram.dependency import InteractServer, ServerStorage, Aes
 from daoram.omap import AVLOdsOmap, AVLOdsOmapOptimized
 # Define ServerStorage type
 
@@ -23,7 +20,7 @@ class Soram():
                  name: str = "sor",
                  filename: str = None,
                  bucket_size: int = 10,
-                 stash_scale: int = 100,
+                 stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
@@ -59,6 +56,8 @@ class Soram():
         self._num_key_bytes = num_key_bytes
         self._num_data = num_data
 
+        # Initialize cipher for list encryption if encryption is enabled
+        self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
 
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
         self._Ow: AVLOdsOmap = None  # OMAP O_W
@@ -77,16 +76,56 @@ class Soram():
         # Virtual data index (client state)
         self._dummy_index: int = 0
 
+    def _encrypt_data(self, data: Any) -> bytes:
+        """
+        Encrypt data using AES if encryption is enabled.
+        
+        :param data: The data to encrypt.
+        :return: Encrypted data as bytes.
+        """
+        if not self._use_encryption or self._list_cipher is None or data is None:
+            return data
+        
+        # Serialize the data
+        serialized_data = pickle.dumps(data)
+        
+        # Encrypt the serialized data
+        return self._list_cipher.enc(serialized_data)
+
+    def _decrypt_data(self, encrypted_data: bytes) -> Any:
+        """
+        Decrypt data using AES if encryption is enabled.
+        
+        :param encrypted_data: The encrypted data to decrypt.
+        :return: Decrypted data.
+        """
+        if not self._use_encryption or self._list_cipher is None or encrypted_data is None:
+            return encrypted_data
+        
+        # Decrypt the data
+        decrypted_data = self._list_cipher.dec(encrypted_data)
+        
+        # Deserialize the data
+        return pickle.loads(decrypted_data)
+
     def operate_on_list(self, label:str, op: str, pos: int = None, data: Any = None)-> Any:
         """Perform an operation on a key in the SORAM"""
         if op == 'insert':
-            self._client.list_insert(label=label, value=data)
+            # Encrypt data before sending to server
+            encrypted_data = self._encrypt_data(data)
+            self._client.list_insert(label=label, value=encrypted_data)
         elif op == 'pop':            
-            return self._client.list_pop(label=label)
+            # Get encrypted data from server and decrypt it
+            encrypted_data = self._client.list_pop(label=label)
+            return self._decrypt_data(encrypted_data)
         elif op == 'get':
-            return self._client.list_get(label=label, index=pos)
+            # Get encrypted data from server and decrypt it
+            encrypted_data = self._client.list_get(label=label, index=pos)
+            return self._decrypt_data(encrypted_data)
         elif op == 'update':
-            self._client.list_update(label=label, index=pos, value=data)
+            # Encrypt data before sending to server
+            encrypted_data = self._encrypt_data(data)
+            self._client.list_update(label=label, index=pos, value=encrypted_data)
         else:
             print(f"error: unkonw operation'{op}'")
         return None
@@ -113,44 +152,47 @@ class Soram():
 
         :param data_map: Original data map.
         """
-        # 1. Extend database
+        # Extend database
         extended_data = self._extend_database(data_map)
 
-        # 2.  initializes a variable 𝑑 = 0 as the index for dummy data
+        # initializes a variable 𝑑 = 0 as the index for dummy data
         self._dummy_index = 0
             
 
-        # 3. creates two OMAPs denoted by (O𝑊,O𝑅) used to store𝑐 KV pairs, and two queues (𝑄𝑊,𝑄𝑅) of length c
+        # creates two OMAPs denoted by (O𝑊,O𝑅) used to store𝑐 KV pairs, and two queues (𝑄𝑊,𝑄𝑅) of length c
         self._main_storage = [None] * self._extended_size
         self._Ow  = AVLOdsOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Ow_name, 
                                          filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                         num_key_bytes=self._num_key_bytes, use_encryption=False)
+                                         num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
         self._Or  = AVLOdsOmapOptimized(num_data = self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Or_name, 
                                          filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                         num_key_bytes=self._num_key_bytes, use_encryption=False)
-        self._Qw:list = []
-        self._Qr:List = []
-
-        # 4. PRP function 𝐸𝑠𝑘 on Z𝑛+2𝑐−1 to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
+                                         num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        
+        # PRP function 𝐸𝑠𝑘 on Z𝑛+2𝑐−1 to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
         for i, (key, value) in enumerate(extended_data.items()):
             # encrypted_key = self._prp.digest_mod_n(str(key).encode(), self._extended_size)
-            self._main_storage[key] = value
+            # Encrypt the main storage data if encryption is enabled
+            self._main_storage[key] = self._encrypt_data(value)
 
-        # 5.  The client initializes the queues (𝑄𝑊,𝑄𝑅) with the initial dataset
-        for i, (key, value) in enumerate(extended_data.items()):
-            if i < self._cache_size:
-                self._Qr.insert(0,key)
-            elif i < 2 * self._cache_size :
-                self._Qw.insert(0,key)
-            else:
-                continue
+        # The client initializes the OMAPs (O𝑊,O𝑅) with the initial dataset
+        extended_data_list = list(extended_data.items())
+        keys_list = list(extended_data.keys())
+        st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
+        st2 = self._Or._init_ods_storage(extended_data_list[self._cache_size: 2*self._cache_size])
+        
+        # Encrypt queue data if encryption is enabled
+        if self._use_encryption:
+            self._Qw = [self._encrypt_data(key) for key in keys_list[:self._cache_size]]
+            self._Qr = [self._encrypt_data(key) for key in keys_list[self._cache_size: 2*self._cache_size]]
+        else:
+            self._Qw = keys_list[:self._cache_size]
+            self._Qr = keys_list[self._cache_size:  2*self._cache_size]
+        
+        print("Qw:", self._Qw)
+        print("Qr:", self._Qr)
 
-        # 6.  The client initializes the OMAPs (O𝑊,O𝑅) with the initial dataset
-        st1 = self._Ow._init_ods_storage(list(extended_data.items())[self._cache_size: 2*self._cache_size])
-        st2 = self._Or._init_ods_storage(list(extended_data.items())[:self._cache_size])
-
-        # 7.  The client initializes the server storage with the OMAPs and queues
+        # The client initializes the server storage with the OMAPs and queues
         Serverstorage:ServerStorage = {
             self._Ow_name: st1,
             self._Or_name: st2,
@@ -170,9 +212,7 @@ class Soram():
         :param value: The value to write (for write operations).
         :return: the old value of the key
         """
-        if (key==12):
-            print("key is 12")
-        # 1.  The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
+        # The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
         value_old1 = self._Ow.search(key)
         value_old2 = self._Or.search(key)
         value_old = None
@@ -183,7 +223,7 @@ class Soram():
             self.operate_on_list(label='DB', op='get', pos=self._num_data+self._dummy_index)
             #If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             if op == 'read':
-                self._Ow.search(key, value_old)
+                self._Ow.search(key)
             else:
                 self._Ow.search(key, value)
             self.operate_on_list(label= self._Qw_name, op='insert', data=self._num_data + self._dummy_index)
@@ -222,8 +262,8 @@ class Soram():
 
         # pop from Qw, push what have been poped into Qr
         key = self.operate_on_list(self._Qw_name, 'pop')
-        value = self._Ow.search(key)
-        self._Ow.delete(key) 
+        value = self._Ow.delete(key) 
+
         self.operate_on_list(self._Qr_name, 'insert', data = key)
 
         # delete what have been poped from Ow and insert into Or and DB
@@ -236,5 +276,3 @@ class Soram():
         self._Or.delete(key)
 
         return value_old
-
-
