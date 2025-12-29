@@ -822,80 +822,62 @@ class AVLOdsOmap(TreeOdsOmap):
                 # Remove the successor node
                 self._local.pop()
                                       
-        # Case 3: Node has two children
+        # Case 3: Node has two children; choose based on subtree height.
         else:
-            # Find the inorder successor (largest in the left subtree)
-            if len(self._local) == 1:
-                # If deleting the root
-                gradparent_of_predelete = copy.copy(self._local[node_index-1])
+            # Use predecessor (left then all right) if left is taller, else successor (right then all left).
+            use_predecessor = node.value.l_height > node.value.r_height
 
+            # Save reference to parent of deleted node and original key.
+            parent_of_node = self._local[node_index - 1] if node_index > 0 else None
+            original_key = node.key
+
+            # Go to the taller subtree.
+            current_key = node.value.l_key if use_predecessor else node.value.r_key
+            current_leaf = node.value.l_leaf if use_predecessor else node.value.r_leaf
+            self._move_node_to_local(key=current_key, leaf=current_leaf)
+            current = self._local[-1]
+
+            # Traverse in opposite direction to find replacement.
+            next_key = current.value.r_key if use_predecessor else current.value.l_key
+            while next_key is not None:
+                next_leaf = current.value.r_leaf if use_predecessor else current.value.l_leaf
+                self._move_node_to_local(key=next_key, leaf=next_leaf)
+                current = self._local[-1]
+                next_key = current.value.r_key if use_predecessor else current.value.l_key
+
+            # Replacement node is the last in local.
+            replacement_node = self._local[-1]
+            replacement_index = len(self._local) - 1
+
+            # Copy replacement's data to the node being deleted.
+            node.key = replacement_node.key
+            node.value.value = replacement_node.value.value
+
+            # Get the child to replace with (opposite of traversal direction).
+            child_key = replacement_node.value.l_key if use_predecessor else replacement_node.value.r_key
+            child_leaf = replacement_node.value.l_leaf if use_predecessor else replacement_node.value.r_leaf
+            child_height = (replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height) if child_key else 0
+
+            # Update parent's pointer.
+            parent = self._local[replacement_index - 1]
+            if parent.value.l_key == replacement_node.key:
+                parent.value.l_key = child_key
+                parent.value.l_leaf = child_leaf
+                parent.value.l_height = child_height
             else:
-                gradparent_of_predelete = self._local[node_index-1]
+                parent.value.r_key = child_key
+                parent.value.r_leaf = child_leaf
+                parent.value.r_height = child_height
 
-            predelete = copy.copy(self._local[-1])
-            left_child_key = node.value.l_key
-            left_child_leaf = node.value.l_leaf
-            
-            # Load the left subtree to find the successor
-            self._move_node_to_local(key=left_child_key, leaf=left_child_leaf)
-            
-            # Find the rightmost node in the left subtree (inorder successor)
-            while self._local[-1].value.r_key is not None:
-                self._move_node_to_local(key=self._local[-1].value.r_key, leaf=self._local[-1].value.r_leaf)
-            
-            # The last node in local is the inorder successor
-            successor = self._local[-1]
-            successor_index = len(self._local) - 1
-            
-            # replace the node to delete with the successor
-            node.key = successor.key
-            node.leaf = successor.leaf
-            node.value.value = successor.value.value
+            # Remove replacement node from local.
+            self._local.pop()
 
-            if successor_index != len(self._local) -1:
-                raise ValueError("successor_index is not the last index in local")
-
-            if successor.value.l_key is None:
-                # Successor is a leaf, remove it from its parent
-                if successor_index > 0:
-                    parent = self._local[successor_index - 1]
-                    if parent.value.l_key == successor.key:
-                        parent.value.l_key = None
-                        parent.value.l_leaf = None
-                        parent.value.l_height = 0
-                    else:
-                        parent.value.r_key = None
-                        parent.value.r_leaf = None
-                        parent.value.r_height = 0
-                self._local.pop()
-
-            else:
-                # Successor has a left child, replace successor with its left child
-                child_key = successor.value.l_key
-                child_leaf = successor.value.l_leaf
-                child_height = successor.value.l_height
-                
-                if successor_index > 0:
-                    parent = self._local[successor_index - 1]
-                    if parent.value.l_key == successor.key:
-                        parent.value.l_key = child_key
-                        parent.value.l_leaf = child_leaf
-                        parent.value.l_height = child_height
-                    else:
-                        parent.value.r_key = child_key
-                        parent.value.r_leaf = child_leaf
-                        parent.value.r_height = child_height
-                self._local.pop()
-
-            # Update the parent of the node to delete
-            if  gradparent_of_predelete != predelete:
-                if gradparent_of_predelete.value.l_key == predelete.key:
-                    gradparent_of_predelete.value.l_key = node.key
-                    gradparent_of_predelete.value.l_leaf = node.leaf
-                        
+            # Update parent of the deleted node to point to new key.
+            if parent_of_node is not None:
+                if parent_of_node.value.l_key == original_key:
+                    parent_of_node.value.l_key = node.key
                 else:
-                    gradparent_of_predelete.value.r_key = node.key
-                    gradparent_of_predelete.value.r_leaf = node.leaf
+                    parent_of_node.value.r_key = node.key
                        
         # Update heights
         self._update_height()

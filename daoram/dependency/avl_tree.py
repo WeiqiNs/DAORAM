@@ -257,6 +257,123 @@ class AVLTree:
 
         return root
 
+    def delete(self, root: Optional[AVLTreeNode], key: Any) -> Optional[AVLTreeNode]:
+        """
+        Deletes a node with the given key from the tree using non-recursive method.
+
+        Template for oblivious version: uses 'local' list to track path, clear phases,
+        and in-order successor (go right, then keep left) for two-children case.
+
+        :param root: The root node of the AVL tree.
+        :param key: The key to delete.
+        :return: The updated AVL tree root node, or None if tree becomes empty.
+        """
+        if not root:
+            return None
+
+        # Use a similar approach to store node read to local (as a template for the oblivious approach).
+        local = []
+        current = root
+
+        # Locate the node to delete.
+        while current is not None:
+            local.append(current)
+            if current.key == key:
+                break
+            current = current.left_node if key < current.key else current.right_node
+
+        # Key not found, return tree unchanged.
+        if current is None or local[-1].key != key:
+            return root
+
+        # Target node is the last in local.
+        node = local[-1]
+        node_index = len(local) - 1
+
+        # Case 1: Node has no children (leaf node).
+        if node.left_node is None and node.right_node is None:
+            # If deleting the only node (root).
+            if len(local) == 1:
+                return None
+            # Remove from parent.
+            parent = local[node_index - 1]
+            if parent.left_node == node:
+                parent.left_node = None
+            else:
+                parent.right_node = None
+            # Remove from local.
+            local.pop()
+
+        # Case 2: Node has one child.
+        elif node.left_node is None or node.right_node is None:
+            # Get the single child.
+            child = node.left_node if node.left_node is not None else node.right_node
+            # If deleting root.
+            if len(local) == 1:
+                return child
+            # Replace node with child in parent.
+            parent = local[node_index - 1]
+            if parent.left_node == node:
+                parent.left_node = child
+            else:
+                parent.right_node = child
+            # Remove from local.
+            local.pop()
+
+        # Case 3: Node has two children; choose based on subtree height.
+        else:
+            # Use predecessor (left then all right) if left is taller, else successor (right then all left).
+            use_predecessor = self.__get_height(node.left_node) > self.__get_height(node.right_node)
+
+            # Go to the taller subtree.
+            current = node.left_node if use_predecessor else node.right_node
+            local.append(current)
+
+            # Traverse in opposite direction to find replacement.
+            next_node = current.right_node if use_predecessor else current.left_node
+            while next_node is not None:
+                current = next_node
+                local.append(current)
+                next_node = current.right_node if use_predecessor else current.left_node
+
+            # Replacement node is the last in local.
+            replacement_node = local[-1]
+            replacement_index = len(local) - 1
+
+            # Copy replacement's data to the node being deleted.
+            node.key = replacement_node.key
+            node.value = replacement_node.value
+
+            # Get the child to replace with (opposite of traversal direction).
+            child = replacement_node.left_node if use_predecessor else replacement_node.right_node
+
+            # Update parent's pointer.
+            parent = local[replacement_index - 1]
+            if parent.left_node == replacement_node:
+                parent.left_node = child
+            else:
+                parent.right_node = child
+
+            # Remove replacement node from local.
+            local.pop()
+
+        # Rebalance from bottom to up.
+        for i in range(len(local) - 1, -1, -1):
+            curr = local[i]
+            balanced = self.__balance(curr)
+
+            # Update parent's pointer.
+            if i > 0:
+                parent = local[i - 1]
+                if parent.left_node == curr:
+                    parent.left_node = balanced
+                else:
+                    parent.right_node = balanced
+            else:
+                root = balanced
+
+        return root
+
     @staticmethod
     def search(key: Any, root: Optional[AVLTreeNode]) -> Any:
         """

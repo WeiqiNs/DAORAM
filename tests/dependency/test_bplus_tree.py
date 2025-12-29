@@ -127,3 +127,109 @@ class TestBPlusTree:
         assert data_list[1].key == 3
         assert data_list[1].value.keys == [14, 16, 18]
         assert len(data_list[1].value.values) == 4
+
+    def test_delete_leaf(self):
+        # Create a b+ tree object.
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+
+        # Set an empty b+ tree node.
+        root = BPlusTreeNode()
+
+        # Insert some values.
+        for i in range(10):
+            root = bplus_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete a key that won't cause underflow.
+        root = bplus_tree.delete(root=root, key=5)
+
+        # Verify key is deleted.
+        try:
+            bplus_tree.search(key=5, root=root)
+            assert False, "Key 5 should not exist"
+        except KeyError:
+            pass
+
+        # Verify other keys still exist.
+        for i in [0, 1, 2, 3, 4, 6, 7, 8, 9]:
+            assert bplus_tree.search(key=i, root=root) == i
+
+    def test_delete_root_leaf(self):
+        # Create a b+ tree object with single leaf as root.
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert a few values (stays as single leaf).
+        root = bplus_tree.insert(root=root, kv_pair=KVPair(key=1, value=1))
+        root = bplus_tree.insert(root=root, kv_pair=KVPair(key=2, value=2))
+
+        # Delete one key.
+        root = bplus_tree.delete(root=root, key=1)
+        assert root is not None
+        assert bplus_tree.search(key=2, root=root) == 2
+
+        # Delete last key.
+        root = bplus_tree.delete(root=root, key=2)
+        assert root is None
+
+    def test_delete_with_borrow(self):
+        # Create a b+ tree object.
+        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert values to create a tree structure.
+        for i in range(6):
+            root = bplus_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete to trigger borrowing.
+        root = bplus_tree.delete(root=root, key=0)
+
+        # Verify remaining keys.
+        for i in [1, 2, 3, 4, 5]:
+            assert bplus_tree.search(key=i, root=root) == i
+
+    def test_delete_with_merge(self):
+        # Create a b+ tree object.
+        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert values.
+        for i in range(5):
+            root = bplus_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete multiple keys to trigger merges.
+        root = bplus_tree.delete(root=root, key=0)
+        root = bplus_tree.delete(root=root, key=1)
+
+        # Verify remaining keys.
+        for i in [2, 3, 4]:
+            assert bplus_tree.search(key=i, root=root) == i
+
+    def test_delete_stress(self):
+        # Create a b+ tree object.
+        bplus_tree = BPlusTree(order=5, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert values.
+        values = list(range(50))
+        random.shuffle(values)
+        for i in values:
+            root = bplus_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete half of them in random order.
+        to_delete = values[:25]
+        remaining = set(values[25:])
+        random.shuffle(to_delete)
+
+        for key in to_delete:
+            root = bplus_tree.delete(root=root, key=key)
+
+        # Verify remaining keys exist and deleted ones don't.
+        for i in remaining:
+            assert bplus_tree.search(key=i, root=root) == i
+
+        for i in to_delete:
+            try:
+                bplus_tree.search(key=i, root=root)
+                assert False, f"Key {i} should not exist"
+            except KeyError:
+                pass

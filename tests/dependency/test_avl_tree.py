@@ -1,5 +1,7 @@
 import random
 
+import pytest
+
 from daoram.dependency import AVLTree, KVPair
 
 
@@ -146,3 +148,91 @@ class TestAVLTree:
         assert data_list[1].value.l_key == 5
         assert data_list[1].value.r_height == 2
         assert data_list[1].value.l_height == 2
+
+    def test_delete_leaf(self):
+        # Create an avl tree object.
+        avl_tree = AVLTree(leaf_range=1000)
+
+        # Insert values 0-9 to create the tree.
+        root = None
+        for i in range(10):
+            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete a leaf node (0 has no children).
+        root = avl_tree.delete(root=root, key=0)
+
+        # Verify the node is deleted.
+        assert avl_tree.search(key=0, root=root) is None
+
+        # Verify remaining nodes are searchable.
+        for i in range(1, 10):
+            assert avl_tree.search(key=i, root=root) == i
+
+    def test_delete_node_with_one_child(self):
+        # Create an avl tree object.
+        avl_tree = AVLTree(leaf_range=1000)
+
+        # Insert values 0-9 to create the tree.
+        root = None
+        for i in range(10):
+            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # First delete 0 (leaf), then delete 1 which will have one child.
+        root = avl_tree.delete(root=root, key=0)
+        root = avl_tree.delete(root=root, key=1)
+
+        # Convert the avl tree nodes to a list.
+        data_list = avl_tree.get_data_list(root=root)
+
+        # The root node should be 7.
+        assert data_list[0].key == 7
+        assert data_list[0].value.r_key == 8
+        assert data_list[0].value.l_key == 3
+        assert data_list[0].value.r_height == 2
+        assert data_list[0].value.l_height == 3
+
+    def test_delete_node_with_two_children(self):
+        # Create an avl tree object.
+        avl_tree = AVLTree(leaf_range=1000)
+
+        # Insert values 0-9 to create the tree.
+        root = None
+        for i in range(10):
+            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete node 3 (the root) which has two children.
+        root = avl_tree.delete(root=root, key=3)
+
+        # Verify node 3 is deleted.
+        assert avl_tree.search(key=3, root=root) is None
+
+        # Verify remaining nodes are searchable.
+        for i in [0, 1, 2, 4, 5, 6, 7, 8, 9]:
+            assert avl_tree.search(key=i, root=root) == i
+
+        # Verify tree has 9 nodes.
+        data_list = avl_tree.get_data_list(root=root)
+        assert len(data_list) == 9
+
+    def test_delete_stress(self):
+        # Stress test: insert many nodes, delete in random order.
+        avl_tree = AVLTree(leaf_range=10000)
+        root = None
+
+        # Insert 100 values.
+        values = list(range(100))
+        for i in values:
+            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+
+        # Delete all values in random order.
+        random.shuffle(values)
+        for i in values:
+            # Verify key exists before deletion.
+            assert avl_tree.search(key=i, root=root) == i
+            # Delete.
+            root = avl_tree.delete(root=root, key=i)
+            # Verify key is gone.
+            assert avl_tree.search(key=i, root=root) is None
+
+        # Tree should be empty.
+        assert root is None

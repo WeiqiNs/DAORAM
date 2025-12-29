@@ -3,7 +3,9 @@
 import math
 from typing import Any, Dict, List, Union, Tuple, Optional
 import pickle
-from daoram.dependency.helper import Block, Buckets, Data, Storage
+from daoram.dependency.helper import Data
+from daoram.dependency.storage import Storage
+from daoram.dependency.types import Block, Bucket, Buckets
 
 class FlexibleBinaryTree:
     def __init__(
