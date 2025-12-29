@@ -83,7 +83,7 @@ class Soram():
         :param data: The data to encrypt.
         :return: Encrypted data as bytes.
         """
-        if not self._use_encryption or data is None:
+        if not self._use_encryption or self._list_cipher is None or data is None:
             return data
         
         # Serialize the data
@@ -99,7 +99,7 @@ class Soram():
         :param encrypted_data: The encrypted data to decrypt.
         :return: Decrypted data.
         """
-        if not self._use_encryption or encrypted_data is None:
+        if not self._use_encryption or self._list_cipher is None or encrypted_data is None:
             return encrypted_data
         
         # Decrypt the data
@@ -167,9 +167,7 @@ class Soram():
         self._Or  = AVLOdsOmapOptimized(num_data = self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Or_name, 
                                          filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
                                          num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Qw:list = []
-        self._Qr:List = []
-
+        
         # PRP function 𝐸𝑠𝑘 on Z𝑛+2𝑐−1 to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
         for i, (key, value) in enumerate(extended_data.items()):
@@ -178,8 +176,21 @@ class Soram():
             self._main_storage[key] = self._encrypt_data(value)
 
         # The client initializes the OMAPs (O𝑊,O𝑅) with the initial dataset
-        st1 = self._Ow._init_ods_storage([])
-        st2 = self._Or._init_ods_storage([])
+        extended_data_list = list(extended_data.items())
+        keys_list = list(extended_data.keys())
+        st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
+        st2 = self._Or._init_ods_storage(extended_data_list[self._cache_size: 2*self._cache_size])
+        
+        # Encrypt queue data if encryption is enabled
+        if self._use_encryption:
+            self._Qw = [self._encrypt_data(key) for key in keys_list[:self._cache_size]]
+            self._Qr = [self._encrypt_data(key) for key in keys_list[self._cache_size: 2*self._cache_size]]
+        else:
+            self._Qw = keys_list[:self._cache_size]
+            self._Qr = keys_list[self._cache_size:  2*self._cache_size]
+        
+        print("Qw:", self._Qw)
+        print("Qr:", self._Qr)
 
         # The client initializes the server storage with the OMAPs and queues
         Serverstorage:ServerStorage = {

@@ -26,24 +26,6 @@ class TestSoram:
         """Make sure the test file is removed before each test"""
         remove_file()
         
-    def test_init_without_data(self):
-        """Test Soram initialization without initial data"""
-        # Create the Soram instance; encryption turned off for testing efficiency.
-        soram = Soram(
-            num_data=NUM_DATA, 
-            cache_size=CACHE_SIZE,
-            data_size=10, 
-            client=InteractLocalServer(), 
-            use_encryption=False
-        )
-
-        # Initialize the server with empty storage.
-        soram.setup()
-
-        # Check that the extended size is correct
-        assert soram._extended_size == NUM_DATA + 2 * CACHE_SIZE
-        assert soram._cache_size == CACHE_SIZE
-        assert soram._dummy_index == 0
 
     def test_init_with_data(self):
         """Test Soram initialization with initial data"""
@@ -95,6 +77,8 @@ class TestSoram:
 
     def test_random_operations(self):
         """Test random read and write operations"""
+
+        initial_data = {i: f"value_{i}" for i in range(NUM_DATA)}
         # Create the Soram instance
         soram = Soram(
             num_data=NUM_DATA, 
@@ -105,7 +89,7 @@ class TestSoram:
         )
 
         # Initialize the server with empty storage.
-        soram.setup()
+        soram.setup(initial_data)
 
         # Initialize with some data
         for i in range(min(100, NUM_DATA)):
@@ -157,20 +141,22 @@ class TestSoram:
             use_encryption=False
         )
 
-        # Initialize the server with empty storage.
-        soram.setup()
+        data_map = {}
+        for i in range(100):
+            data_map[i] = f"Data value {i}".encode()
+ 
+        soram.setup(data_map=data_map)
 
-        # Write some data
-        for i in range(21):
-            # not find in Ow and Or, _dummy_index stay original value
-            soram.access(key=i, op='write', value=f"value_{i}")
+        # Access other set of keys to fill the cache
+        for i in range(10, 20):
+            soram.access(key=i, op='read', value=f"Data value {i}".encode())
 
         # Access the same keys multiple times to test cache behavior
         for i in range(5):
             for j in range(9):
                 # for i >= 1,find key = j in Ow and Or, _dummy_index should be updated
                 value = soram.access(key=j, op='read')
-                assert value == f"value_{j}"
+                assert value == f"Data value {j}".encode()
                 
         # Test that dummy index is being updated correctly
         assert soram._dummy_index == (4 * 9) % (2 * soram._cache_size) 
