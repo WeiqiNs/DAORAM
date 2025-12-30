@@ -6,11 +6,12 @@ from daoram.omap import BPlusOdsOmap
 
 class BPlusOdsOmapOptimized(BPlusOdsOmap):
     def __init__(self,
-                 order: int,
+        
                  num_data: int,
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 order: int = 4,
                  name: str = "bplus_opt",
                  filename: str = None,
                  bucket_size: int = 4,
@@ -49,6 +50,13 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             num_key_bytes=num_key_bytes,
             use_encryption=use_encryption
         )
+        self._mid = order // 2
+        self._local_sibling = []
+    def _get_min_keys(self, is_leaf: bool) -> int:
+        """Get the minimum number of keys a node must have."""
+        if is_leaf:
+            return (self._order - 1) // 2
+        return self._mid - 1 if self._order > 3 else 1
 
     def _move_two_nodes_to_local(self, key1: Any, leaf1: int, key2: Any, leaf2: int) -> None:
         """
@@ -128,7 +136,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
 
         # Add to local in guaranteed order: key1 first, then key2.
         self._local.append(node1)
-        self._local.append(node2)
+        self._local_sibling.append(node2)
 
     def _perform_one_insertion(self):
         """Perform a single insertion in local."""
@@ -191,7 +199,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         leaf = self._local[-1]
 
         # Find the proper place to insert the leaf.
-        for index, each_key in enumerate(leaf.value.values):
+        for index, each_key in enumerate(leaf.value.keys):
             if key < each_key:
                 leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
                 leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
@@ -255,18 +263,11 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         # Get the node from local.
         node = self._local[0]
 
-        # Update node leaf and root.
-        node.leaf = self._get_new_leaf()
-        self.root = (node.key, node.leaf)
 
         # While we do not reach a leaf (whose number of keys equals number of values).
         while len(node.value.keys) != len(node.value.values):
             # Increment round count for this level.
             num_rounds += 1
-
-            # Sample new leaves for the child and sibling.
-            new_leaf = self._get_new_leaf()
-            sibling_new_leaf = self._get_new_leaf()
 
             # Find which child to follow and its sibling.
             child_idx = len(node.value.keys)  # Default to rightmost child.
@@ -295,29 +296,16 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
                     key1=child_key, leaf1=child_leaf,
                     key2=sibling_key, leaf2=sibling_leaf
                 )
-
-                # Update stored leaves in parent.
-                node.value.values[child_idx] = (child_key, new_leaf)
-                node.value.values[sibling_idx] = (sibling_key, sibling_new_leaf)
-
-                # Update the sibling's leaf (sibling is at -1, child is at -2).
-                self._local[-1].leaf = sibling_new_leaf
-
-                # Update the child node and its leaf.
-                node = self._local[-2]
-                node.leaf = new_leaf
+                node = self._local[-1]
             else:
                 # No sibling exists, just fetch the child.
                 self._move_node_to_local(key=child_key, leaf=child_leaf)
-                node.value.values[child_idx] = (child_key, new_leaf)
-
-                # Update the child node and its leaf.
+                self._local_sibling.append(None)  # Placeholder for sibling.
                 node = self._local[-1]
-                node.leaf = new_leaf
 
         return num_rounds
 
-    def _handle_underflow_with_sibling(self, node_idx: int, sibling_idx: int, parent_idx: int) -> None:
+    def _handle_underflow_with_sibling(self, node_idx: int) -> None:
         """
         Handle underflow at node_idx using the sibling at sibling_idx.
 
@@ -326,8 +314,8 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         :param parent_idx: Index of the parent node in _local.
         """
         node = self._local[node_idx]
-        sibling = self._local[sibling_idx]
-        parent = self._local[parent_idx]
+        sibling = self._local_sibling[node_idx-1]
+        parent = self._local[node_idx - 1]
         is_leaf = len(node.value.keys) == len(node.value.values)
         min_keys = self._get_min_keys(is_leaf=is_leaf)
 
@@ -405,6 +393,64 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             # Mark sibling as merged (cleared).
             sibling.value.keys = []
             sibling.value.values = []
+        
+        # If parent is now empty and is root, update root.
+        if len(parent.value.keys) == 0 and parent.key == self.root[0]:
+            if is_left_sibling:
+                self.root = (sibling.key, sibling.leaf)
+            else:
+                self.root = (node.key, node.leaf)
+
+    def _update_leaves(self):
+        """
+        Update the leaf nodes in the local cache.
+        
+        If the current node is in local[node_idx], then the parent is in local[node_idx-1],
+        the sibling is in local_sibling[node_idx-1]. Update leaves by synchronizing
+        the new leaves of self and sibling to the parent.
+        """
+        # Update from leaf nodes up to the root
+        for node_idx in range(len(self._local) - 1, 0, -1):
+            # Current node
+            node = self._local[node_idx]
+            # Parent node
+            parent = self._local[node_idx - 1]
+            # Sibling node
+            sibling = self._local_sibling[node_idx - 1]
+            
+            # Generate new leaf paths for current node and sibling
+            new_leaf_node = self._get_new_leaf()
+            new_leaf_sibling = self._get_new_leaf()
+            
+            # Update leaf paths for current node and sibling
+            node.leaf = new_leaf_node
+            sibling.leaf = new_leaf_sibling
+            
+            # Find indices of current node and sibling in parent
+            node_child_idx = -1
+            sibling_child_idx = -1
+            
+            for i, val in enumerate(parent.value.values):
+                if val[0] == node.key:
+                    node_child_idx = i
+                if val[0] == sibling.key:
+                    sibling_child_idx = i
+            
+            # Update corresponding leaf paths in parent
+            if node_child_idx != -1:
+                parent.value.values[node_child_idx] = (node.key, new_leaf_node)
+            
+            if sibling_child_idx != -1:
+                parent.value.values[sibling_child_idx] = (sibling.key, new_leaf_sibling)
+       
+        # Update root node leaf path if exists
+        if self._local:
+            root_node = self._local[0]
+            new_root_leaf = self._get_new_leaf()
+            root_node.leaf = new_root_leaf
+            self.root = (root_node.key, new_root_leaf)
+        
+        print(f"Updated root leaf path to: {self.root}")
 
     def delete(self, key: Any) -> Any:
         """
@@ -430,27 +476,36 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         num_rounds = self._find_leaf_with_siblings_to_local(key=key)
 
         # Find the leaf node (the one that contains the key).
-        leaf = None
+        leaf = self._local[-1]
+        # TODO
         leaf_idx = -1
-        for i in range(len(self._local) - 1, -1, -1):
-            node = self._local[i]
-            # Leaf nodes have same number of keys and values.
-            if len(node.value.keys) == len(node.value.values):
-                # Check if this leaf contains our key.
-                if key in node.value.keys:
-                    leaf = node
-                    leaf_idx = i
-                    break
+
 
         if leaf is None:
             # Key not found, perform dummy operations and return.
             self._stash += self._local
+            self._stash += self._local_sibling
             self._local = []
+            self._local_sibling = []
             self._perform_dummy_operation(num_round=self._max_height - num_rounds)
             return None
 
         # Find and remove the key from the leaf.
-        key_index = leaf.value.keys.index(key)
+        key_index = -1
+        for index, each_key in enumerate(leaf.value.keys):
+            if key == each_key:
+                key_index = index
+                break
+        
+        # Check if key is exists.
+        if key_index == -1:
+            # Key not found, perform dummy operations and return.
+            self._stash += self._local
+            self._stash += self._local_sibling
+            self._local = []
+            self._local_sibling = []
+            self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+            return None
         deleted_value = leaf.value.values[key_index]
         deleted_key = leaf.value.keys.pop(key_index)
         leaf.value.values.pop(key_index)
@@ -466,63 +521,45 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             else:
                 # Root leaf still has keys.
                 self._stash += self._local
+                self._stash += self._local_sibling
                 self._local = []
+                self._local_sibling = []
                 self._perform_dummy_operation(num_round=self._max_height - num_rounds)
                 return deleted_value
 
         # Update parent key if the first key of the leaf changed.
         if key_index == 0 and leaf.value.keys:
             new_first_key = leaf.value.keys[0]
-            for i in range(len(self._local)):
-                node = self._local[i]
-                if len(node.value.keys) != len(node.value.values):  # Internal node.
-                    for j, k in enumerate(node.value.keys):
-                        if k == deleted_key:
-                            node.value.keys[j] = new_first_key
-                            break
+            parent = self._local[-2]
+            for j, k in enumerate(parent.value.keys):
+                if k == deleted_key:
+                    parent.value.keys[j] = new_first_key
+                    break
+
 
         # Handle underflow if needed.
         min_keys = self._get_min_keys(is_leaf=True)
-        if len(leaf.value.keys) < min_keys:
-            # Find sibling and parent for this leaf.
-            sibling_idx = -1
-            parent_idx = -1
+        node_idx = len(self._local) - 1
+        node = self._local[node_idx]
 
-            # Search for sibling (a leaf that's not the current leaf).
-            for i in range(len(self._local)):
-                node = self._local[i]
-                if len(node.value.keys) == len(node.value.values) and i != leaf_idx:
-                    sibling_idx = i
-                    break
-
-            # Search for parent (an internal node).
-            for i in range(len(self._local)):
-                node = self._local[i]
-                if len(node.value.keys) != len(node.value.values):
-                    # Check if this is the parent of the leaf.
-                    for val in node.value.values:
-                        if val[0] == leaf.key:
-                            parent_idx = i
-                            break
-                    if parent_idx >= 0:
-                        break
-
-            if sibling_idx >= 0 and parent_idx >= 0:
-                self._handle_underflow_with_sibling(leaf_idx, sibling_idx, parent_idx)
-
-                # Check if parent now has underflow (for internal nodes).
-                parent = self._local[parent_idx]
-                min_keys_internal = self._get_min_keys(is_leaf=False)
-                if not parent.value.keys:
-                    # Parent is root and has no keys, promote the remaining child.
-                    if parent.value.values:
-                        self.root = parent.value.values[0]
-                    else:
-                        self.root = None
+        # handle underflow from bottom to top
+        while node_idx > 0 and len(node.value.keys) < min_keys:
+            self._handle_underflow_with_sibling(node_idx)
+            parent = self._local[node_idx - 1]
+            min_keys = self._get_min_keys(is_leaf=False)
+            if len(parent.value.keys) > min_keys:
+                break
+            node_idx -= 1
+            node = self._local[node_idx]
+    
+        # update leaves in local
+        self._update_leaves()
 
         # Move all local nodes to stash and perform dummy operations.
         self._stash += self._local
+        self._stash += self._local_sibling
         self._local = []
+        self._local_sibling = []
         self._perform_dummy_operation(num_round=self._max_height - num_rounds)
 
         return deleted_value
