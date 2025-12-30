@@ -302,9 +302,10 @@ class BPlusTree:
         if not root:
             return None
 
+        # Compute the minimum number of keys each node should have.
         min_keys = (self.__order - 1) // 2
 
-        # Store path as (node, child_index) pairs.
+        # Store path of internal nodes as (node, child_index) pairs.
         local = []
         current = root
 
@@ -322,11 +323,10 @@ class BPlusTree:
             local.append((current, child_index))
             current = current.values[child_index]
 
-        # Add leaf with dummy child_index.
-        local.append((current, -1))
+        # Now current is the leaf.
+        leaf = current
 
         # Delete key from leaf.
-        leaf = current
         key_index = None
         for i, k in enumerate(leaf.keys):
             if k == key:
@@ -340,14 +340,14 @@ class BPlusTree:
         leaf.keys.pop(key_index)
         leaf.values.pop(key_index)
 
-        # Handle root leaf case.
-        if len(local) == 1:
+        # Handle root leaf case (local is empty when root is the leaf).
+        if not local:
             return None if len(leaf.keys) == 0 else root
 
-        # Handle underflow from bottom to top.
-        for i in range(len(local) - 1, 0, -1):
-            node, _ = local[i]
-            parent, child_index = local[i - 1]
+        # Handle underflow from bottom to top, starting with the leaf.
+        node = leaf
+        for i in range(len(local) - 1, -1, -1):
+            parent, child_index = local[i]
 
             # No underflow, done.
             if len(node.keys) >= min_keys:
@@ -404,6 +404,9 @@ class BPlusTree:
                     node.values.extend(right_sib.values)
                 parent.keys.pop(child_index)
                 parent.values.pop(child_index + 1)
+
+            # Move up to parent for next iteration.
+            node = parent
 
         # Check if root needs replacement.
         if len(root.keys) == 0:
