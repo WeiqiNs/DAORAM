@@ -310,8 +310,6 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         Handle underflow at node_idx using the sibling at sibling_idx.
 
         :param node_idx: Index of the node with underflow in _local.
-        :param sibling_idx: Index of the sibling node in _local.
-        :param parent_idx: Index of the parent node in _local.
         """
         node = self._local[node_idx]
         sibling = self._local_sibling[node_idx-1]
@@ -415,6 +413,10 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             node = self._local[node_idx]
             # Parent node
             parent = self._local[node_idx - 1]
+            if not parent.value.values and node_idx > 1:
+                # parent(not root, root need to be handled separately) has been merged into sibling
+                parent = self._local_sibling[node_idx - 2]
+                
             # Sibling node
             sibling = self._local_sibling[node_idx - 1]
             
@@ -424,7 +426,8 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             
             # Update leaf paths for current node and sibling
             node.leaf = new_leaf_node
-            sibling.leaf = new_leaf_sibling
+            if sibling is not None:
+                sibling.leaf = new_leaf_sibling
             
             # Find indices of current node and sibling in parent
             node_child_idx = -1
@@ -433,24 +436,29 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             for i, val in enumerate(parent.value.values):
                 if val[0] == node.key:
                     node_child_idx = i
-                if val[0] == sibling.key:
+                if sibling is not None and val[0] == sibling.key:
                     sibling_child_idx = i
             
             # Update corresponding leaf paths in parent
             if node_child_idx != -1:
                 parent.value.values[node_child_idx] = (node.key, new_leaf_node)
-            
+  
             if sibling_child_idx != -1:
                 parent.value.values[sibling_child_idx] = (sibling.key, new_leaf_sibling)
+
        
-        # Update root node leaf path if exists
+        # Update root node
         if self._local:
             root_node = self._local[0]
+            # the original root has been merged and empty
+            if not root_node.value.values:
+                root_node = self._local[1]
+                if not root_node.value.values:
+                    # node has been merged into sibling
+                    root_node = self._local_sibling[0]
             new_root_leaf = self._get_new_leaf()
             root_node.leaf = new_root_leaf
             self.root = (root_node.key, new_root_leaf)
-        
-        print(f"Updated root leaf path to: {self.root}")
 
     def delete(self, key: Any) -> Any:
         """
@@ -477,11 +485,11 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
 
         # Find the leaf node (the one that contains the key).
         leaf = self._local[-1]
-        # TODO
-        leaf_idx = -1
-
 
         if leaf is None:
+            # update leaves in local
+            self._update_leaves()
+
             # Key not found, perform dummy operations and return.
             self._stash += self._local
             self._stash += self._local_sibling
@@ -499,6 +507,9 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         
         # Check if key is exists.
         if key_index == -1:
+            # update leaves in local
+            self._update_leaves()
+
             # Key not found, perform dummy operations and return.
             self._stash += self._local
             self._stash += self._local_sibling
@@ -516,9 +527,13 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
                 # Tree is now empty.
                 self.root = None
                 self._local = []
+                self._local_sibling = []
                 self._perform_dummy_operation(num_round=self._max_height - num_rounds)
                 return deleted_value
             else:
+                # update leaves in local
+                self._update_leaves()
+
                 # Root leaf still has keys.
                 self._stash += self._local
                 self._stash += self._local_sibling

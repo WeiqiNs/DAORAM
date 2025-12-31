@@ -1,6 +1,7 @@
 import glob
 import math
 import os
+import random
 
 from daoram.dependency import InteractLocalServer
 from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
@@ -542,6 +543,28 @@ class TestBPlusOdsOmapOptimized:
             if i not in deleted_keys:
                 assert omap.search(key=i) == i
 
+    def test_random_delete_int_key(self):
+        # Create the omap instance.
+        omap = BPlusOdsOmapOptimized(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+
+        # Initialize an empty storage.
+        omap.init_server_storage()
+
+        # Issue some insert queries.
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+
+        keys = set()
+        # sample random keys.
+        for i in range(NUM_DATA):
+            keys.add(random.randint(0, NUM_DATA - 1))
+        
+        for key in keys:
+            value = omap.delete(key)
+            assert value == key
+        
     def test_int_key(self):
         # Create the omap instance.
         omap = BPlusOdsOmapOptimized(
