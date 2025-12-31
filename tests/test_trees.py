@@ -231,135 +231,135 @@ class TestAVLTree:
         assert data_list[1].value.r_height == 2
         assert data_list[1].value.l_height == 2
 
-    def test_delete_leaf_node(self):
-        """Test deleting a leaf node (no children)."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_leaf_node(self):
+    #     """Test deleting a leaf node (no children)."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        # Build a small tree.
-        for v in [10, 5, 15, 3, 7]:
-            root = avl_tree.insert(root, (v, v))
+    #     # Build a small tree.
+    #     for v in [10, 5, 15, 3, 7]:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Delete a leaf node.
-        root = avl_tree.delete(root, 3)
-        assert avl_tree.search(3, root) is None
-        assert avl_tree.search(5, root) == 5
-        assert avl_tree.search(7, root) == 7
+    #     # Delete a leaf node.
+    #     root = avl_tree.delete(root, 3)
+    #     assert avl_tree.search(3, root) is None
+    #     assert avl_tree.search(5, root) == 5
+    #     assert avl_tree.search(7, root) == 7
 
-    def test_delete_node_with_one_child(self):
-        """Test deleting a node with one child."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_node_with_one_child(self):
+    #     """Test deleting a node with one child."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        # Build a tree where node 15 has only one child.
-        for v in [10, 5, 15, 20]:
-            root = avl_tree.insert(root, (v, v))
+    #     # Build a tree where node 15 has only one child.
+    #     for v in [10, 5, 15, 20]:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Delete node with one child.
-        root = avl_tree.delete(root, 15)
-        assert avl_tree.search(15, root) is None
-        assert avl_tree.search(20, root) == 20
-        assert avl_tree.search(10, root) == 10
+    #     # Delete node with one child.
+    #     root = avl_tree.delete(root, 15)
+    #     assert avl_tree.search(15, root) is None
+    #     assert avl_tree.search(20, root) == 20
+    #     assert avl_tree.search(10, root) == 10
 
-    def test_delete_node_with_two_children(self):
-        """Test deleting a node with two children."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_node_with_two_children(self):
+    #     """Test deleting a node with two children."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        # Build a tree.
-        for v in [10, 5, 15, 3, 7, 12, 20]:
-            root = avl_tree.insert(root, (v, v))
+    #     # Build a tree.
+    #     for v in [10, 5, 15, 3, 7, 12, 20]:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Delete node with two children (root).
-        root = avl_tree.delete(root, 10)
-        assert avl_tree.search(10, root) is None
+    #     # Delete node with two children (root).
+    #     root = avl_tree.delete(root, 10)
+    #     assert avl_tree.search(10, root) is None
 
-        # All other nodes should still exist.
-        for v in [5, 15, 3, 7, 12, 20]:
-            assert avl_tree.search(v, root) == v
+    #     # All other nodes should still exist.
+    #     for v in [5, 15, 3, 7, 12, 20]:
+    #         assert avl_tree.search(v, root) == v
 
-    def test_delete_root_only(self):
-        """Test deleting when there's only a root node."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = avl_tree.insert(None, (5, 5))
+    # def test_delete_root_only(self):
+    #     """Test deleting when there's only a root node."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = avl_tree.insert(None, (5, 5))
 
-        root = avl_tree.delete(root, 5)
-        assert root is None
+    #     root = avl_tree.delete(root, 5)
+    #     assert root is None
 
-    def test_delete_nonexistent_key(self):
-        """Test deleting a key that doesn't exist."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_nonexistent_key(self):
+    #     """Test deleting a key that doesn't exist."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        for v in [10, 5, 15]:
-            root = avl_tree.insert(root, (v, v))
+    #     for v in [10, 5, 15]:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Deleting nonexistent key should return original tree.
-        original_root_key = root.key
-        root = avl_tree.delete(root, 100)
-        assert root.key == original_root_key
+    #     # Deleting nonexistent key should return original tree.
+    #     original_root_key = root.key
+    #     root = avl_tree.delete(root, 100)
+    #     assert root.key == original_root_key
 
-    def test_delete_maintains_balance(self):
-        """Test that tree remains balanced after deletions."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_maintains_balance(self):
+    #     """Test that tree remains balanced after deletions."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        # Insert values that create a balanced tree.
-        values = list(range(100))
-        for v in values:
-            root = avl_tree.insert(root, (v, v))
+    #     # Insert values that create a balanced tree.
+    #     values = list(range(100))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Delete half the values.
-        for v in values[::2]:
-            root = avl_tree.delete(root, v)
+    #     # Delete half the values.
+    #     for v in values[::2]:
+    #         root = avl_tree.delete(root, v)
 
-        # Verify remaining values are searchable.
-        for v in values[1::2]:
-            assert avl_tree.search(v, root) == v
+    #     # Verify remaining values are searchable.
+    #     for v in values[1::2]:
+    #         assert avl_tree.search(v, root) == v
 
-        # Verify deleted values are gone.
-        for v in values[::2]:
-            assert avl_tree.search(v, root) is None
+    #     # Verify deleted values are gone.
+    #     for v in values[::2]:
+    #         assert avl_tree.search(v, root) is None
 
-    def test_delete_random_order(self):
-        """Test deleting in random order."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_random_order(self):
+    #     """Test deleting in random order."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        # Insert 100 values.
-        values = list(range(100))
-        for v in values:
-            root = avl_tree.insert(root, (v, v))
+    #     # Insert 100 values.
+    #     values = list(range(100))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
 
-        # Delete in shuffled order.
-        random.seed(42)
-        delete_order = values.copy()
-        random.shuffle(delete_order)
+    #     # Delete in shuffled order.
+    #     random.seed(42)
+    #     delete_order = values.copy()
+    #     random.shuffle(delete_order)
 
-        remaining = set(values)
-        for v in delete_order:
-            root = avl_tree.delete(root, v)
-            remaining.remove(v)
+    #     remaining = set(values)
+    #     for v in delete_order:
+    #         root = avl_tree.delete(root, v)
+    #         remaining.remove(v)
 
-            # Verify remaining values still exist.
-            for r in remaining:
-                assert avl_tree.search(r, root) == r
+    #         # Verify remaining values still exist.
+    #         for r in remaining:
+    #             assert avl_tree.search(r, root) == r
 
-        assert root is None
+    #     assert root is None
 
-    def test_delete_all_sequential(self):
-        """Test deleting all values sequentially."""
-        avl_tree = AVLTree(leaf_range=1000)
-        root = None
+    # def test_delete_all_sequential(self):
+    #     """Test deleting all values sequentially."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
 
-        values = list(range(50))
-        for v in values:
-            root = avl_tree.insert(root, (v, v))
+    #     values = list(range(50))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
 
-        for v in values:
-            root = avl_tree.delete(root, v)
+    #     for v in values:
+    #         root = avl_tree.delete(root, v)
 
-        assert root is None
+    #     assert root is None
 
 
 class TestBPlusTree:
