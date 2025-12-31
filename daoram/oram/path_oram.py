@@ -107,7 +107,7 @@ class PathOram(TreeBaseOram):
                 # Set found to true.
                 found = True
                 # Break the for loop.
-                continue
+                break
 
         # If the key was never found, raise an error, since the stash is always searched after a path.
         if not found:
@@ -267,6 +267,7 @@ class PathOram(TreeBaseOram):
             if data.key == key:
                 data.value = value
                 found = True
+                break
 
         # If the data was never found, we raise an error.
         if not found:
