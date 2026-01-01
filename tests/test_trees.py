@@ -231,6 +231,136 @@ class TestAVLTree:
         assert data_list[1].value.r_height == 2
         assert data_list[1].value.l_height == 2
 
+    # def test_delete_leaf_node(self):
+    #     """Test deleting a leaf node (no children)."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     # Build a small tree.
+    #     for v in [10, 5, 15, 3, 7]:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Delete a leaf node.
+    #     root = avl_tree.delete(root, 3)
+    #     assert avl_tree.search(3, root) is None
+    #     assert avl_tree.search(5, root) == 5
+    #     assert avl_tree.search(7, root) == 7
+
+    # def test_delete_node_with_one_child(self):
+    #     """Test deleting a node with one child."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     # Build a tree where node 15 has only one child.
+    #     for v in [10, 5, 15, 20]:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Delete node with one child.
+    #     root = avl_tree.delete(root, 15)
+    #     assert avl_tree.search(15, root) is None
+    #     assert avl_tree.search(20, root) == 20
+    #     assert avl_tree.search(10, root) == 10
+
+    # def test_delete_node_with_two_children(self):
+    #     """Test deleting a node with two children."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     # Build a tree.
+    #     for v in [10, 5, 15, 3, 7, 12, 20]:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Delete node with two children (root).
+    #     root = avl_tree.delete(root, 10)
+    #     assert avl_tree.search(10, root) is None
+
+    #     # All other nodes should still exist.
+    #     for v in [5, 15, 3, 7, 12, 20]:
+    #         assert avl_tree.search(v, root) == v
+
+    # def test_delete_root_only(self):
+    #     """Test deleting when there's only a root node."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = avl_tree.insert(None, (5, 5))
+
+    #     root = avl_tree.delete(root, 5)
+    #     assert root is None
+
+    # def test_delete_nonexistent_key(self):
+    #     """Test deleting a key that doesn't exist."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     for v in [10, 5, 15]:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Deleting nonexistent key should return original tree.
+    #     original_root_key = root.key
+    #     root = avl_tree.delete(root, 100)
+    #     assert root.key == original_root_key
+
+    # def test_delete_maintains_balance(self):
+    #     """Test that tree remains balanced after deletions."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     # Insert values that create a balanced tree.
+    #     values = list(range(100))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Delete half the values.
+    #     for v in values[::2]:
+    #         root = avl_tree.delete(root, v)
+
+    #     # Verify remaining values are searchable.
+    #     for v in values[1::2]:
+    #         assert avl_tree.search(v, root) == v
+
+    #     # Verify deleted values are gone.
+    #     for v in values[::2]:
+    #         assert avl_tree.search(v, root) is None
+
+    # def test_delete_random_order(self):
+    #     """Test deleting in random order."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     # Insert 100 values.
+    #     values = list(range(100))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     # Delete in shuffled order.
+    #     random.seed(42)
+    #     delete_order = values.copy()
+    #     random.shuffle(delete_order)
+
+    #     remaining = set(values)
+    #     for v in delete_order:
+    #         root = avl_tree.delete(root, v)
+    #         remaining.remove(v)
+
+    #         # Verify remaining values still exist.
+    #         for r in remaining:
+    #             assert avl_tree.search(r, root) == r
+
+    #     assert root is None
+
+    # def test_delete_all_sequential(self):
+    #     """Test deleting all values sequentially."""
+    #     avl_tree = AVLTree(leaf_range=1000)
+    #     root = None
+
+    #     values = list(range(50))
+    #     for v in values:
+    #         root = avl_tree.insert(root, (v, v))
+
+    #     for v in values:
+    #         root = avl_tree.delete(root, v)
+
+    #     assert root is None
+
 
 class TestBPlusTree:
     def test_insert(self):
@@ -356,3 +486,202 @@ class TestBPlusTree:
         assert data_list[1].key == 3
         assert data_list[1].value.keys == [14, 16, 18]
         assert len(data_list[1].value.values) == 4
+
+    def test_delete_single_element(self):
+        """Test deleting from a tree with a single element."""
+        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        root = bplus_tree.insert(root, (1, 1))
+        root = bplus_tree.delete(root, 1)
+
+        assert root is None
+
+    def test_delete_from_leaf(self):
+        """Test basic deletion from a leaf node without underflow."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert values.
+        for i in range(10):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete a value.
+        root = bplus_tree.delete(root, 5)
+
+        # Verify deletion.
+        try:
+            bplus_tree.search(5, root)
+            assert False, "Key 5 should not be found"
+        except KeyError:
+            pass
+
+        # Verify other values still exist.
+        for i in [0, 1, 2, 3, 4, 6, 7, 8, 9]:
+            assert bplus_tree.search(i, root) == i
+
+    def test_delete_nonexistent_key(self):
+        """Test deleting a key that doesn't exist raises KeyError."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        for i in range(5):
+            root = bplus_tree.insert(root, (i, i))
+
+        try:
+            bplus_tree.delete(root, 100)
+            assert False, "Should raise KeyError"
+        except KeyError:
+            pass
+
+    def test_delete_with_redistribution_left(self):
+        """Test deletion that triggers redistribution from left sibling."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Insert values to create a specific tree structure.
+        for i in range(12):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete values to trigger redistribution.
+        root = bplus_tree.delete(root, 6)
+        root = bplus_tree.delete(root, 7)
+
+        # Verify remaining values.
+        for i in [0, 1, 2, 3, 4, 5, 8, 9, 10, 11]:
+            assert bplus_tree.search(i, root) == i
+
+    def test_delete_with_redistribution_right(self):
+        """Test deletion that triggers redistribution from right sibling."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        for i in range(12):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete from left side to trigger redistribution from right.
+        root = bplus_tree.delete(root, 0)
+        root = bplus_tree.delete(root, 1)
+
+        # Verify remaining values.
+        for i in range(2, 12):
+            assert bplus_tree.search(i, root) == i
+
+    def test_delete_with_merge(self):
+        """Test deletion that triggers node merging."""
+        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        for i in range(10):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete multiple values to trigger merging.
+        for i in range(5):
+            root = bplus_tree.delete(root, i)
+
+        # Verify remaining values.
+        for i in range(5, 10):
+            assert bplus_tree.search(i, root) == i
+
+    def test_delete_causes_root_shrink(self):
+        """Test deletion that causes the root to shrink."""
+        bplus_tree = BPlusTree(order=3, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        # Build a tree with multiple levels.
+        for i in range(10):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete enough values to cause root shrinking.
+        for i in range(8):
+            root = bplus_tree.delete(root, i)
+
+        # Verify remaining values.
+        assert bplus_tree.search(8, root) == 8
+        assert bplus_tree.search(9, root) == 9
+
+    def test_delete_all_sequential(self):
+        """Test deleting all values sequentially."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        values = list(range(20))
+        for v in values:
+            root = bplus_tree.insert(root, (v, v))
+
+        for v in values:
+            root = bplus_tree.delete(root, v)
+
+        assert root is None
+
+    def test_delete_all_reverse(self):
+        """Test deleting all values in reverse order."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        values = list(range(20))
+        for v in values:
+            root = bplus_tree.insert(root, (v, v))
+
+        for v in reversed(values):
+            root = bplus_tree.delete(root, v)
+
+        assert root is None
+
+    def test_delete_random_order(self):
+        """Test deleting values in random order."""
+        bplus_tree = BPlusTree(order=5, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        values = list(range(50))
+        for v in values:
+            root = bplus_tree.insert(root, (v, v))
+
+        random.seed(42)
+        delete_order = values.copy()
+        random.shuffle(delete_order)
+
+        remaining = set(values)
+        for v in delete_order:
+            root = bplus_tree.delete(root, v)
+            remaining.remove(v)
+
+            # Verify remaining values still exist.
+            if root:
+                for r in remaining:
+                    assert bplus_tree.search(r, root) == r
+
+        assert root is None
+
+    def test_delete_various_orders(self):
+        """Test delete with various tree orders."""
+        for order in [3, 4, 5, 6, 10]:
+            bplus_tree = BPlusTree(order=order, leaf_range=1000)
+            root = BPlusTreeNode()
+
+            values = list(range(100))
+            for v in values:
+                root = bplus_tree.insert(root, (v, v))
+
+            random.seed(order)
+            random.shuffle(values)
+
+            for v in values:
+                root = bplus_tree.delete(root, v)
+
+            assert root is None, f"Tree with order {order} should be empty"
+
+    def test_delete_first_key_updates_parent(self):
+        """Test that deleting the first key in a leaf updates parent keys."""
+        bplus_tree = BPlusTree(order=4, leaf_range=1000)
+        root = BPlusTreeNode()
+
+        for i in range(15):
+            root = bplus_tree.insert(root, (i, i))
+
+        # Delete the first key of a leaf.
+        root = bplus_tree.delete(root, 6)
+
+        # Verify tree is still valid.
+        for i in [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14]:
+            assert bplus_tree.search(i, root) == i
