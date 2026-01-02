@@ -72,7 +72,7 @@ class BottomUpSomap:
         # Timestamp management
         self._timestamp = 0
         
-        self._Ow_len = 0
+        self._Qw_len = 0
         self._Qr_len = 0
 
         # Name identifiers
@@ -222,7 +222,6 @@ class BottomUpSomap:
                 self._Ow.insert(key, old_value)  
             else:
                 self._Ow.insert(key, value)
-            self._Ow_len += 1
             
             self.operate_on_list(label=self._Qw_name, op="insert", data=(key, self._timestamp, "Key"))
               
@@ -234,10 +233,11 @@ class BottomUpSomap:
             if op == 'read':
                 self._Ow.insert(key, old_value)  
             else:
-                self._Ow.insert(key, value) 
-            self._Ow_len += 1   
+                self._Ow.insert(key, value)
 
             self.operate_on_list(label=self._Qw_name, op="insert", data=(key, self._timestamp, "Key"))
+
+        self._Qw_len += 1
                          
         # Adjust security level
         self._adjust_security_level()
@@ -257,12 +257,13 @@ class BottomUpSomap:
         - Maintain O_R size by removing oldest entries when necessary
         """
         # Adjust O_W and O_R cache
-        if self._Ow_len > self._cache_size:
+        if self._Qw_len > self._cache_size:
 
             # Pop the oldest h key-value pairs
             popped_items = []
-            for _ in range(self._Ow_len - self._cache_size):
+            for _ in range(self._Qw_len - self._cache_size):
                 popped_items.append(self.operate_on_list(label=self._Qw_name, op="pop"))
+            self._Qw_len = self._cache_size
            
             # Process each popped key-value pair
             for key, _ , marker in popped_items:
@@ -271,7 +272,6 @@ class BottomUpSomap:
                     
                     # delete form Ow and Move to O_R cache
                     value = self._Ow.delete(key)
-                    self._Ow_len -= 1
 
                     # Update static ORAM tree
                     self._Ds.operate_on_key(op="w", key=key, value=value)
