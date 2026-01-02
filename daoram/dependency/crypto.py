@@ -90,3 +90,90 @@ class Prf:
     def digest_mod_n(self, message: bytes, mod: int) -> int:
         """Run PRF on the provided message and compute mod n."""
         return int.from_bytes(self.digest(message=message), "big") % mod
+
+import hashlib
+import math
+import os
+
+def prp_prf(key: bytes, x: int, output_bits: int) -> int:
+    data = x.to_bytes((x.bit_length() + 7) // 8 or 1, 'big')
+    h = hashlib.sha256(key + data).digest()
+    # 取足够字节
+    num_bytes = (output_bits + 7) // 8
+    truncated = h[:num_bytes]
+    val = int.from_bytes(truncated, 'big')
+    return val % (1 << output_bits)
+
+class PRP:
+    def __init__(self, key: bytes, n: int):
+        if n <= 1:
+            raise ValueError("n must be >= 2")
+        self.__key = get_random_bytes(16) if key is None else key
+        if key is not None and len(key) < 16:
+            raise ValueError("Key should be at least 16 bytes")
+        self.n = n
+        self.b = (n - 1).bit_length()
+
+    def _feistel_encrypt(self, x: int) -> int:
+        half = self.b // 2
+        mask_right = (1 << half) - 1
+        left = x >> half
+        right = x & mask_right
+
+        for i in range(4):
+            round_key = self.key + i.to_bytes(1, 'big')
+            f_out = prp_prf(round_key, right, self.b - half)
+            left, right = right, left ^ f_out
+
+        return ((right << half) | left) & ((1 << self.b) - 1)
+
+    def _feistel_decrypt(self, y: int) -> int:
+        half = self.b // 2
+        mask_right = (1 << half) - 1
+        left = y >> half
+        right = y & mask_right
+
+        for i in reversed(range(4)):
+            round_key = self.key + i.to_bytes(1, 'big')
+            f_out = prp_prf(round_key, left, self.b - half)
+            right, left = left, right ^ f_out
+
+        return ((right << half) | left) & ((1 << self.b) - 1)
+
+    def encrypt(self, x: int) -> int:
+        if not (0 <= x < self.n):
+            raise ValueError(f"Input must be in [0, {self.n})")
+        y = x
+        while y >= self.n:
+            y = self._feistel_encrypt(y)
+        return y
+
+    def decrypt(self, y: int) -> int:
+        if not (0 <= y < self.n):
+            raise ValueError(f"Input must be in [0, {self.n})")
+        x = y
+        while x >= self.n:
+            x = self._feistel_decrypt(x)
+        return x
+
+if __name__ == "__main__":
+    n = pow(2, 20)  # 任意 n，比如 100 万
+    key = os.urandom(32)
+    prp = PRP(key, n)
+
+    test_vals = [0, 1, 123456, n - 1]
+    for x in test_vals:
+        y = prp.encrypt(x)
+        x2 = prp.decrypt(y)
+        print(f"x={x:8d} → y={y:8d} → x2={x2:8d} {'✅' if x == x2 else '❌'}")
+
+    seen = set()
+    for x in range(n):
+        y = prp.encrypt(x)
+        assert 0 <= y < n
+        if y in seen:
+            print("Collision!")
+            break
+        seen.add(y)
+    else:
+        print(f"No collision in values.")

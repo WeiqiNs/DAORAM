@@ -4,6 +4,7 @@ This module defines the static oram class, which inherits from PathOram.
 StaticOram overrides the __retrieve_stash and __retrieve_block methods to not call self._get_new_leaf().
 """
 import os
+import random
 from typing import Any, Optional
 
 from daoram.dependency import Buckets
@@ -209,4 +210,6 @@ class StaticOram(PathOram):
         :param key: The key of the data
         :return: path number
         """
+        if key is None:
+            return random.randint(0, self._num_data-1)
         return self._hash_func.digest_mod_n(str(key).encode(), self._num_data)

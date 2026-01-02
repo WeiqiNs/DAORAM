@@ -126,7 +126,7 @@ class TestBottomUpSomap:
             assert result == f"value_{i}"
 
         # Verify cache size management
-        assert somap._Ow_len <= somap._cache_size
+        assert somap._Qw_len == somap._cache_size
 
     def test_dynamic_cache_size_adjustment(self):
         """Test dynamic adjustment of cache size"""
