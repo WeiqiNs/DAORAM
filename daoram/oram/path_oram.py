@@ -9,8 +9,7 @@ Path oram has two public methods:
 """
 from typing import Any, Optional
 
-from daoram.dependency import BinaryTree, Buckets, InteractServer, Encryptor, PathData, Query, TreeReadPathPayload, \
-    TREE_READ_PATH
+from daoram.dependency import BinaryTree, Buckets, InteractServer, Encryptor, PathData
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
@@ -207,23 +206,21 @@ class PathOram(TreeBaseOram):
         # Find which path the data of interest lies on.
         leaf = self._look_up_pos_map(key=key)
 
-        # We read the path from the server.
-        path = self.client.execute_query(query=Query(
-            payload=TreeReadPathPayload(leaves=[leaf]),
-            query_type=TREE_READ_PATH,
-            storage_label=self._name
-        ))
+        # Read the path from the server.
+        self.client.add_read_path(label=self._name, leaves=[leaf])
+        result = self.client.execute()
+        path_data = result.results[self._name]
+        path = self._path_data_to_buckets(leaf=leaf, path_data=path_data)
 
         # Retrieve value from the path, or write to it.
         value = self.__retrieve_block(op=op, key=key, path=path, value=value)
 
         # Perform an eviction and get a new path.
-        path = self.__evict_stash(leaf=leaf)
-
-
+        evicted_path = self.__evict_stash(leaf=leaf)
 
         # Write the path back to the server.
-        self.client.add_query(label=self._name, leaf=leaf, data=path)
+        self.client.add_write_path(label=self._name, data=evicted_path)
+        self.client.execute()
 
         return value
 
@@ -239,8 +236,11 @@ class PathOram(TreeBaseOram):
         # Find which path the data of interest lies on.
         leaf = self._look_up_pos_map(key=key)
 
-        # We read the path from the server.
-        path = self.client.read_query(label=self._name, leaf=leaf)
+        # Read the path from the server.
+        self.client.add_read_path(label=self._name, leaves=[leaf])
+        result = self.client.execute()
+        path_data = result.results[self._name]
+        path = self._path_data_to_buckets(leaf=leaf, path_data=path_data)
 
         # Retrieve value from the path, or write to it.
         value = self.__retrieve_block(op=op, key=key, path=path, value=value)
@@ -272,10 +272,11 @@ class PathOram(TreeBaseOram):
             raise KeyError(f"Key {key} not found.")
 
         # Perform an eviction and get a new path.
-        path = self.__evict_stash(leaf=self.__tmp_leaf)
+        evicted_path = self.__evict_stash(leaf=self.__tmp_leaf)
 
         # Write the path back to the server.
-        self.client.write_query(label=self._name, leaf=self.__tmp_leaf, data=path)
+        self.client.add_write_path(label=self._name, data=evicted_path)
+        self.client.execute()
 
         # Set temporary leaf to None.
         self.__tmp_leaf = None

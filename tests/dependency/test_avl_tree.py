@@ -1,7 +1,5 @@
 import random
 
-import pytest
-
 from daoram.dependency import AVLTree, KVPair
 
 

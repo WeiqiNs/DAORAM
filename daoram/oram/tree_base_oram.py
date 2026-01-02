@@ -157,6 +157,20 @@ class TreeBaseOram(ABC):
             if (dec := Data.load_unpad(Helper.unpad_pickle(data=self._encryptor.dec(ciphertext=data)))).key is not None
         ] for bucket in buckets] if self._encryptor else buckets
 
+    def _path_data_to_buckets(self, leaf: int, path_data: PathData) -> Buckets:
+        """
+        Convert PathData (dict) to Buckets (list) for a given leaf.
+
+        :param leaf: The leaf label.
+        :param path_data: PathData dict mapping storage index to bucket.
+        :return: List of buckets from leaf to root.
+        """
+        # Compute path indices from leaf to root.
+        start_leaf = pow(2, self._level - 1) - 1
+        path_indices = BinaryTree.get_path_indices(index=leaf + start_leaf)
+        # Extract buckets in order.
+        return [path_data[idx] for idx in path_indices]
+
     def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
         return secrets.randbelow(self._leaf_range)

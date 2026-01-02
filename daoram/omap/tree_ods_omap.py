@@ -9,7 +9,7 @@ import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import Aes, BinaryTree, Buckets, Data, InteractServer
+from daoram.dependency import AesGcm, BinaryTree, Buckets, Data, InteractServer
 
 # Root contains the data key and the path.
 ROOT = Tuple[Any, int]
@@ -71,7 +71,7 @@ class TreeOdsOmap(ABC):
         # Use encryption if required.
         self._aes_key: bytes = aes_key
         self._num_key_bytes: int = num_key_bytes
-        self._cipher: Optional[Aes] = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._cipher: Optional[AesGcm] = AesGcm(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
 
         # Initialize the client connection.
         self._client: InteractServer = client

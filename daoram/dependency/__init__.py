@@ -2,9 +2,9 @@ from .avl_tree import *
 from .binary_tree import *
 from .bplus_tree import *
 from .crypto import *
+from .flexible_binary_tree import *
 from .helper import *
 from .interact_server import *
 from .sockets import *
 from .storage import *
 from .types import *
-from .flexible_binary_tree import *

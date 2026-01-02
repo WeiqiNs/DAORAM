@@ -1,11 +1,12 @@
-
 """ This module implements a flexible binary tree structure for use in ORAM systems. """
 import math
-from typing import Any, Dict, List, Union, Tuple, Optional
 import pickle
+from typing import Any, Dict, List, Union, Tuple
+
 from daoram.dependency.helper import Data
 from daoram.dependency.storage import Storage
-from daoram.dependency.types import Block, Bucket, Buckets
+from daoram.dependency.types import Block, Buckets
+
 
 class FlexibleBinaryTree:
     def __init__(
@@ -46,7 +47,7 @@ class FlexibleBinaryTree:
             bucket_size=bucket_size,
             enc_key_size=enc_key_size
         )
-    
+
     @property
     def size(self) -> int:
         """Returns the size of the binary tree."""
@@ -86,7 +87,7 @@ class FlexibleBinaryTree:
         :return: The index of input node's left child node.
         """
         return index * 2 + 1
-    
+
     @staticmethod
     def get_path_indices(index: int) -> List[int]:
         """
@@ -197,7 +198,8 @@ class FlexibleBinaryTree:
         leaf_one_index = pow(2, data.leaf[1] - 1) - 1 + data.leaf[0]
         leaf_two_index = pow(2, leaf[1] - 1) - 1 + leaf[0]
         # Adjust to the same depth
-        leaf_one_index, leaf_two_index = FlexibleBinaryTree.adjust_to_same_level(leaf_one_index, leaf_two_index, data.leaf[1], leaf[1])
+        leaf_one_index, leaf_two_index = FlexibleBinaryTree.adjust_to_same_level(leaf_one_index, leaf_two_index,
+                                                                                 data.leaf[1], leaf[1])
 
         # Get the lowest crossed level index of the path between the data and the current path.
         index = FlexibleBinaryTree.get_cross_index_level(leaf_one=leaf_one_index, leaf_two=leaf_two_index)
@@ -210,7 +212,7 @@ class FlexibleBinaryTree:
             # Check if the bucket is full.
             if len(path[path_index]) < bucket_size:
                 # If the data is inserted, return True.
-                
+
                 path[path_index].append(data)
                 return True
 
@@ -229,7 +231,8 @@ class FlexibleBinaryTree:
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
-        index = FlexibleBinaryTree.get_cross_index(leaf_one=FlexibleBinaryTree.get_actual_leaf_index(data.leaf), leaf_two=FlexibleBinaryTree.get_actual_leaf_index(leaf))
+        index = FlexibleBinaryTree.get_cross_index(leaf_one=FlexibleBinaryTree.get_actual_leaf_index(data.leaf),
+                                                   leaf_two=FlexibleBinaryTree.get_actual_leaf_index(leaf))
 
         # Go backwards from bottom to up.
         while index >= 0:
@@ -257,7 +260,8 @@ class FlexibleBinaryTree:
         :return: Modify the input dict in-place, return True if data was filled.
         """
         # Get the lowest crossed index of the path between the data and the current path.
-        indices = [FlexibleBinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level) for leaf in leaves]
+        indices = [FlexibleBinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level) for leaf in
+                   leaves]
         max_index = max(indices)
 
         # Go backwards from bottom to up.
@@ -272,9 +276,10 @@ class FlexibleBinaryTree:
 
         # Otherwise return False.
         return False
-    
+
     @staticmethod
-    def adjust_to_same_level(leaf_one_index: int, leaf_two_index: int, leaf_one_level: int, leaf_two_level: int) -> Tuple[int, int]:
+    def adjust_to_same_level(leaf_one_index: int, leaf_two_index: int, leaf_one_level: int, leaf_two_level: int) -> \
+    Tuple[int, int]:
         """Given two indices of node, adjust them to the same level.
 
         :param leaf_one_index: The index of a node.
@@ -291,7 +296,7 @@ class FlexibleBinaryTree:
             for _ in range(-gap):
                 leaf_two_index = FlexibleBinaryTree.get_parent_index(leaf_two_index)
         return leaf_one_index, leaf_two_index
-    
+
     @staticmethod
     def adjust_to_lowest_level(actual_index: int, old_level: int, level: int) -> int:
         """Given a indice of node, adjust them to the lowest level.
@@ -309,7 +314,7 @@ class FlexibleBinaryTree:
             for _ in range(-gap):
                 actual_index = FlexibleBinaryTree.get_parent_index(index=actual_index)
         return actual_index
-    
+
     @staticmethod
     def get_actual_leaf_index(leaf_info: Tuple[int, int]) -> int:
         """
@@ -323,19 +328,19 @@ class FlexibleBinaryTree:
             return pow(2, level - 1) - 1 + leaf
         else:
             raise TypeError("Leaf must be an integer or tuple (leaf, height)")
-    
+
     def scale_up(self) -> None:
         """
         Expand the tree to accommodate more data points.
         
         :param new_num_data: New number of data points the tree should hold
         """
-    
+
         # Calculate new level and size
         new_level = self._level + 1
         new_size = pow(2, new_level) - 1
         new_start_leaf = pow(2, new_level - 1) - 1
-        
+
         # Create new storage
         new_storage = Storage(
             size=new_size,
@@ -344,12 +349,12 @@ class FlexibleBinaryTree:
             bucket_size=self._bucket_size,
             enc_key_size=self._enc_key_size
         )
-        
+
         # Copy existing data to new storage
         # The old tree structure is embedded in the new tree
         for i in range(self._size):
             new_storage[i] = self._storage[i]
-        
+
         # Update tree properties
         self._level = new_level
         self._size = new_size
@@ -367,11 +372,11 @@ class FlexibleBinaryTree:
         new_level = self._level - 1
         new_size = pow(2, new_level) - 1
         new_start_leaf = pow(2, new_level - 1) - 1
-        
+
         # Check if contraction is possible
         if not self._can_scale_down():
             return False
-        
+
         # Create new storage
         new_storage = Storage(
             size=new_size,
@@ -380,13 +385,13 @@ class FlexibleBinaryTree:
             bucket_size=self._bucket_size,
             enc_key_size=self._enc_key_size
         )
-        
+
         for i in range(new_size):
             new_storage[i] = self._storage[i]
 
         # Migrate data from old tree to new tree
         self._remove_bottom_layer()
-        
+
         # Update tree properties
         self._level = new_level
         self._size = new_size
@@ -394,11 +399,11 @@ class FlexibleBinaryTree:
         self._storage = new_storage
 
         return True
-    
+
     def _can_scale_down(self) -> bool:
         """Check if the tree can be scaled down."""
         num_leaves = int(pow(2, self._level - 1))
-        
+
         print("Checking scale down feasibility...num_leaves:", num_leaves)
         for leaf_index in range(num_leaves):
             # Get all bucket indices on the path
@@ -406,13 +411,13 @@ class FlexibleBinaryTree:
             path_block_counts = 0
             for bucket_index in path_indices:
                 path_block_counts += len(self._storage[bucket_index])
-            
+
             buckets_of_leaf = len(self._storage[self._start_leaf + leaf_index])
-            if (path_block_counts - self._bucket_size ) > (self._level-2) * self._bucket_size:
+            if (path_block_counts - self._bucket_size) > (self._level - 2) * self._bucket_size:
                 return False
-        
+
         return True
-    
+
     def _upthrust_date(self, indice: int) -> bool:
         """ Given an leaf label, upthrust the data to the root. """
         path_index = self.get_parent_index(self._start_leaf + indice)
@@ -425,11 +430,11 @@ class FlexibleBinaryTree:
             else:
                 path_index = self.get_parent_index(index=path_index)
         if target:
-            return True    
-        # Otherwise return False.
+            return True
+            # Otherwise return False.
         else:
-            return False   
- 
+            return False
+
     def _remove_bottom_layer(self) -> None:
         """
         Migrate data from old tree to new tree during scale down.
@@ -441,8 +446,7 @@ class FlexibleBinaryTree:
         # Upthrust all the data in the bottom layer.
         for leaf in range(pow(2, self._level - 1)):
             self._upthrust_date(leaf)
-    
-    
+
     def fill_data_to_storage_leaf(self, data: Data) -> bool:
         """Based on the input data, fill it to the proper path at the lowest leaf node."""
         # Go from leaf to node; check whether the current bucket is full.
@@ -454,7 +458,7 @@ class FlexibleBinaryTree:
 
         # Otherwise return False.
         return False
-    
+
     def get_leaf_path(self, leaf: Tuple[int, int]) -> List[int]:
         """
         Given a leaf label, get the index of the path from itself to the root node.
@@ -477,9 +481,10 @@ class FlexibleBinaryTree:
         :return: A list of indices from multiple leaf nodes to the root.
         """
         actual_indices = [FlexibleBinaryTree.get_actual_leaf_index(leaf) for leaf in leaves]
-        actual_indices = [self.adjust_to_lowest_level(index, leaf[1], self._level) for index, leaf in zip(actual_indices, leaves)]
+        actual_indices = [self.adjust_to_lowest_level(index, leaf[1], self._level) for index, leaf in
+                          zip(actual_indices, leaves)]
         return self.get_mul_path_indices(indices=actual_indices)
-    
+
     def get_leaf_block(self, leaf: Tuple[int, int], index: int) -> int:
         """
         Given a leaf label, and an index, get the index of the block on that path.
@@ -503,9 +508,9 @@ class FlexibleBinaryTree:
 
         # If the leaf is a list, we read multiple paths.
         elif isinstance(leaf, list):
-            path_to_read = self.get_mul_leaf_path(leaves=leaf) 
+            path_to_read = self.get_mul_leaf_path(leaves=leaf)
 
-        # Otherwise, raise a type error.
+            # Otherwise, raise a type error.
         else:
             raise TypeError("Leaf must be an integer, tuple (leaf, height), or list of these.")
 
@@ -539,9 +544,9 @@ class FlexibleBinaryTree:
         # Otherwise, raise a type error.
         else:
             raise TypeError("Leaf must be an integer, tuple (leaf, height), or list of these.")
-        
+
         # Write the data.
-        for i,path_index in enumerate(path_to_write):
+        for i, path_index in enumerate(path_to_write):
             self._storage[path_index] = data[i]
 
     def read_block(self, leaf: Tuple[int, int], bucket_id: int, block_id: int) -> Block:
@@ -574,6 +579,7 @@ class FlexibleBinaryTree:
         # Write it back.
         self._storage[index_to_write] = bucket_data
 
+
 def __getstate__(self) -> Dict[str, Any]:
     """Custom serialization method"""
     return {
@@ -586,16 +592,17 @@ def __getstate__(self) -> Dict[str, Any]:
         '_level': self._level,
         '_size': self._size,
         '_start_leaf': self._start_leaf,
-        
+
         # Storage configuration
         '_storage_filename': self._storage._Storage__filename,
         '_storage_data_size': self._storage._Storage__data_size,
         '_storage_encryption': self._storage._Storage__encryption,
         '_storage_total_size': self._storage._Storage__total_size,
-        
+
         # Storage data
         '_storage_data': self._serialize_storage_data()
     }
+
 
 def __setstate__(self, state: Dict[str, Any]) -> None:
     """Custom deserialization method"""
@@ -608,7 +615,7 @@ def __setstate__(self, state: Dict[str, Any]) -> None:
     self._level = state['_level']
     self._size = state['_size']
     self._start_leaf = state['_start_leaf']
-    
+
     # Re-create the Storage object
     self._storage = Storage(
         size=state['_size'],
@@ -617,10 +624,10 @@ def __setstate__(self, state: Dict[str, Any]) -> None:
         bucket_size=state['_bucket_size'],
         enc_key_size=state['_enc_key_size']
     )
-    
+
     # Restore storage data
     self._deserialize_storage_data(state['_storage_data'])
-    
+
     def _serialize_storage_data(self) -> bytes:
         """Serialize storage data"""
         if self._storage._Storage__filename is None:
@@ -631,11 +638,11 @@ def __setstate__(self, state: Dict[str, Any]) -> None:
             self._storage._Storage__file.seek(0)
             file_data = self._storage._Storage__file.read()
             return pickle.dumps(file_data)
-    
+
     def _deserialize_storage_data(self, data: bytes) -> None:
         """Deserialize storage data"""
         storage_data = pickle.loads(data)
-        
+
         if self._storage._Storage__filename is None:
             # In-memory storage: directly restore the internal data
             self._storage._Storage__internal_data = storage_data

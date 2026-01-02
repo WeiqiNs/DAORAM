@@ -105,12 +105,21 @@ class PseudoRandomFunction(ABC):
 
     @abstractmethod
     def digest(self, message: bytes) -> bytes:
-        """Compute PRF on the message."""
+        """Compute PRF on the message.
+
+        :param message: The message to hash.
+        :return: The PRF output digest.
+        """
         pass
 
     @abstractmethod
     def digest_mod_n(self, message: bytes, mod: int) -> int:
-        """Compute PRF on the message and return result mod n."""
+        """Compute PRF on the message and return result mod n.
+
+        :param message: The message to hash.
+        :param mod: The modulus.
+        :return: PRF output mod n.
+        """
         pass
 
 
@@ -152,3 +161,170 @@ class Blake2Prf(PseudoRandomFunction):
         :return: Hash value mod n.
         """
         return int.from_bytes(self.digest(message), "big") % mod
+
+
+class PseudoRandomPermutation(ABC):
+    """Abstract base class for pseudo-random permutation implementations."""
+
+    @property
+    @abstractmethod
+    def key(self) -> bytes:
+        """Get the PRP key."""
+        pass
+
+    @property
+    @abstractmethod
+    def domain_size(self) -> int:
+        """Get the domain size n; permutation maps [0, n) -> [0, n)."""
+        pass
+
+    @abstractmethod
+    def permute(self, x: int) -> int:
+        """Apply the permutation to an integer in [0, domain_size).
+
+        :param x: The input integer.
+        :return: The permuted integer.
+        """
+        pass
+
+    @abstractmethod
+    def inverse(self, y: int) -> int:
+        """Apply the inverse permutation to an integer in [0, domain_size).
+
+        :param y: The permuted integer.
+        :return: The original integer.
+        """
+        pass
+
+
+class FeistelPrp(PseudoRandomPermutation):
+    """Pseudo-random permutation using a Feistel network with cycle-walking."""
+
+    # Minimum key size in bytes.
+    KEY_SIZE = 16
+    # Number of Feistel rounds (4 rounds for security).
+    NUM_ROUNDS = 4
+
+    def __init__(self, domain_size: int, key: Optional[bytes] = None):
+        """Initialize a pseudo-random permutation using a balanced Feistel network.
+
+        Uses a 4-round Feistel cipher with SHA-256 as the round function.
+        Cycle-walking ensures outputs stay within [0, domain_size) for
+        non-power-of-2 domain sizes.
+
+        :param domain_size: The size of the permutation domain [0, domain_size).
+        :param key: The key to use; it will be randomly generated if not provided.
+        """
+        if domain_size <= 1:
+            raise ValueError("Domain size must be >= 2.")
+        if key is not None and len(key) < self.KEY_SIZE:
+            raise ValueError(f"Key should be at least {self.KEY_SIZE} bytes.")
+
+        self.__key = os.urandom(self.KEY_SIZE) if key is None else key
+        self.__domain_size = domain_size
+
+        # Compute the bit length needed to represent domain, rounded up to even for a balanced Feistel.
+        raw_bits = (domain_size - 1).bit_length()
+        self.__bit_length = raw_bits + (raw_bits % 2)
+
+    @property
+    def key(self) -> bytes:
+        """Get the current PRP key."""
+        return self.__key
+
+    @property
+    def domain_size(self) -> int:
+        """Get the domain size."""
+        return self.__domain_size
+
+    def _round_function(self, round_num: int, value: int, output_bits: int) -> int:
+        """Compute the Feistel round function using SHA-256.
+
+        :param round_num: The round number (used for domain separation).
+        :param value: The input value to the round function.
+        :param output_bits: Number of output bits needed.
+        :return: The round function output, truncated to output_bits.
+        """
+        # Concatenate key, round number, and value for domain separation.
+        value_bytes = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+        data = self.__key + round_num.to_bytes(1, "big") + value_bytes
+        h = hashlib.sha256(data).digest()
+
+        # Truncate hash to required number of bits.
+        num_bytes = (output_bits + 7) // 8
+        return int.from_bytes(h[:num_bytes], "big") % (1 << output_bits)
+
+    def _feistel_forward(self, x: int) -> int:
+        """Apply the forward Feistel network transformation.
+
+        :param x: The input integer.
+        :return: The transformed integer.
+        """
+        half = self.__bit_length // 2
+        mask = (1 << half) - 1
+
+        # Split input into left (high bits) and right (low bits) halves.
+        left = x >> half
+        right = x & mask
+
+        # Apply Feistel rounds: swap and XOR with round function output.
+        for i in range(self.NUM_ROUNDS):
+            f_out = self._round_function(i, right, half)
+            left, right = right, left ^ f_out
+
+        # Recombine halves into output.
+        return ((left << half) | right) & ((1 << self.__bit_length) - 1)
+
+    def _feistel_inverse(self, y: int) -> int:
+        """Apply the inverse Feistel network transformation.
+
+        :param y: The transformed integer.
+        :return: The original integer.
+        """
+        half = self.__bit_length // 2
+        mask = (1 << half) - 1
+
+        # Split input into left (high bits) and right (low bits) halves.
+        left = y >> half
+        right = y & mask
+
+        # Apply inverse Feistel rounds in reverse order.
+        for i in reversed(range(self.NUM_ROUNDS)):
+            f_out = self._round_function(i, left, half)
+            right, left = left, right ^ f_out
+
+        # Recombine halves into output.
+        return ((left << half) | right) & ((1 << self.__bit_length) - 1)
+
+    def permute(self, x: int) -> int:
+        """Apply the permutation to an integer.
+
+        :param x: Integer in [0, domain_size).
+        :return: Permuted integer in [0, domain_size).
+        :raises ValueError: If x is not in [0, domain_size).
+        """
+        if not (0 <= x < self.__domain_size):
+            raise ValueError(f"Input must be in [0, {self.__domain_size}).")
+
+        # Cycle-walking: repeatedly apply Feistel until output is in domain.
+        # This handles non-power-of-2 domain sizes while preserving bijectivity.
+        y = self._feistel_forward(x)
+        while y >= self.__domain_size:
+            y = self._feistel_forward(y)
+        return y
+
+    def inverse(self, y: int) -> int:
+        """Apply the inverse permutation to an integer.
+
+        :param y: Integer in [0, domain_size).
+        :return: Original integer in [0, domain_size).
+        :raises ValueError: If y is not in [0, domain_size).
+        """
+        if not (0 <= y < self.__domain_size):
+            raise ValueError(f"Input must be in [0, {self.__domain_size}).")
+
+        # Cycle-walking: repeatedly apply inverse Feistel until output is in domain.
+        x = self._feistel_inverse(y)
+        while x >= self.__domain_size:
+            x = self._feistel_inverse(x)
+        return x
