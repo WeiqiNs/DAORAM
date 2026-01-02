@@ -23,7 +23,7 @@ class BottomUpSomap:
                  client: InteractServer,
                  name: str = "busomap",
                  filename: str = None,
-                 bucket_size: int = 10,
+                 bucket_size: int = 4,
                  stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
@@ -86,10 +86,12 @@ class BottomUpSomap:
     def client(self) -> InteractServer:
         """Return the client object."""
         return self._client
-    
+
+    # todo: @weiqi check if all ciphertexts have the same length
+    # since the value component of dummy pair is "dummy"
     def _encrypt_data(self, data: Any) -> Any:
         """Encrypt data if encryption is enabled"""
-        if not self._use_encryption or self._list_cipher is None:
+        if not self._use_encryption:
             return data
         
         try:
@@ -104,7 +106,7 @@ class BottomUpSomap:
     
     def _decrypt_data(self, encrypted_data: Any) -> Any:
         """Decrypt data if encryption is enabled"""
-        if not self._use_encryption or self._list_cipher is None:
+        if not self._use_encryption:
             return encrypted_data
         
         try:
@@ -203,27 +205,27 @@ class BottomUpSomap:
         if value_ow is not None:
             old_value = value_ow
             # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key=self._timestamp % self._num_data)
+            self._Ds.operate_on_key(op="r", key = None)
             # update (𝑘,𝑣) in O_W
             if op == 'read':
                 self._Ow.search(key)
             else:
                 self._Ow.search(key, value)
                 
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, self._timestamp, "Dummy"))
+            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Dummy"))
                
         # Case b: Key is in read cache O_R
         elif value_or is not None:
             old_value,_ = value_or
             # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key=self._timestamp % self._num_data)
+            self._Ds.operate_on_key(op="r", key = None)
             #  insert (𝑘,𝑣) to O_W
             if op == 'read':
                 self._Ow.insert(key, old_value)  
             else:
                 self._Ow.insert(key, value)
             
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, self._timestamp, "Key"))
+            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
               
         # Case c: Key is not in cache
         else:
@@ -235,7 +237,7 @@ class BottomUpSomap:
             else:
                 self._Ow.insert(key, value)
 
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, self._timestamp, "Key"))
+            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
 
         self._Qw_len += 1
                          
@@ -266,7 +268,7 @@ class BottomUpSomap:
             self._Qw_len = self._cache_size
            
             # Process each popped key-value pair
-            for key, _ , marker in popped_items:
+            for key, marker in popped_items:
                 # Actual key
                 if marker == "Key":  
                     
@@ -284,28 +286,38 @@ class BottomUpSomap:
                     else:
                         self._Or.search(key, (value, self._timestamp))
 
-                    self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp))
+                    self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
                     self._Qr_len += 1
         
-                # else:  
-                #     self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp))
-            # Adjust O_R cache 
-            match_Qr = None
-            while True: 
-                # expired
-                if self._Qr_len > 0 and (match_Qr := self.operate_on_list(label=self._Qr_name, op="pop")) and (self._timestamp - match_Qr[1] > self._cache_size):
-                    self._Qr_len -= 1
-                    # expired but in Or
-                    if (match_Or := self._Or.search(match_Qr[0])) and match_Or[1] != match_Qr[1]:
-                        # pretend to delete from Or
-                        self._Or.delete(None)
-                    # expired truely
-                    else:
-                        self._Or.delete(match_Qr[0])
-                # roll back to the last valid one
                 else:
-                    self.operate_on_list(label=self._Qr_name, op="insert", data=match_Qr)
-                    self._Qr_len += 1
+                    self._Ow.delete(None)
+                    self._Ds.operate_on_key(op="r", key = None)
+                    self._Or.insert(None)
+                    self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
+
+            # Adjust O_R cache
+            match_Qr = None
+            while True:
+
+                if self._Qr_len == 0:
+                    break
+
+                # expired
+                item = self.operate_on_list(label=self._Qr_name, op="r", pos=0)
+                if self._timestamp - item[1] > self._cache_size:
+                    match_Qr = self.operate_on_list(label=self._Qr_name, op="pop")
+                    self._Qr_len -= 1
+
+                    if match_Qr[2] == "Dummy":
+                        self._Or.search(None)
+                        self._Or.delete(None)
+                    else:
+                        match_Or = self._Or.search(match_Qr[0])
+                        if match_Qr[1] == match_Or[1]:
+                            self._Or.delete(match_Or[0])
+                        else:
+                            self._Or.delete(None)
+                else:
                     break
 
     def adjust_cache_size(self, new_cache_size: int) -> None:
@@ -329,6 +341,9 @@ class BottomUpSomap:
             # Get the encrypted data from the list
             encrypted_data = self._client.list_pop(label=label)
             # Decrypt the data if encryption is enabled
+            return self._decrypt_data(encrypted_data)
+        elif op == 'r':
+            encrypted_data = self._client.list_get(label=label, index=pos)
             return self._decrypt_data(encrypted_data)
         elif op == 'all':
             # Get all encrypted data from the list
