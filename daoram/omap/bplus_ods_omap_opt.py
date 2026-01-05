@@ -6,11 +6,12 @@ from daoram.omap import BPlusOdsOmap
 
 class BPlusOdsOmapOptimized(BPlusOdsOmap):
     def __init__(self,
-                 order: int,
+        
                  num_data: int,
                  key_size: int,
                  data_size: int,
                  client: InteractServer,
+                 order: int = 4,
                  name: str = "bplus_opt",
                  filename: str = None,
                  bucket_size: int = 4,
@@ -49,6 +50,93 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
             num_key_bytes=num_key_bytes,
             use_encryption=use_encryption
         )
+        self._mid = order // 2
+        self._local_sibling = []
+    def _get_min_keys(self, is_leaf: bool) -> int:
+        """Get the minimum number of keys a node must have."""
+        if is_leaf:
+            return (self._order - 1) // 2
+        return self._mid - 1 if self._order > 3 else 1
+
+    def _move_two_nodes_to_local(self, key1: Any, leaf1: int, key2: Any, leaf2: int) -> None:
+        """
+        Move two nodes to local storage efficiently by batching reads and writes.
+
+        This method fetches two nodes from ORAM storage with 2 reads and 2 writes,
+        but batches them to be more efficient than calling _move_node_to_local twice.
+        The nodes are added to local in order: key1 first, then key2.
+
+        :param key1: The key of the first node (child).
+        :param leaf1: The leaf path of the first node.
+        :param key2: The key of the second node (sibling).
+        :param leaf2: The leaf path of the second node.
+        """
+        node1 = None
+        node2 = None
+
+        # Check stash for nodes before reading paths.
+        for i in range(len(self._stash) - 1, -1, -1):
+            if self._stash[i].key == key1 and node1 is None:
+                node1 = self._stash[i]
+                del self._stash[i]
+            elif self._stash[i].key == key2 and node2 is None:
+                node2 = self._stash[i]
+                del self._stash[i]
+            if node1 is not None and node2 is not None:
+                break
+
+        # Read paths for nodes not yet found.
+        if node1 is None:
+            path1 = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf1))
+            for bucket in path1:
+                for data in bucket:
+                    if data.key == key1:
+                        node1 = data
+                    elif data.key == key2 and node2 is None:
+                        node2 = data
+                    else:
+                        self._stash.append(data)
+            # Perform eviction for path1.
+            self._client.write_query(label=self._name, leaf=leaf1, data=self._evict_stash(leaf=leaf1))
+
+        if node2 is None:
+            path2 = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf2))
+            for bucket in path2:
+                for data in bucket:
+                    if data.key == key2:
+                        node2 = data
+                    elif data.key == key1 and node1 is None:
+                        node1 = data
+                    else:
+                        self._stash.append(data)
+            # Perform eviction for path2.
+            self._client.write_query(label=self._name, leaf=leaf2, data=self._evict_stash(leaf=leaf2))
+
+        # Check stash again for any nodes still not found.
+        if node1 is None or node2 is None:
+            for i in range(len(self._stash) - 1, -1, -1):
+                if self._stash[i].key == key1 and node1 is None:
+                    node1 = self._stash[i]
+                    del self._stash[i]
+                elif self._stash[i].key == key2 and node2 is None:
+                    node2 = self._stash[i]
+                    del self._stash[i]
+                if node1 is not None and node2 is not None:
+                    break
+
+        # Check if stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # Verify both nodes were found.
+        if node1 is None:
+            raise KeyError(f"The search key {key1} is not found.")
+        if node2 is None:
+            raise KeyError(f"The search key {key2} is not found.")
+
+        # Add to local in guaranteed order: key1 first, then key2.
+        self._local.append(node1)
+        self._local_sibling.append(node2)
 
     def _perform_one_insertion(self):
         """Perform a single insertion in local."""
@@ -111,7 +199,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         leaf = self._local[-1]
 
         # Find the proper place to insert the leaf.
-        for index, each_key in enumerate(leaf.value.values):
+        for index, each_key in enumerate(leaf.value.keys):
             if key < each_key:
                 leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
                 leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
@@ -150,3 +238,343 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
         value = super().fast_search(key=key, value=value)
 
         return value
+
+    def _find_leaf_with_siblings_to_local(self, key: Any) -> int:
+        """
+        Find the path to the leaf containing the key, fetching siblings at each level.
+
+        At each internal node, we fetch both the child on the path AND one sibling (if it exists)
+        so that borrowing/merging can be done without additional server interactions.
+        Nodes are stored in _local with siblings interleaved.
+
+        :param key: Search key of interest.
+        :return: The number of rounds (levels traversed).
+        """
+        # Make sure that the local is cleared and is empty at the moment.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
+
+        # Track the number of rounds (each level = 1 round).
+        num_rounds = 1
+
+        # Get the root node from oram storage.
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+
+        # Get the node from local.
+        node = self._local[0]
+
+
+        # While we do not reach a leaf (whose number of keys equals number of values).
+        while len(node.value.keys) != len(node.value.values):
+            # Increment round count for this level.
+            num_rounds += 1
+
+            # Find which child to follow and its sibling.
+            child_idx = len(node.value.keys)  # Default to rightmost child.
+            for index, each_key in enumerate(node.value.keys):
+                if key < each_key:
+                    child_idx = index
+                    break
+                elif key == each_key:
+                    child_idx = index + 1
+                    break
+
+            # Get the child node info.
+            child_key, child_leaf = node.value.values[child_idx]
+
+            # Find sibling index (prefer left sibling, fallback to right).
+            sibling_idx = -1
+            if child_idx > 0:
+                sibling_idx = child_idx - 1
+            elif child_idx < len(node.value.values) - 1:
+                sibling_idx = child_idx + 1
+
+            if sibling_idx >= 0:
+                # Fetch both child and sibling using the efficient method.
+                sibling_key, sibling_leaf = node.value.values[sibling_idx]
+                self._move_two_nodes_to_local(
+                    key1=child_key, leaf1=child_leaf,
+                    key2=sibling_key, leaf2=sibling_leaf
+                )
+                node = self._local[-1]
+            else:
+                # No sibling exists, just fetch the child.
+                self._move_node_to_local(key=child_key, leaf=child_leaf)
+                self._local_sibling.append(None)  # Placeholder for sibling.
+                node = self._local[-1]
+
+        return num_rounds
+
+    def _handle_underflow_with_sibling(self, node_idx: int) -> None:
+        """
+        Handle underflow at node_idx using the sibling at sibling_idx.
+
+        :param node_idx: Index of the node with underflow in _local.
+        """
+        node = self._local[node_idx]
+        sibling = self._local_sibling[node_idx-1]
+        parent = self._local[node_idx - 1]
+        is_leaf = len(node.value.keys) == len(node.value.values)
+        min_keys = self._get_min_keys(is_leaf=is_leaf)
+
+        # Find child indices in parent.
+        node_child_idx = -1
+        sibling_child_idx = -1
+        for i, val in enumerate(parent.value.values):
+            if val[0] == node.key:
+                node_child_idx = i
+            if val[0] == sibling.key:
+                sibling_child_idx = i
+
+        if node_child_idx == -1 or sibling_child_idx == -1:
+            raise ValueError("Could not find child/sibling in parent node.")
+
+        # Determine if sibling is left or right.
+        is_left_sibling = sibling_child_idx < node_child_idx
+
+        # Try to borrow from sibling.
+        if len(sibling.value.keys) > min_keys:
+            if is_left_sibling:
+                if is_leaf:
+                    # Borrow last key-value from left sibling.
+                    node.value.keys.insert(0, sibling.value.keys.pop())
+                    node.value.values.insert(0, sibling.value.values.pop())
+                    # Update parent key.
+                    parent.value.keys[sibling_child_idx] = node.value.keys[0]
+                else:
+                    # For internal node: rotate through parent.
+                    node.value.keys.insert(0, parent.value.keys[sibling_child_idx])
+                    node.value.values.insert(0, sibling.value.values.pop())
+                    parent.value.keys[sibling_child_idx] = sibling.value.keys.pop()
+            else:
+                if is_leaf:
+                    # Borrow first key-value from right sibling.
+                    node.value.keys.append(sibling.value.keys.pop(0))
+                    node.value.values.append(sibling.value.values.pop(0))
+                    # Update parent key.
+                    parent.value.keys[node_child_idx] = sibling.value.keys[0]
+                else:
+                    # For internal node: rotate through parent.
+                    node.value.keys.append(parent.value.keys[node_child_idx])
+                    node.value.values.append(sibling.value.values.pop(0))
+                    parent.value.keys[node_child_idx] = sibling.value.keys.pop(0)
+            return
+
+        # Must merge.
+        if is_left_sibling:
+            # Merge node into left sibling.
+            if is_leaf:
+                sibling.value.keys.extend(node.value.keys)
+                sibling.value.values.extend(node.value.values)
+            else:
+                sibling.value.keys.append(parent.value.keys[sibling_child_idx])
+                sibling.value.keys.extend(node.value.keys)
+                sibling.value.values.extend(node.value.values)
+            # Remove the merged child and corresponding key from parent.
+            parent.value.keys.pop(sibling_child_idx)
+            parent.value.values.pop(node_child_idx)
+            # Mark node as merged (cleared).
+            node.value.keys = []
+            node.value.values = []
+        else:
+            # Merge right sibling into node.
+            if is_leaf:
+                node.value.keys.extend(sibling.value.keys)
+                node.value.values.extend(sibling.value.values)
+            else:
+                node.value.keys.append(parent.value.keys[node_child_idx])
+                node.value.keys.extend(sibling.value.keys)
+                node.value.values.extend(sibling.value.values)
+            # Remove the merged child and corresponding key from parent.
+            parent.value.keys.pop(node_child_idx)
+            parent.value.values.pop(sibling_child_idx)
+            # Mark sibling as merged (cleared).
+            sibling.value.keys = []
+            sibling.value.values = []
+        
+        # If parent is now empty and is root, update root.
+        if len(parent.value.keys) == 0 and parent.key == self.root[0]:
+            if is_left_sibling:
+                self.root = (sibling.key, sibling.leaf)
+            else:
+                self.root = (node.key, node.leaf)
+
+    def _update_leaves(self):
+        """
+        Update the leaf nodes in the local cache.
+        
+        If the current node is in local[node_idx], then the parent is in local[node_idx-1],
+        the sibling is in local_sibling[node_idx-1]. Update leaves by synchronizing
+        the new leaves of self and sibling to the parent.
+        """
+        # Update from leaf nodes up to the root
+        for node_idx in range(len(self._local) - 1, 0, -1):
+            # Current node
+            node = self._local[node_idx]
+            # Parent node
+            parent = self._local[node_idx - 1]
+            if not parent.value.values and node_idx > 1:
+                # parent(not root, root need to be handled separately) has been merged into sibling
+                parent = self._local_sibling[node_idx - 2]
+                
+            # Sibling node
+            sibling = self._local_sibling[node_idx - 1]
+            
+            # Generate new leaf paths for current node and sibling
+            new_leaf_node = self._get_new_leaf()
+            new_leaf_sibling = self._get_new_leaf()
+            
+            # Update leaf paths for current node and sibling
+            node.leaf = new_leaf_node
+            if sibling is not None:
+                sibling.leaf = new_leaf_sibling
+            
+            # Find indices of current node and sibling in parent
+            node_child_idx = -1
+            sibling_child_idx = -1
+            
+            for i, val in enumerate(parent.value.values):
+                if val[0] == node.key:
+                    node_child_idx = i
+                if sibling is not None and val[0] == sibling.key:
+                    sibling_child_idx = i
+            
+            # Update corresponding leaf paths in parent
+            if node_child_idx != -1:
+                parent.value.values[node_child_idx] = (node.key, new_leaf_node)
+  
+            if sibling_child_idx != -1:
+                parent.value.values[sibling_child_idx] = (sibling.key, new_leaf_sibling)
+
+       
+        # Update root node
+        if self._local:
+            root_node = self._local[0]
+            # the original root has been merged and empty
+            if not root_node.value.values:
+                root_node = self._local[1]
+                if not root_node.value.values:
+                    # node has been merged into sibling
+                    root_node = self._local_sibling[0]
+            new_root_leaf = self._get_new_leaf()
+            root_node.leaf = new_root_leaf
+            self.root = (root_node.key, new_root_leaf)
+
+    def delete(self, key: Any) -> Any:
+        """
+        Given a search key, delete the corresponding key-value pair from the tree.
+
+        This optimized version fetches siblings during traversal so no extra server
+        interactions are needed for borrowing/merging.
+
+        :param key: The search key of interest.
+        :return: The value of the deleted key, or None if not found.
+        """
+        # If the local cache is not empty, perform pending insertions first.
+        if self._local:
+            self._perform_insertion()
+            self._stash += self._local
+            self._local = []
+
+        # If the current root is empty, we can't perform deletion.
+        if self.root is None:
+            raise ValueError("It seems the tree is empty and can't perform deletion.")
+
+        # Fetch the path to the leaf with siblings.
+        num_rounds = self._find_leaf_with_siblings_to_local(key=key)
+
+        # Find the leaf node (the one that contains the key).
+        leaf = self._local[-1]
+
+        if leaf is None:
+            # update leaves in local
+            self._update_leaves()
+
+            # Key not found, perform dummy operations and return.
+            self._stash += self._local
+            self._stash += self._local_sibling
+            self._local = []
+            self._local_sibling = []
+            self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+            return None
+
+        # Find and remove the key from the leaf.
+        key_index = -1
+        for index, each_key in enumerate(leaf.value.keys):
+            if key == each_key:
+                key_index = index
+                break
+        
+        # Check if key is exists.
+        if key_index == -1:
+            # update leaves in local
+            self._update_leaves()
+
+            # Key not found, perform dummy operations and return.
+            self._stash += self._local
+            self._stash += self._local_sibling
+            self._local = []
+            self._local_sibling = []
+            self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+            return None
+        deleted_value = leaf.value.values[key_index]
+        deleted_key = leaf.value.keys.pop(key_index)
+        leaf.value.values.pop(key_index)
+
+        # Handle the case where we're deleting from root leaf.
+        if len(self._local) == 1 or (len(self._local) == 2 and self._local[0].key == self._local[1].key):
+            if not leaf.value.keys:
+                # Tree is now empty.
+                self.root = None
+                self._local = []
+                self._local_sibling = []
+                self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+                return deleted_value
+            else:
+                # update leaves in local
+                self._update_leaves()
+
+                # Root leaf still has keys.
+                self._stash += self._local
+                self._stash += self._local_sibling
+                self._local = []
+                self._local_sibling = []
+                self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+                return deleted_value
+
+        # Update parent key if the first key of the leaf changed.
+        if key_index == 0 and leaf.value.keys:
+            new_first_key = leaf.value.keys[0]
+            parent = self._local[-2]
+            for j, k in enumerate(parent.value.keys):
+                if k == deleted_key:
+                    parent.value.keys[j] = new_first_key
+                    break
+
+
+        # Handle underflow if needed.
+        min_keys = self._get_min_keys(is_leaf=True)
+        node_idx = len(self._local) - 1
+        node = self._local[node_idx]
+
+        # handle underflow from bottom to top
+        while node_idx > 0 and len(node.value.keys) < min_keys:
+            self._handle_underflow_with_sibling(node_idx)
+            parent = self._local[node_idx - 1]
+            min_keys = self._get_min_keys(is_leaf=False)
+            if len(parent.value.keys) > min_keys:
+                break
+            node_idx -= 1
+            node = self._local[node_idx]
+    
+        # update leaves in local
+        self._update_leaves()
+
+        # Move all local nodes to stash and perform dummy operations.
+        self._stash += self._local
+        self._stash += self._local_sibling
+        self._local = []
+        self._local_sibling = []
+        self._perform_dummy_operation(num_round=self._max_height - num_rounds)
+
+        return deleted_value
