@@ -26,8 +26,6 @@ class BinaryTree:
         :param filename: Optional backing file to persist the tree.
         :param disk_size: Plaintext byte length of each on-disk block; Storage adds the padding header internally.
         :param encryption: Deprecated alias for use_encryption; kept for compatibility.
-        :param use_encryption: Whether to encrypt stored buckets. If None, falls back to enc_key_size/encryption.
-        :param enc_key_size: Backwards-compatibility flag; if provided and non-zero, enables encryption.
         """
         # Store the number of data point and bucket size.
         self._num_data = num_data
@@ -48,7 +46,6 @@ class BinaryTree:
             disk_size=disk_size,
             bucket_size=bucket_size,
             encryption=encryption,
-
         )
 
     @property
@@ -118,13 +115,13 @@ class BinaryTree:
         return sorted(list(path), reverse=True)
 
     @staticmethod
-    def get_mul_path_dict(level: int, indices: List[int]) -> Dict[int, list]:
+    def get_mul_path_dict(level: int, indices: List[int]) -> PathData:
         """
         Given a list of indices of nodes, get a dictionary whose keys are index to all buckets belong to these paths.
 
         :param level: The level of the tree.
         :param indices: A list of indices of nodes.
-        :return: A dictionary where keys are indices from the input nodes to the root and each value is an empty list.
+        :return: PathData dict where keys are indices from the input nodes to the root and each value is an empty list.
         """
         # Get the start leaf of the tree.
         indices = [index + pow(2, level - 1) - 1 for index in indices]
@@ -167,7 +164,7 @@ class BinaryTree:
         return int(math.ceil(math.log(index + 2, 2))) - 1
 
     @staticmethod
-    def fill_data_to_path(data: Data, path: dict, leaves: List[int], level: int, bucket_size: int) -> bool:
+    def fill_data_to_path(data: Data, path: PathData, leaves: List[int], level: int, bucket_size: int) -> bool:
         """
         Fill data to the lowest possible bucket in a PathData dict.
 
@@ -277,7 +274,7 @@ class BinaryTree:
         :return: BucketData mapping (leaf, bucket_id) -> bucket.
         """
         return {
-            (leaf, bucket_id): self._storage[self.get_leaf_block(leaf, bucket_id)]
+            BucketKey(leaf, bucket_id): self._storage[self.get_leaf_block(leaf, bucket_id)]
             for leaf, bucket_id in keys
         }
 
@@ -298,7 +295,7 @@ class BinaryTree:
         :return: BlockData mapping (leaf, bucket_id, block_id) -> block.
         """
         return {
-            (leaf, bucket_id, block_id): self._storage[self.get_leaf_block(leaf, bucket_id)][block_id]
+            BlockKey(leaf, bucket_id, block_id): self._storage[self.get_leaf_block(leaf, bucket_id)][block_id]
             for leaf, bucket_id, block_id in keys
         }
 
@@ -311,7 +308,7 @@ class BinaryTree:
         # Group by (leaf, bucket_id) to minimize storage accesses.
         by_bucket: Dict[BucketKey, List[Tuple[int, Block]]] = defaultdict(list)
         for (leaf, bucket_id, block_id), block in data.items():
-            by_bucket[(leaf, bucket_id)].append((block_id, block))
+            by_bucket[BucketKey(leaf, bucket_id)].append((block_id, block))
 
         # Unpack the input data dictionary.
         # Note: We read the bucket, modify it, then write back explicitly to make sure file-based storage works.

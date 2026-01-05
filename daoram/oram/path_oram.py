@@ -9,7 +9,7 @@ Path oram has two public methods:
 """
 from typing import Any, Optional
 
-from daoram.dependency import BinaryTree, Buckets, InteractServer, Encryptor, PathData
+from daoram.dependency import BinaryTree, InteractServer, Encryptor, PathData
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
@@ -108,7 +108,7 @@ class PathOram(TreeBaseOram):
 
         return read_value
 
-    def __retrieve_block(self, op: str, key: int, path: Buckets, value: Any = None) -> Any:
+    def __retrieve_block(self, op: str, key: int, path: PathData, value: Any = None) -> Any:
         """
         Given a key and an operation, retrieve the block and apply the operation to it.
 
@@ -125,11 +125,11 @@ class PathOram(TreeBaseOram):
         # Store the current stash length.
         to_index = len(self._stash)
 
-        # Get the path data from the server and decrypt it if needed.
-        path = self._decrypt_buckets(buckets=path)
+        # Decrypt the path data if needed.
+        path = self._decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
-        for bucket in path:
+        for bucket in path.values():
             for data in bucket:
                 # Real data is always placed in front of dummy data, once we read dummy, we skip it.
                 if data.key is None:
@@ -210,10 +210,9 @@ class PathOram(TreeBaseOram):
         self.client.add_read_path(label=self._name, leaves=[leaf])
         result = self.client.execute()
         path_data = result.results[self._name]
-        path = self._path_data_to_buckets(leaf=leaf, path_data=path_data)
 
         # Retrieve value from the path, or write to it.
-        value = self.__retrieve_block(op=op, key=key, path=path, value=value)
+        value = self.__retrieve_block(op=op, key=key, path=path_data, value=value)
 
         # Perform an eviction and get a new path.
         evicted_path = self.__evict_stash(leaf=leaf)
@@ -240,10 +239,9 @@ class PathOram(TreeBaseOram):
         self.client.add_read_path(label=self._name, leaves=[leaf])
         result = self.client.execute()
         path_data = result.results[self._name]
-        path = self._path_data_to_buckets(leaf=leaf, path_data=path_data)
 
         # Retrieve value from the path, or write to it.
-        value = self.__retrieve_block(op=op, key=key, path=path, value=value)
+        value = self.__retrieve_block(op=op, key=key, path=path_data, value=value)
 
         # Temporarily save the leaf for future eviction.
         self.__tmp_leaf = leaf

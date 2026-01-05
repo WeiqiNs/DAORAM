@@ -1,25 +1,16 @@
-import glob
-import os
 import random
 
-from daoram.dependency import InteractLocalServer
+from daoram.dependency import AesGcm, InteractLocalServer
 from daoram.oram import PathOram
 
 # Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)
-TEST_FILE = "oram.bin"
-
-
-def remove_file():
-    """Helper function to remove files generated during testing."""
-    for file in glob.glob("*.bin"):
-        os.remove(file)
 
 
 class TestPathOram:
     def test_without_init(self):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=False)
+        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -43,7 +34,7 @@ class TestPathOram:
 
     def test_with_init(self):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=False)
+        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
         oram.init_server_storage(data_map={i: i * 2 for i in range(NUM_DATA)})
@@ -53,8 +44,8 @@ class TestPathOram:
             assert oram.operate_on_key(op="r", key=i) == i * 2
 
     def test_with_enc(self):
-        # Create the oram instance; encryption turned off for testing efficiency.
-        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=True)
+        # Create the oram instance with encryption enabled.
+        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -67,10 +58,10 @@ class TestPathOram:
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i) == i
 
-    def test_with_file(self):
+    def test_with_file(self, test_file):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = PathOram(
-            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=False
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=str(test_file)
         )
 
         # Initialize the server with storage.
@@ -84,13 +75,10 @@ class TestPathOram:
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i) == i
 
-        # Remove the testing file.
-        remove_file()
-
-    def test_with_file_enc(self):
-        # Create the oram instance; encryption turned off for testing efficiency.
+    def test_with_file_enc(self, test_file):
+        # Create the oram instance with encryption enabled.
         oram = PathOram(
-            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=TEST_FILE, use_encryption=True
+            num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), filename=str(test_file), encryptor=AesGcm()
         )
 
         # Initialize the server with storage.
@@ -103,13 +91,10 @@ class TestPathOram:
         # Check for whether all values are correctly written.
         for i in range(NUM_DATA):
             assert oram.operate_on_key(op="r", key=i) == i
-
-        # Remove the testing file.
-        remove_file()
 
     def test_operate_then_evict(self):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer(), use_encryption=False)
+        oram = PathOram(num_data=NUM_DATA, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
         oram.init_server_storage()

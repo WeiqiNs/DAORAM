@@ -104,7 +104,7 @@ class InteractServer(ABC):
         self._write_lists[label].update(data)
 
     @abstractmethod
-    def init_connection(self) -> None:
+    def init_connection(self, client: BaseSocket) -> None:
         """Initialize the connection to the server."""
         raise NotImplementedError
 
@@ -136,7 +136,7 @@ class InteractLocalServer(InteractServer):
         super().__init__()
         self._storage: ServerStorage = {}
 
-    def init_connection(self) -> None:
+    def init_connection(self, client: BaseSocket = None) -> None:
         """Since the server is local, no connection needed."""
         pass
 

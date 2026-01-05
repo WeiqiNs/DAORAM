@@ -10,9 +10,9 @@ import math
 import os
 import secrets
 from abc import ABC, abstractmethod
-from typing import Any, List
+from typing import Any, List, Optional
 
-from daoram.dependency import BinaryTree, Buckets, Data, Helper, InteractServer, Encryptor, PathData
+from daoram.dependency import BinaryTree, Data, Helper, InteractServer, Encryptor, PathData
 
 
 class TreeBaseOram(ABC):
@@ -59,13 +59,22 @@ class TreeBaseOram(ABC):
         self._stash: list = []
         self._pos_map: dict = {}
 
-        # Compute the padded total data size, which at largest would be (biggest_key, biggest_leaf, biggest_data).
-        self._dumped_data_size: int = len(
-            Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(data_size)).dump()
-        ) + Helper.LENGTH_HEADER_SIZE if self._encryptor else None
+        # Set dumpled data size and disk size for use of encryption or file storage.
+        self._dumped_data_size: Optional[int] = None
+        self._disk_size: Optional[int] = None
+
+        # Compute the padded total data size (needed for encryption or file storage).
+        if self._encryptor or self._filename:
+            self._dumped_data_size = len(
+                Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(data_size)).dump()
+            ) + Helper.LENGTH_HEADER_SIZE
 
         # Compute the disk length if needed.
-        self._disk_size: int = encryptor.ciphertext_length(self._dumped_data_size) if self._filename else None
+        if self._filename:
+            if encryptor:
+                self._disk_size = encryptor.ciphertext_length(self._dumped_data_size)
+            else:
+                self._disk_size = self._dumped_data_size
 
         # Initialize the client connection.
         self._client: InteractServer = client
@@ -93,35 +102,6 @@ class TreeBaseOram(ABC):
         """Initialize the default position map where {i : random_leaf}, for i in [0, leaf_range)."""
         self._pos_map = {i: self._get_new_leaf() for i in range(self._num_data)}
 
-    def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
-        """
-        Encrypt all data in given buckets.
-
-        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills
-        the bucket with the desired amount of dummy data.
-        """
-
-        def _enc_bucket(bucket: List[Data]) -> List[bytes]:
-            """Helper function to add dummy data and encrypt a bucket."""
-            enc_bucket = [
-                self._encryptor.enc(plaintext=data.dump_pad(self._dumped_data_size))
-                for data in bucket
-            ]
-
-            # Compute if dummy block is needed.
-            dummy_needed = self._bucket_size - len(bucket)
-            # If needed, perform padding.
-            if dummy_needed > 0:
-                enc_bucket.extend([
-                    self._encryptor.enc(plaintext=Data().dump_pad(self._dumped_data_size))
-                    for _ in range(dummy_needed)
-                ])
-
-            return enc_bucket
-
-        # Return the encrypted list of lists of bytes.
-        return [_enc_bucket(bucket=bucket) for bucket in buckets] if self._encryptor else buckets
-
     def _encrypt_path_data(self, path: PathData) -> PathData:
         """
         Encrypt all buckets in a PathData dict.
@@ -129,6 +109,7 @@ class TreeBaseOram(ABC):
         :param path: PathData dict mapping storage index to bucket.
         :return: PathData dict with encrypted buckets.
         """
+
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
             """Helper function to add dummy data and encrypt a bucket."""
             enc_bucket = [
@@ -149,27 +130,22 @@ class TreeBaseOram(ABC):
 
         return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_buckets(self, buckets: Buckets) -> List[List[Data]]:
-        """Given encrypted buckets, decrypt all data in it."""
-        # Return the decrypted list of data.
-        return [[
-            dec for data in bucket
-            if (dec := Data.load_unpad(Helper.unpad_pickle(data=self._encryptor.dec(ciphertext=data)))).key is not None
-        ] for bucket in buckets] if self._encryptor else buckets
-
-    def _path_data_to_buckets(self, leaf: int, path_data: PathData) -> Buckets:
+    def _decrypt_path_data(self, path: PathData) -> PathData:
         """
-        Convert PathData (dict) to Buckets (list) for a given leaf.
+        Decrypt all buckets in a PathData dict.
 
-        :param leaf: The leaf label.
-        :param path_data: PathData dict mapping storage index to bucket.
-        :return: List of buckets from leaf to root.
+        :param path: PathData dict mapping storage index to encrypted bucket.
+        :return: PathData dict with decrypted buckets (dummy blocks filtered out).
         """
-        # Compute path indices from leaf to root.
-        start_leaf = pow(2, self._level - 1) - 1
-        path_indices = BinaryTree.get_path_indices(index=leaf + start_leaf)
-        # Extract buckets in order.
-        return [path_data[idx] for idx in path_indices]
+
+        def _dec_bucket(bucket: List[bytes]) -> List[Data]:
+            """Helper function to decrypt a bucket and filter out dummy data."""
+            return [
+                dec for data in bucket
+                if (dec := Data.load_unpad(self._encryptor.dec(ciphertext=data))).key is not None
+            ]
+
+        return {idx: _dec_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
     def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
@@ -199,9 +175,9 @@ class TreeBaseOram(ABC):
         tree = BinaryTree(
             filename=self._filename,
             num_data=self._num_data,
+            disk_size=self._disk_size,
             bucket_size=self._bucket_size,
             data_size=self._dumped_data_size,
-            disk_size=self._dumped_data_size,
             encryption=True if self._encryptor else False,
         )
 

@@ -33,11 +33,7 @@ class BaseSocket(ABC):
 
 
 class ZMQSocket(BaseSocket):
-    """ZeroMQ socket implementation with automatic message framing.
-
-    Uses the REQ-REP pattern for request-response communication.
-    More efficient than raw sockets with better performance under load.
-    """
+    """ZeroMQ socket implementation with automatic message framing.hmm"""
 
     def __init__(self, ip: str, port: int, is_server: bool):
         """Initialize the ZeroMQ socket for client or server.
