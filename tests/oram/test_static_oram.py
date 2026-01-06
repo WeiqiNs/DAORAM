@@ -1,19 +1,16 @@
 import random
 
 from daoram.dependency import AesGcm, InteractLocalServer
-from daoram.oram import DAOram
+from daoram.oram import StaticOram
 
 
-class TestDAOram:
+class TestStaticOram:
     def test_without_init(self, num_data):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
         oram.init_server_storage()
-
-        # We check that after compression, the position map is empty; the storage is in on chip mem.
-        assert oram._pos_map == {}
 
         # Issue some queries for writing.
         for i in range(num_data):
@@ -34,10 +31,10 @@ class TestDAOram:
 
     def test_with_init(self, num_data):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
-        oram.init_server_storage({i: i * 2 for i in range(num_data)})
+        oram.init_server_storage(data_map={i: i * 2 for i in range(num_data)})
 
         # Check for whether all values are correctly written.
         for i in range(num_data):
@@ -45,41 +42,7 @@ class TestDAOram:
 
     def test_with_enc(self, num_data):
         # Create the oram instance with encryption enabled.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
-
-        # Initialize the server with storage.
-        oram.init_server_storage()
-
-        # Issue some queries for writing.
-        for i in range(num_data):
-            oram.operate_on_key(key=i, value=i)
-
-        # Check for whether all values are correctly written.
-        for i in range(num_data):
-            assert oram.operate_on_key(key=i) == i
-
-    def test_with_file(self, num_data, test_file):
-        # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file)
-        )
-
-        # Initialize the server with storage.
-        oram.init_server_storage()
-
-        # Issue some queries for writing.
-        for i in range(num_data):
-            oram.operate_on_key(key=i, value=i)
-
-        # Check for whether all values are correctly written.
-        for i in range(num_data):
-            assert oram.operate_on_key(key=i) == i
-
-    def test_with_file_enc(self, num_data, test_file):
-        # Create the oram instance with encryption enabled.
-        oram = DAOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file), encryptor=AesGcm()
-        )
+        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -94,7 +57,7 @@ class TestDAOram:
 
     def test_operate_then_evict(self, num_data):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -107,4 +70,3 @@ class TestDAOram:
         # Check for whether all values are correctly written.
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
-

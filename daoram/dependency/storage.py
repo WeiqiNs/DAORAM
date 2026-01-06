@@ -32,25 +32,25 @@ class Storage:
         :param disk_size: Byte length of each block (after padding and encryption), required for file-backed storage.
         """
         # Store the information useful for accessing data.
-        self.__size: int = size
-        self.__filename: str = filename
-        self.__encryption: bool = encryption
-        self.__bucket_size: int = bucket_size
-        self.__file: Optional[BinaryIO] = None
+        self._size: int = size
+        self._filename: str = filename
+        self._encryption: bool = encryption
+        self._bucket_size: int = bucket_size
+        self._file: Optional[BinaryIO] = None
 
         # Whether encryption is needed or not determines how we generate dummy data.
-        if self.__encryption:
+        if self._encryption:
             # When the encryption is used, data size must be provided (to hide length).
             if data_size is None:
                 raise ValueError("Data size if required to be provided for encryption.")
 
             # Add the padding header so callers do not need to account for it.
-            self.__data_size: int = data_size
+            self._data_size: int = data_size
 
         # Whether the filename is provided determines how we store things.
-        if self.__filename is None:
+        if self._filename is None:
             # Create a list of empty lists.
-            self.__internal_data: List[list] = [[] for _ in range(size)]
+            self._internal_data: List[list] = [[] for _ in range(size)]
         else:
             # When the file name is not None, disk size must be provided.
             if disk_size is None:
@@ -58,30 +58,30 @@ class Storage:
 
             # Store the disk size.
             # Add the padding header so callers do not need to account for it.
-            self.__disk_size: int = disk_size
+            self._disk_size: int = disk_size
 
             # Compute the total number of bytes required for the backing file.
-            total_bytes = size * bucket_size * self.__disk_size
+            total_bytes = size * bucket_size * self._disk_size
 
             # Allocate or resize the file to the exact size we need.
-            if not os.path.exists(self.__filename) or os.path.getsize(self.__filename) != total_bytes:
-                with open(self.__filename, 'wb') as file:
+            if not os.path.exists(self._filename) or os.path.getsize(self._filename) != total_bytes:
+                with open(self._filename, 'wb') as file:
                     if total_bytes > 0:
                         file.seek(total_bytes - 1)
                         file.write(b"\x00")
 
             # Open the file for read/write in binary mode
-            self.__file: BinaryIO = open(self.__filename, 'r+b')
+            self._file: BinaryIO = open(self._filename, 'r+b')
 
     @property
-    def __data_size_dummy(self) -> bytes:
+    def _data_size_dummy(self) -> bytes:
         """Get a dummy all zero string of the desired length."""
-        return Data().dump_pad(self.__data_size)
+        return Data().dump_pad(self._data_size)
 
     @property
-    def __disk_size_dummy(self) -> bytes:
+    def _disk_size_dummy(self) -> bytes:
         """Get a dummy all zero string of the desired length."""
-        return Data().dump_pad(self.__disk_size)
+        return Data().dump_pad(self._disk_size)
 
     def __getitem__(self, index: int) -> Bucket:
         """storage[i] => returns the i-th bucket."""
@@ -91,32 +91,32 @@ class Storage:
         """storage[i] = override the i-th bucket."""
         self.write_row(index=index, data=data)
 
-    def __row_offset(self, index: int) -> int:
+    def _row_offset(self, index: int) -> int:
         """Compute the starting byte offset for row i: offset = i * (m * x)."""
-        return index * self.__bucket_size * self.__disk_size
+        return index * self._bucket_size * self._disk_size
 
     def read_row(self, index: int) -> Bucket:
         """Reads and returns the entire row i as a list."""
         # Determine where to read.
-        if self.__filename is None:
+        if self._filename is None:
             # In-memory read.
-            return self.__internal_data[index]
+            return self._internal_data[index]
 
         # On-disk read.
-        self.__file.seek(self.__row_offset(index))
-        row_bytes = self.__file.read(self.__bucket_size * self.__disk_size)
+        self._file.seek(self._row_offset(index))
+        row_bytes = self._file.read(self._bucket_size * self._disk_size)
 
         # Split this big chunk into m elements each of lengths x.
         read_data = [
-            row_bytes[i * self.__disk_size: (i + 1) * self.__disk_size] for i in range(self.__bucket_size)
+            row_bytes[i * self._disk_size: (i + 1) * self._disk_size] for i in range(self._bucket_size)
         ]
 
         # Filter out the dummy chunks and transform data:
         # - If encryption is True, we just return the raw chunk.
         # - If encryption is False, we unpickle the data into a Data object.
         return [
-            data if self.__encryption else Data.load_unpad(data=data)
-            for data in read_data if not data == b"\x00" * self.__disk_size
+            data if self._encryption else Data.load_unpad(data=data)
+            for data in read_data if not data == b"\x00" * self._disk_size
         ]
 
     def write_row(self, index: int, data: Bucket) -> None:
@@ -126,21 +126,21 @@ class Storage:
         writing to the disk.
         """
         # Determines where to write.
-        if self.__filename is None:
+        if self._filename is None:
             # In-memory write and terminate the function.
-            self.__internal_data[index] = data
+            self._internal_data[index] = data
             return
 
         # On-disk write. First, convert and pad the data to the desired length.
-        write_data = [elem.dump_pad(self.__disk_size) if isinstance(elem, Data) else elem for elem in data]
+        write_data = [elem.dump_pad(self._disk_size) if isinstance(elem, Data) else elem for elem in data]
 
         # Add dummy bytes if necessary.
-        data_to_write = b"".join(write_data) + b"\x00" * self.__disk_size * (self.__bucket_size - len(data))
+        data_to_write = b"".join(write_data) + b"\x00" * self._disk_size * (self._bucket_size - len(data))
 
         # Seek on-disk write position.
-        self.__file.seek(self.__row_offset(index))
+        self._file.seek(self._row_offset(index))
         # Join the row data into a single byte string
-        self.__file.write(data_to_write)
+        self._file.write(data_to_write)
 
     def encrypt(self, encryptor: Encryptor) -> None:
         """
@@ -149,40 +149,40 @@ class Storage:
         Note that each of the buckets should be made full (dummy data maybe added).
         """
         # If we do not need to load from the file.
-        if self.__filename is None:
+        if self._filename is None:
             # Iterate through the buckets.
-            for i, bucket in enumerate(self.__internal_data):
+            for i, bucket in enumerate(self._internal_data):
                 # Encrypt the existing data.
-                encrypted_data = [encryptor.enc(plaintext=data.dump_pad(length=self.__data_size)) for data in bucket]
+                encrypted_data = [encryptor.enc(plaintext=data.dump_pad(length=self._data_size)) for data in bucket]
 
                 # If the bucket is not full, append more data to it.
-                dummy_needed = self.__bucket_size - len(encrypted_data)
+                dummy_needed = self._bucket_size - len(encrypted_data)
                 # Make the bucket full.
                 if dummy_needed > 0:
                     encrypted_data.extend(
-                        [encryptor.enc(plaintext=self.__data_size_dummy) for _ in range(dummy_needed)])
+                        [encryptor.enc(plaintext=self._data_size_dummy) for _ in range(dummy_needed)])
 
                 # Replace the bucket.
-                self.__internal_data[i] = encrypted_data
+                self._internal_data[i] = encrypted_data
 
             # Terminate the function.
             return
 
         # Otherwise, we load from the disk and encrypt.
-        for i in range(self.__size * self.__bucket_size):
+        for i in range(self._size * self._bucket_size):
             # Compute the location to read.
-            location = i * self.__disk_size
+            location = i * self._disk_size
 
             # Seek to the correct position.
-            self.__file.seek(location)
+            self._file.seek(location)
             # Get the data from that location.
-            data = self.__file.read(self.__disk_size)
+            data = self._file.read(self._disk_size)
             # Decide what data to encrypt.
-            data = data[:self.__data_size] if data.strip(b"\x00") else self.__data_size_dummy
+            data = data[:self._data_size] if data.strip(b"\x00") else self._data_size_dummy
 
             # Move back and write the encrypted data back.
-            self.__file.seek(location)
-            self.__file.write(encryptor.enc(plaintext=data))
+            self._file.seek(location)
+            self._file.write(encryptor.enc(plaintext=data))
 
     def decrypt(self, encryptor: Encryptor) -> None:
         """
@@ -191,8 +191,8 @@ class Storage:
         The existence of this function is more for testing purposes or one-time use.
         """
         # If we do not need to load from the file
-        if self.__filename is None:
-            for bucket in self.__internal_data:
+        if self._filename is None:
+            for bucket in self._internal_data:
                 # Encrypt the existing data.
                 for index, data in enumerate(bucket):
                     bucket[index] = Data.load_unpad(data=encryptor.dec(ciphertext=data))
@@ -201,20 +201,20 @@ class Storage:
             return
 
         # Otherwise, we load from the disk and encrypt.
-        for i in range(self.__size * self.__bucket_size):
+        for i in range(self._size * self._bucket_size):
             # Compute the location to read.
-            location = i * self.__disk_size
+            location = i * self._disk_size
             # Seek to the correct position.
-            self.__file.seek(location)
+            self._file.seek(location)
             # Get the data from that location and decrypt.
-            data = encryptor.dec(ciphertext=self.__file.read(self.__disk_size))
+            data = encryptor.dec(ciphertext=self._file.read(self._disk_size))
             # Move back and write the data.
-            self.__file.seek(location)
+            self._file.seek(location)
             # Load the data as object and re-dump it to proper length.
-            self.__file.write(Data.load_unpad(data=data).dump_pad(length=self.__disk_size))
+            self._file.write(Data.load_unpad(data=data).dump_pad(length=self._disk_size))
 
     def close(self):
         """Close the file if using file-based storage."""
-        if self.__file is not None:
-            self.__file.close()
-            self.__file = None
+        if self._file is not None:
+            self._file.close()
+            self._file = None

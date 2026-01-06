@@ -12,7 +12,7 @@ import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from daoram.dependency import BinaryTree, Data, Helper, InteractServer, Encryptor, PathData
+from daoram.dependency import BinaryTree, Data, Helper, InteractServer, Encryptor, PathData, UNSET
 
 
 class TreeBaseOram(ABC):
@@ -181,21 +181,120 @@ class TreeBaseOram(ABC):
             encryption=True if self._encryptor else False,
         )
 
-        # Fill the data to leaf according to the provided data_map.
-        if data_map:
-            for key, leaf in self._pos_map.items():
-                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=data_map[key]))
-
-        # Otherwise, fill dummy data at the correct places.
-        else:
-            for key, leaf in self._pos_map.items():
-                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=os.urandom(self._data_size)))
+        # Fill the data to leaf according to the position map.
+        for key, leaf in self._pos_map.items():
+            value = data_map[key] if data_map else os.urandom(self._data_size)
+            tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
 
         # Encrypt the tree storage if needed.
         if self._encryptor:
             tree.storage.encrypt(encryptor=self._encryptor)
 
         return tree
+
+    def _evict_stash(self, leaves: List[int]) -> PathData:
+        """
+        Evict data blocks in the stash to one or more paths while maintaining correctness.
+
+        :param leaves: A list of leaf labels of the paths we are evicting data to.
+        :return: PathData dict mapping storage index to encrypted bucket.
+        """
+        # Create a temporary stash.
+        temp_stash = []
+
+        # Create a dictionary contains locations for where all leaves' paths touch.
+        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
+
+        # Now we evict the stash by going through all real data in it.
+        for data in self._stash:
+            # Attempt to insert actual data to the path.
+            inserted = BinaryTree.fill_data_to_path(
+                data=data, path=path, leaves=leaves, level=self._level, bucket_size=self._bucket_size
+            )
+            # If we were not able to insert data, overflow happened, put the block to the temp stash.
+            if not inserted:
+                temp_stash.append(data)
+
+        # Update the stash.
+        self._stash = temp_stash
+
+        return self._encrypt_path_data(path=path)
+
+    def _retrieve_data_stash(self, key: int, to_index: int, new_leaf: int, value: Any = UNSET) -> Any:
+        """
+        Given a key, retrieve the block from the stash. If value is provided, write it.
+
+        :param key: The key of the data block of interest.
+        :param to_index: Up to which index we should be checking.
+        :param new_leaf: The new leaf to store the accessed data to.
+        :param value: If provided (not UNSET), write this value to the data block.
+        :return: The current value of the data block.
+        """
+        # Read all buckets in the path and add real data to stash.
+        for data in self._stash[:to_index]:
+            # If we find the data of interest, perform operation, otherwise skip over.
+            if data.key == key:
+                # Always read the current value.
+                read_value = data.value
+                # Write if value is provided.
+                if value is not UNSET:
+                    data.value = value
+                # Update the leaf.
+                data.leaf = new_leaf
+                return read_value
+
+        # If the key was never found, raise an error, since the stash is always searched after the path.
+        raise KeyError(f"Key {key} not found.")
+
+    def _retrieve_data_block(self, key: int, new_leaf: int, path: PathData, value: Any = UNSET) -> Any:
+        """
+        Given a key, retrieve the block. If value is provided, write it.
+
+        :param key: The key of the data block of interest.
+        :param new_leaf: The new leaf to store the accessed data to.
+        :param path: PathData dict mapping storage index to bucket.
+        :param value: If provided (not UNSET), write this value to the data block.
+        :return: The current value of the data block.
+        """
+        # Set a value for whether the key is found.
+        found = False
+        # Temp holder for the value to read.
+        read_value = None
+        # Store the current stash length.
+        to_index = len(self._stash)
+
+        # Decrypt the path if needed.
+        path = self._decrypt_path_data(path=path)
+
+        # Read all buckets in the path and add real data to stash.
+        for bucket in path.values():
+            for data in bucket:
+                # If dummy data, we skip it.
+                if data.key is None:
+                    continue
+                # If it's the data of interest, we read/write it, and give it a new path.
+                elif data.key == key:
+                    # Always read the current value.
+                    read_value = data.value
+                    # Write if value is provided.
+                    if value is not UNSET:
+                        data.value = value
+                    # Update the leaf.
+                    data.leaf = new_leaf
+                    # Set found to True.
+                    found = True
+                # Add all real data to the stash.
+                self._stash.append(data)
+
+        # Check if the stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # If the value is not found, it might be in the stash.
+        if not found:
+            read_value = self._retrieve_data_stash(key=key, to_index=to_index, value=value, new_leaf=new_leaf)
+
+        return read_value
 
     @abstractmethod
     def init_server_storage(self, data_map: dict = None) -> None:
@@ -207,26 +306,25 @@ class TreeBaseOram(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def operate_on_key(self, op: str, key: int, value: Any = None) -> Any:
+    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
         """
-        Perform operation on a given key.
+        Perform operation on a given key. Always returns the current value.
+        If value is provided (not UNSET), writes the new value.
 
-        :param op: An operation, which can be "r", "w" or "rw".
         :param key: The key of the data block of interest.
-        :param value: If the operation is "w", this is the new value for data block.
-        :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
+        :param value: If provided (not UNSET), write this value to the data block.
+        :return: The current value of the data block (before write if writing).
         """
         raise NotImplementedError
 
     @abstractmethod
-    def operate_on_key_without_eviction(self, op: str, key: int, value: Any = None) -> Any:
+    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
         """
         Perform operation on a given key without writing the data added to the stash back to the server.
 
-        :param op: An operation, which can be "r", "w" or "rw".
         :param key: The key of the data block of interest.
-        :param value: If the operation is "w", this is the new value for data block.
-        :return: The leaf of the data block we found, and a value if the operation is "r" or "rw".
+        :param value: If provided (not UNSET), write this value to the data block.
+        :return: The current value of the data block (before write if writing).
         """
         raise NotImplementedError
 

@@ -63,29 +63,29 @@ class AVLTree:
 
     def __init__(self, leaf_range: int):
         """The AVL tree only needs to store the possible leaf range to sample."""
-        self.__leaf_range = leaf_range
+        self._leaf_range = leaf_range
 
-    def __get_new_leaf(self) -> int:
+    def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
-        return secrets.randbelow(self.__leaf_range)
+        return secrets.randbelow(self._leaf_range)
 
     @staticmethod
-    def __get_height(node: Optional[AVLTreeNode]) -> int:
+    def _get_height(node: Optional[AVLTreeNode]) -> int:
         """Get the height of the input node."""
         # If the node is empty, the height would be 0; otherwise return height.
         return node.height if node else 0
 
     @staticmethod
-    def __get_balance(node: Optional[AVLTreeNode]) -> int:
+    def _get_balance(node: Optional[AVLTreeNode]) -> int:
         """Get balance of the input node."""
         # If the node is empty, the balance would be 0; otherwise compute the balance.
-        return AVLTree.__get_height(node.left_node) - AVLTree.__get_height(node.right_node) if node else 0
+        return AVLTree._get_height(node.left_node) - AVLTree._get_height(node.right_node) if node else 0
 
-    def __update_height(self, node: AVLTreeNode) -> None:
+    def _update_height(self, node: AVLTreeNode) -> None:
         """Update the height of the input node."""
-        node.height = 1 + max(self.__get_height(node.left_node), self.__get_height(node.right_node))
+        node.height = 1 + max(self._get_height(node.left_node), self._get_height(node.right_node))
 
-    def __rotate_left(self, in_node: AVLTreeNode) -> AVLTreeNode:
+    def _rotate_left(self, in_node: AVLTreeNode) -> AVLTreeNode:
         """
         Perform a left rotation at the provided input node.
 
@@ -103,14 +103,14 @@ class AVLTree:
         in_node.right_node = tmp_node
 
         # Update the input node height.
-        self.__update_height(in_node)
+        self._update_height(in_node)
         # update the new parent node height.
-        self.__update_height(p_node)
+        self._update_height(p_node)
 
         # Return the new parent node.
         return p_node
 
-    def __rotate_right(self, in_node: AVLTreeNode) -> AVLTreeNode:
+    def _rotate_right(self, in_node: AVLTreeNode) -> AVLTreeNode:
         """
         Perform a left rotation at the provided input node.
 
@@ -128,35 +128,35 @@ class AVLTree:
         in_node.left_node = tmp_node
 
         # Update the input node height.
-        self.__update_height(in_node)
+        self._update_height(in_node)
         # update the new parent node height.
-        self.__update_height(p_node)
+        self._update_height(p_node)
 
         # Return the new parent node.
         return p_node
 
-    def __balance(self, node: AVLTreeNode) -> AVLTreeNode:
+    def _balance(self, node: AVLTreeNode) -> AVLTreeNode:
         """Re-balance a node if it is unbalanced."""
         # Update the height of the node.
-        self.__update_height(node)
+        self._update_height(node)
         # Get the balance factor.
-        balance = self.__get_balance(node)
+        balance = self._get_balance(node)
 
         # Left heavy subtree rotation.
         if balance > 1:
             # The left-right case.
-            if self.__get_balance(node.left_node) < 0:
-                node.left_node = self.__rotate_left(node.left_node)
+            if self._get_balance(node.left_node) < 0:
+                node.left_node = self._rotate_left(node.left_node)
             # The left-left case.
-            return self.__rotate_right(node)
+            return self._rotate_right(node)
 
         # Right heavy subtree rotation.
         if balance < -1:
             # The right-left case.
-            if self.__get_balance(node.right_node) > 0:
-                node.right_node = self.__rotate_right(node.right_node)
+            if self._get_balance(node.right_node) > 0:
+                node.right_node = self._rotate_right(node.right_node)
             # The right-right case.
-            return self.__rotate_left(node)
+            return self._rotate_left(node)
 
         return node
 
@@ -200,7 +200,7 @@ class AVLTree:
             # Get the last node and update its height.
             node = stack.pop()
             # Balance the node at this position.
-            balanced_node = self.__balance(node)
+            balanced_node = self._balance(node)
 
             # If a parent exists, update which node the parent should point to.
             if stack:
@@ -234,26 +234,26 @@ class AVLTree:
             root.right_node = self.recursive_insert(root=root.right_node, kv_pair=kv_pair)
 
         # Update the height of the parent node.
-        root.height = 1 + max(self.__get_height(node=root.left_node), self.__get_height(node=root.right_node))
+        root.height = 1 + max(self._get_height(node=root.left_node), self._get_height(node=root.right_node))
 
         # Get the balance factor.
-        balance = self.__get_balance(node=root)
+        balance = self._get_balance(node=root)
 
         # Left heavy subtree rotation.
         if balance > 1:
             # The left-right case.
-            if self.__get_balance(node=root.left_node) < 0:
-                root.left_node = self.__rotate_left(root.left_node)
+            if self._get_balance(node=root.left_node) < 0:
+                root.left_node = self._rotate_left(root.left_node)
             # The left-left case.
-            return self.__rotate_right(in_node=root)
+            return self._rotate_right(in_node=root)
 
         # Right heavy subtree rotation.
         if balance < -1:
             # The right-left case.
-            if self.__get_balance(root.right_node) > 0:
-                root.right_node = self.__rotate_right(root.right_node)
+            if self._get_balance(root.right_node) > 0:
+                root.right_node = self._rotate_right(root.right_node)
             # The right-right case.
-            return self.__rotate_left(in_node=root)
+            return self._rotate_left(in_node=root)
 
         return root
 
@@ -323,7 +323,7 @@ class AVLTree:
         # Case 3: Node has two children; choose based on subtree height.
         else:
             # Use predecessor (left then all right) if left is taller, else successor (right then all left).
-            use_predecessor = self.__get_height(node.left_node) > self.__get_height(node.right_node)
+            use_predecessor = self._get_height(node.left_node) > self._get_height(node.right_node)
 
             # Go to the taller subtree.
             current = node.left_node if use_predecessor else node.right_node
@@ -360,7 +360,7 @@ class AVLTree:
         # Rebalance from bottom to up.
         for i in range(len(local) - 1, -1, -1):
             curr = local[i]
-            balanced = self.__balance(curr)
+            balanced = self._balance(curr)
 
             # Update parent's pointer.
             if i > 0:
@@ -403,7 +403,7 @@ class AVLTree:
         :return: A list of Data objects.
         """
         # Otherwise, sample a new leaf for the root and add it to the stack.
-        root.leaf = self.__get_new_leaf()
+        root.leaf = self._get_new_leaf()
         stack = [root]
 
         # Create an empty list to hold the result.
@@ -419,7 +419,7 @@ class AVLTree:
             # Add value from the left node.
             if node.left_node:
                 # Sample a new leaf for the left node.
-                node.left_node.leaf = self.__get_new_leaf()
+                node.left_node.leaf = self._get_new_leaf()
                 avl_data.l_key = node.left_node.key
                 avl_data.l_leaf = node.left_node.leaf
                 avl_data.l_height = node.left_node.height
@@ -429,7 +429,7 @@ class AVLTree:
             # Add value from the right node.
             if node.right_node:
                 # Sample a new leaf for the right node.
-                node.right_node.leaf = self.__get_new_leaf()
+                node.right_node.leaf = self._get_new_leaf()
                 avl_data.r_key = node.right_node.key
                 avl_data.r_leaf = node.right_node.leaf
                 avl_data.r_height = node.right_node.height

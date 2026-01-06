@@ -4,6 +4,10 @@ from typing import Any, Dict, List, NamedTuple, Tuple, Union, Optional
 from daoram.dependency.helper import Data
 
 
+# Sentinel value to distinguish "no value provided" from "None provided"
+UNSET = object()
+
+
 class BucketKey(NamedTuple):
     """Key for accessing a bucket: (leaf, bucket_id)."""
     leaf: int

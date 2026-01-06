@@ -219,11 +219,11 @@ class InteractRemoteServer(InteractServer):
     def __init__(self):
         """Create an instance to talk to the remote server."""
         super().__init__()
-        self.__client: BaseSocket | None = None
+        self._client: BaseSocket | None = None
 
-    def __check_client(self) -> None:
+    def _check_client(self) -> None:
         """Check if the client is connected to the server."""
-        if self.__client is None:
+        if self._client is None:
             raise ValueError("Client has not been initialized; call init_connection() first.")
 
     def init_connection(self, client: BaseSocket) -> None:
@@ -231,24 +231,24 @@ class InteractRemoteServer(InteractServer):
 
         :param client: A connected socket instance (e.g., Socket or ZMQSocket).
         """
-        self.__client = client
+        self._client = client
 
     def close_connection(self) -> None:
         """Close the connection to the server."""
-        self.__client.close()
+        self._client.close()
 
     def init_storage(self, storage: ServerStorage) -> None:
         """Initialize storages on the remote server."""
-        self.__check_client()
+        self._check_client()
         # Send storage init request.
-        self.__client.send(("init", storage))
-        response = self.__client.recv()
+        self._client.send(("init", storage))
+        response = self._client.recv()
         if response != SERVER_DEFAULT_RESPONSE:
             raise ValueError("Server failed to initialize storage.")
 
     def execute(self) -> ExecuteResult:
         """Execute all pending queries on the remote server."""
-        self.__check_client()
+        self._check_client()
 
         # Package all queries into a single request.
         request = {
@@ -266,8 +266,8 @@ class InteractRemoteServer(InteractServer):
         self._bytes_written += len(pickle.dumps(request))
 
         # Send request and receive response.
-        self.__client.send(("execute", request))
-        response = self.__client.recv()
+        self._client.send(("execute", request))
+        response = self._client.recv()
 
         # Track bytes read (response from server).
         self._bytes_read += len(pickle.dumps(response))
@@ -281,9 +281,9 @@ class RemoteServer(InteractLocalServer):
     def __init__(self):
         """Creates a remote server instance that will answer client's queries."""
         super().__init__()
-        self.__server: BaseSocket | None = None
+        self._server: BaseSocket | None = None
 
-    def __process_request(self, request: Tuple[str, Any]) -> Any:
+    def _process_request(self, request: Tuple[str, Any]) -> Any:
         """Process client request."""
         cmd, data = request
 
@@ -314,13 +314,13 @@ class RemoteServer(InteractLocalServer):
 
         :param server: A bound socket instance (e.g., Socket or ZMQSocket with is_server=True).
         """
-        self.__server = server
+        self._server = server
 
         while True:
-            request = self.__server.recv()
+            request = self._server.recv()
             if request:
-                self.__server.send(self.__process_request(request))
+                self._server.send(self._process_request(request))
             else:
                 break
 
-        self.__server.close()
+        self._server.close()

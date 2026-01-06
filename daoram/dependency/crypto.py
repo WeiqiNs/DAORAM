@@ -51,14 +51,14 @@ class AesGcm(Encryptor):
         if key_byte_length not in [16, 24, 32]:
             raise ValueError("The AES key length must be 16, 24, or 32 bytes.")
 
-        self.__key = os.urandom(key_byte_length) if key is None else key
-        self.__key_byte_length = key_byte_length
-        self.__aes_gcm = AESGCM(self.__key)
+        self._key = os.urandom(key_byte_length) if key is None else key
+        self._key_byte_length = key_byte_length
+        self._aes_gcm = AESGCM(self._key)
 
     @property
     def key(self) -> bytes:
         """Get the current AES key."""
-        return self.__key
+        return self._key
 
     def ciphertext_length(self, plaintext_length: int) -> int:
         """Calculate the ciphertext length for a given plaintext length.
@@ -79,7 +79,7 @@ class AesGcm(Encryptor):
         """
         nonce = os.urandom(self.NONCE_SIZE)
         # encrypt() returns ciphertext + tag concatenated
-        ciphertext_with_tag = self.__aes_gcm.encrypt(nonce, plaintext, None)
+        ciphertext_with_tag = self._aes_gcm.encrypt(nonce, plaintext, None)
         return nonce + ciphertext_with_tag
 
     def dec(self, ciphertext: bytes) -> bytes:
@@ -91,7 +91,7 @@ class AesGcm(Encryptor):
         """
         nonce = ciphertext[:self.NONCE_SIZE]
         ciphertext_with_tag = ciphertext[self.NONCE_SIZE:]
-        return self.__aes_gcm.decrypt(nonce, ciphertext_with_tag, None)
+        return self._aes_gcm.decrypt(nonce, ciphertext_with_tag, None)
 
 
 class PseudoRandomFunction(ABC):
@@ -138,12 +138,12 @@ class Blake2Prf(PseudoRandomFunction):
         if key is not None and len(key) != self.KEY_SIZE:
             raise ValueError(f"The PRF key length must be {self.KEY_SIZE} bytes.")
 
-        self.__key = os.urandom(self.KEY_SIZE) if key is None else key
+        self._key = os.urandom(self.KEY_SIZE) if key is None else key
 
     @property
     def key(self) -> bytes:
         """Get the current PRF key."""
-        return self.__key
+        return self._key
 
     def digest(self, message: bytes) -> bytes:
         """Compute keyed BLAKE2b hash of the message.
@@ -151,7 +151,7 @@ class Blake2Prf(PseudoRandomFunction):
         :param message: The message to hash.
         :return: 64-byte digest.
         """
-        return hashlib.blake2b(message, key=self.__key, digest_size=self.DIGEST_SIZE).digest()
+        return hashlib.blake2b(message, key=self._key, digest_size=self.DIGEST_SIZE).digest()
 
     def digest_mod_n(self, message: bytes, mod: int) -> int:
         """Compute keyed BLAKE2b hash and return result mod n.
@@ -220,22 +220,22 @@ class FeistelPrp(PseudoRandomPermutation):
         if key is not None and len(key) < self.KEY_SIZE:
             raise ValueError(f"Key should be at least {self.KEY_SIZE} bytes.")
 
-        self.__key = os.urandom(self.KEY_SIZE) if key is None else key
-        self.__domain_size = domain_size
+        self._key = os.urandom(self.KEY_SIZE) if key is None else key
+        self._domain_size = domain_size
 
         # Compute the bit length needed to represent domain, rounded up to even for a balanced Feistel.
         raw_bits = (domain_size - 1).bit_length()
-        self.__bit_length = raw_bits + (raw_bits % 2)
+        self._bit_length = raw_bits + (raw_bits % 2)
 
     @property
     def key(self) -> bytes:
         """Get the current PRP key."""
-        return self.__key
+        return self._key
 
     @property
     def domain_size(self) -> int:
         """Get the domain size."""
-        return self.__domain_size
+        return self._domain_size
 
     def _round_function(self, round_num: int, value: int, output_bits: int) -> int:
         """Compute the Feistel round function using SHA-256.
@@ -247,7 +247,7 @@ class FeistelPrp(PseudoRandomPermutation):
         """
         # Concatenate key, round number, and value for domain separation.
         value_bytes = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
-        data = self.__key + round_num.to_bytes(1, "big") + value_bytes
+        data = self._key + round_num.to_bytes(1, "big") + value_bytes
         h = hashlib.sha256(data).digest()
 
         # Truncate hash to required number of bits.
@@ -260,7 +260,7 @@ class FeistelPrp(PseudoRandomPermutation):
         :param x: The input integer.
         :return: The transformed integer.
         """
-        half = self.__bit_length // 2
+        half = self._bit_length // 2
         mask = (1 << half) - 1
 
         # Split input into left (high bits) and right (low bits) halves.
@@ -273,7 +273,7 @@ class FeistelPrp(PseudoRandomPermutation):
             left, right = right, left ^ f_out
 
         # Recombine halves into output.
-        return ((left << half) | right) & ((1 << self.__bit_length) - 1)
+        return ((left << half) | right) & ((1 << self._bit_length) - 1)
 
     def _feistel_inverse(self, y: int) -> int:
         """Apply the inverse Feistel network transformation.
@@ -281,7 +281,7 @@ class FeistelPrp(PseudoRandomPermutation):
         :param y: The transformed integer.
         :return: The original integer.
         """
-        half = self.__bit_length // 2
+        half = self._bit_length // 2
         mask = (1 << half) - 1
 
         # Split input into left (high bits) and right (low bits) halves.
@@ -294,7 +294,7 @@ class FeistelPrp(PseudoRandomPermutation):
             right, left = left, right ^ f_out
 
         # Recombine halves into output.
-        return ((left << half) | right) & ((1 << self.__bit_length) - 1)
+        return ((left << half) | right) & ((1 << self._bit_length) - 1)
 
     def permute(self, x: int) -> int:
         """Apply the permutation to an integer.
@@ -303,13 +303,13 @@ class FeistelPrp(PseudoRandomPermutation):
         :return: Permuted integer in [0, domain_size).
         :raises ValueError: If x is not in [0, domain_size).
         """
-        if not (0 <= x < self.__domain_size):
-            raise ValueError(f"Input must be in [0, {self.__domain_size}).")
+        if not (0 <= x < self._domain_size):
+            raise ValueError(f"Input must be in [0, {self._domain_size}).")
 
         # Cycle-walking: repeatedly apply Feistel until output is in domain.
         # This handles non-power-of-2 domain sizes while preserving bijectivity.
         y = self._feistel_forward(x)
-        while y >= self.__domain_size:
+        while y >= self._domain_size:
             y = self._feistel_forward(y)
         return y
 
@@ -320,11 +320,11 @@ class FeistelPrp(PseudoRandomPermutation):
         :return: Original integer in [0, domain_size).
         :raises ValueError: If y is not in [0, domain_size).
         """
-        if not (0 <= y < self.__domain_size):
-            raise ValueError(f"Input must be in [0, {self.__domain_size}).")
+        if not (0 <= y < self._domain_size):
+            raise ValueError(f"Input must be in [0, {self._domain_size}).")
 
         # Cycle-walking: repeatedly apply inverse Feistel until output is in domain.
         x = self._feistel_inverse(y)
-        while x >= self.__domain_size:
+        while x >= self._domain_size:
             x = self._feistel_inverse(x)
         return x

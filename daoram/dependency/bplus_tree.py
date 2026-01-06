@@ -78,16 +78,16 @@ class BPlusTree:
 
         :param order: The branching degree of the B+ tree, minimum should be 3.
         """
-        self.__order = order
-        self.__mid = order // 2
-        self.__leaf_range = leaf_range
+        self._order = order
+        self._mid = order // 2
+        self._leaf_range = leaf_range
 
-    def __get_new_leaf(self) -> int:
+    def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
-        return secrets.randbelow(self.__leaf_range)
+        return secrets.randbelow(self._leaf_range)
 
     @staticmethod
-    def __find_leaf(key: Any, root: BPlusTreeNode) -> BPlusTreeNode:
+    def _find_leaf(key: Any, root: BPlusTreeNode) -> BPlusTreeNode:
         """
         Given B+ tree root and a key of interest, find the leaf where the key is stored.
 
@@ -118,7 +118,7 @@ class BPlusTree:
         return cur_node
 
     @staticmethod
-    def __find_leaf_path(key: Any, root: BPlusTreeNode) -> List[BPlusTreeNode]:
+    def _find_leaf_path(key: Any, root: BPlusTreeNode) -> List[BPlusTreeNode]:
         """
         Given B+ tree root and a key of interest, find the entire path to the leaf where the key is stored.
 
@@ -152,7 +152,7 @@ class BPlusTree:
         # Return the node that was found.
         return result
 
-    def __split_node(self, node: BPlusTreeNode) -> BPlusTreeNode:
+    def _split_node(self, node: BPlusTreeNode) -> BPlusTreeNode:
         """
         Given a node that is full, split it depends on whether it is a leaf or not.
 
@@ -166,24 +166,24 @@ class BPlusTree:
         # Depending on whether the child node is a leaf node, we break it differently.
         if node.is_leaf:
             # New leaf gets half of the old leaf.
-            right_node.keys = node.keys[self.__mid:]
-            right_node.values = node.values[self.__mid:]
+            right_node.keys = node.keys[self._mid:]
+            right_node.values = node.values[self._mid:]
 
             # The old leaf keeps on the first half.
-            node.keys = node.keys[:self.__mid]
-            node.values = node.values[:self.__mid]
+            node.keys = node.keys[:self._mid]
+            node.values = node.values[:self._mid]
 
         else:
             # Mark the node as a non-leaf node.
             right_node.is_leaf = False
 
             # New leaf gets half of the old leaf.
-            right_node.keys = node.keys[self.__mid + 1:]
-            right_node.values = node.values[self.__mid + 1:]
+            right_node.keys = node.keys[self._mid + 1:]
+            right_node.values = node.values[self._mid + 1:]
 
             # The old leaf keeps on the first half.
-            node.keys = node.keys[:self.__mid]
-            node.values = node.values[:self.__mid + 1]
+            node.keys = node.keys[:self._mid]
+            node.values = node.values[:self._mid + 1]
 
         # Because the nodes are modified in place, we only need to return the right one.
         return right_node
@@ -196,10 +196,10 @@ class BPlusTree:
         :param parent_node: A B+ tree node containing the child node.
         """
         # Store the key to insert to parent.
-        insert_key = child_node.keys[self.__mid]
+        insert_key = child_node.keys[self._mid]
 
         # Perform the node split.
-        right_node = self.__split_node(node=child_node)
+        right_node = self._split_node(node=child_node)
 
         # Now we perform the actual insertion to parent.
         for index, each_key in enumerate(parent_node.keys):
@@ -220,10 +220,10 @@ class BPlusTree:
         :return: A B+ tree node containing the split left and right child nodes.
         """
         # Store the key to insert to parent.
-        insert_key = child_node.keys[self.__mid]
+        insert_key = child_node.keys[self._mid]
 
         # Perform the node split.
-        right_node = self.__split_node(node=child_node)
+        right_node = self._split_node(node=child_node)
 
         # Create the parent node.
         parent_node = BPlusTreeNode()
@@ -246,7 +246,7 @@ class BPlusTree:
         :return: The updated B+ tree root node.
         """
         # Find which leaf to insert.
-        leaves = self.__find_leaf_path(root=root, key=kv_pair.key)
+        leaves = self._find_leaf_path(root=root, key=kv_pair.key)
         # Add kv pair to the leaf node, which has to be the last one.
         leaves[-1].add_kv_pair(kv_pair=kv_pair)
 
@@ -255,7 +255,7 @@ class BPlusTree:
 
         # Iterate through the leaves.
         while index >= 0:
-            if len(leaves[index].keys) >= self.__order:
+            if len(leaves[index].keys) >= self._order:
                 # When insertion is needed, we first locate the parent.
                 if index > 0:
                     # Perform the insertion.
@@ -280,7 +280,7 @@ class BPlusTree:
         :return: The value corresponding to the provided search key.
         """
         # First get the node leaf.
-        leaf = self.__find_leaf(root=root, key=key)
+        leaf = self._find_leaf(root=root, key=key)
 
         # Search in the node leaf.
         for index, each_key in enumerate(leaf.keys):
@@ -303,7 +303,7 @@ class BPlusTree:
             return None
 
         # Compute the minimum number of keys each node should have.
-        min_keys = (self.__order - 1) // 2
+        min_keys = (self._order - 1) // 2
 
         # Store path of internal nodes as (node, child_index) pairs.
         local = []
@@ -424,7 +424,7 @@ class BPlusTree:
         """
         # Update the root id and assign a new leaf.
         root.id = block_id
-        root.leaf = self.__get_new_leaf()
+        root.leaf = self._get_new_leaf()
         # Increment the id.
         block_id += 1
 
@@ -441,7 +441,7 @@ class BPlusTree:
             if not node.is_leaf:
                 for child in node.values:
                     child.id = block_id
-                    child.leaf = self.__get_new_leaf()
+                    child.leaf = self._get_new_leaf()
                     block_id += 1
 
                 # Create the bplus data with node keys and updated child ids and leaves.
