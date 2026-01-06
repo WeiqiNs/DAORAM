@@ -6,6 +6,7 @@ It is more efficient than traditional ORAM while still providing security guaran
 import os
 import pickle
 from queue import Queue
+from daoram.dependency.crypto import PRP
 from typing import Any, List
 from daoram.dependency import InteractServer, ServerStorage, Aes
 from daoram.omap import AVLOdsOmap, AVLOdsOmapOptimized
@@ -58,6 +59,7 @@ class Soram():
 
         # Initialize cipher for list encryption if encryption is enabled
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self.PRP = PRP(key=aes_key, n=self._extended_size)
 
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
         self._Ow: AVLOdsOmap = None  # OMAP O_W
@@ -173,7 +175,7 @@ class Soram():
         for i, (key, value) in enumerate(extended_data.items()):
             # encrypted_key = self._prp.digest_mod_n(str(key).encode(), self._extended_size)
             # Encrypt the main storage data if encryption is enabled
-            self._main_storage[key] = self._encrypt_data(value)
+            self._main_storage[self.PRP.encrypt(key)] = self._encrypt_data(value)
 
         # The client initializes the OMAPs (O𝑊,O𝑅) with the initial dataset
         extended_data_list = list(extended_data.items())
@@ -220,7 +222,7 @@ class Soram():
         if value_old1 is not None:  
             value_old = value_old1
             # self.operate_on_list(label='DB', op='get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
-            self.operate_on_list(label='DB', op='get', pos=self._num_data+self._dummy_index)
+            self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data+self._dummy_index))
             #If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             if op == 'read':
                 self._Ow.search(key)
@@ -236,7 +238,7 @@ class Soram():
             value_old = value_old2
             # visit (𝑛+𝑑,𝑣_𝑛+𝑑) from D
             # self.operate_on_list('DB', 'get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
-            self.operate_on_list(label='DB', op='get',pos = self._num_data+self._dummy_index)
+            self.operate_on_list(label='DB', op='get',pos = self.PRP.encrypt(self._num_data+self._dummy_index))
 
             #Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             if op == 'read':
@@ -252,7 +254,7 @@ class Soram():
         else:  
             # visit (key,vale) from D
             # value_old = self.operate_on_list('DB', 'get', pos = self._prp.digest_mod_n(str(key).encode(), self._extended_size))
-            value_old = self.operate_on_list('DB', 'get', pos = key)
+            value_old = self.operate_on_list('DB', 'get', pos = self.PRP.encrypt(key))
             #Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             if op == 'read':
                 self._Ow.insert(key, value_old)
@@ -262,14 +264,26 @@ class Soram():
 
         # pop from Qw, push what have been poped into Qr
         key = self.operate_on_list(self._Qw_name, 'pop')
-        value = self._Ow.delete(key) 
+        if key >= self._num_data:
+            value = self._Ow.delete(None)
+        else:
+            value = self._Ow.delete(key)
 
         self.operate_on_list(self._Qr_name, 'insert', data = key)
 
         # delete what have been poped from Ow and insert into Or and DB
-        self._Or.insert(key, value)
-        # self.operate_on_list('DB', 'update', pos=self._prp.digest_mod_n(str(key).encode(), self._extended_size), data=value)
-        self.operate_on_list('DB', 'update', pos=key, data=value)
+        if key >= self._num_data:
+            self._Or.search(key)
+        else:
+            self._Or.insert(key, value)
+
+        if key >= self._num_data:
+            self.operate_on_list('DB', 'update', pos= self.PRP.encrypt(key), data=value)
+            self._dummy_index += 1
+            self._dummy_index = self._dummy_index % (2 * self._cache_size)
+        else:
+            self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(key), data=value)
+
 
         # pop from Qr,delete what have been poped from Or
         key = self.operate_on_list(self._Qr_name, 'pop')

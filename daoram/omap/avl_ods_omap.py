@@ -477,13 +477,17 @@ class AVLOdsOmap(TreeOdsOmap):
         else:
             self.root = (self._local[0].key, self._local[0].leaf)
 
-    def insert(self, key: Any, value: Any) -> None:
+    def insert(self, key: Any, value: Any = None) -> None:
         """
         Given key-value pair, insert the pair to the tree.
 
         :param key: The search key of interest.
         :param value: The value to insert.
         """
+        num_retrieved_nodes = 0
+        if key is None:
+            self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+            return
         # Create a new data block that holds the data to insert to tree.
         data_block = self._get_avl_data(key=key, value=value)
 
