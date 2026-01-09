@@ -303,7 +303,7 @@ class BottomUpSomap:
                     break
 
                 # expired
-                item = self.operate_on_list(label=self._Qr_name, op="r", pos=0)
+                item = self.operate_on_list(label=self._Qr_name, op="get", pos=0)
                 if self._timestamp - item[1] > self._cache_size:
                     match_Qr = self.operate_on_list(label=self._Qr_name, op="pop")
                     self._Qr_len -= 1
@@ -342,7 +342,7 @@ class BottomUpSomap:
             encrypted_data = self._client.list_pop(label=label)
             # Decrypt the data if encryption is enabled
             return self._decrypt_data(encrypted_data)
-        elif op == 'r':
+        elif op == 'get':
             encrypted_data = self._client.list_get(label=label, index=pos)
             return self._decrypt_data(encrypted_data)
         elif op == 'all':
