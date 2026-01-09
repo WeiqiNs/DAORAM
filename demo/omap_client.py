@@ -4,7 +4,7 @@ Each function shows how the client should initialize the server and how to perfo
 """
 
 from daoram.dependency import InteractRemoteServer
-from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
+from daoram.omap import AVLOmap, BPlusOmap, OramSearchTreeOmap
 from daoram.oram import DAOram
 
 
@@ -13,7 +13,7 @@ def avl_ods_omap_client():
     num_data = pow(2, 10)
 
     # Create the omap instance.
-    omap = AVLOdsOmap(num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
+    omap = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
 
     # Initialize the client to make a connection.
     omap.client.init_connection()
@@ -38,7 +38,7 @@ def bplus_ods_omap_client():
     num_data = pow(2, 10)
 
     # Create the omap instance.
-    omap = BPlusOdsOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
+    omap = BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
 
     # Initialize the client to make a connection.
     omap.client.init_connection()
@@ -66,13 +66,13 @@ def daoram_avl_omap_client():
     client = InteractRemoteServer()
 
     # Create the ods object.
-    ods = AVLOdsOmap(num_data=num_data, key_size=10, data_size=10, client=client)
+    ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
 
     # Create the oram object.
     oram = DAOram(num_data=num_data, data_size=10, client=client)
 
     # Create the omap object.
-    omap = OramTreeOdsOmap(num_data=num_data, ods=ods, oram=oram)
+    omap = OramSearchTreeOmap(num_data=num_data, ost=ods, oram=oram)
 
     # Initialize the client to make a connection.
     client.init_connection()
@@ -100,13 +100,13 @@ def daoram_bplus_omap_client():
     client = InteractRemoteServer()
 
     # Create the ods object.
-    ods = BPlusOdsOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
+    ods = BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
 
     # Create the oram object.
     oram = DAOram(num_data=num_data, data_size=10, client=client)
 
     # Create the omap object.
-    omap = OramTreeOdsOmap(num_data=num_data, ods=ods, oram=oram)
+    omap = OramSearchTreeOmap(num_data=num_data, ost=ods, oram=oram)
 
     # Initialize the client to make a connection.
     client.init_connection()

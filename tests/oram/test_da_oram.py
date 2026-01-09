@@ -1,13 +1,12 @@
 import random
 
-from daoram.dependency import AesGcm, InteractLocalServer
 from daoram.oram import DAOram
 
 
 class TestDAOram:
-    def test_without_init(self, num_data):
+    def test_without_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -32,9 +31,9 @@ class TestDAOram:
             # Check if the new value is written properly.
             assert oram.operate_on_key(key=key) == key * 2
 
-    def test_with_init(self, num_data):
+    def test_with_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage({i: i * 2 for i in range(num_data)})
@@ -43,9 +42,9 @@ class TestDAOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i * 2
 
-    def test_with_enc(self, num_data):
+    def test_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption enabled.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
+        oram = DAOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -58,10 +57,25 @@ class TestDAOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_with_file(self, num_data, test_file):
+    def test_with_file(self, num_data, client, test_file):
         # Create the oram instance; encryption turned off for testing efficiency.
+        oram = DAOram(num_data=num_data, data_size=10, client=client, filename=str(test_file))
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some queries for writing.
+        for i in range(num_data):
+            oram.operate_on_key(key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(num_data):
+            assert oram.operate_on_key(key=i) == i
+
+    def test_with_file_enc(self, num_data, client, encryptor, test_file):
+        # Create the oram instance with encryption enabled.
         oram = DAOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file)
+            num_data=num_data, data_size=10, client=client, filename=str(test_file), encryptor=encryptor
         )
 
         # Initialize the server with storage.
@@ -75,26 +89,9 @@ class TestDAOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_with_file_enc(self, num_data, test_file):
-        # Create the oram instance with encryption enabled.
-        oram = DAOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file), encryptor=AesGcm()
-        )
-
-        # Initialize the server with storage.
-        oram.init_server_storage()
-
-        # Issue some queries for writing.
-        for i in range(num_data):
-            oram.operate_on_key(key=i, value=i)
-
-        # Check for whether all values are correctly written.
-        for i in range(num_data):
-            assert oram.operate_on_key(key=i) == i
-
-    def test_operate_then_evict(self, num_data):
+    def test_operate_then_evict(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = DAOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -107,4 +104,3 @@ class TestDAOram:
         # Check for whether all values are correctly written.
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
-

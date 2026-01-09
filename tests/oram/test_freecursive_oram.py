@@ -1,13 +1,12 @@
 import random
 
-from daoram.dependency import AesGcm, InteractLocalServer
 from daoram.oram import FreecursiveOram
 
 
 class TestFreecursiveOram:
-    def test_prob_without_init(self, num_data):
+    def test_prob_without_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -32,9 +31,9 @@ class TestFreecursiveOram:
             # Check if the new value is written properly.
             assert oram.operate_on_key(key=key) == key * 2
 
-    def test_prob_with_init(self, num_data):
+    def test_prob_with_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage({i: i * 2 for i in range(num_data)})
@@ -43,9 +42,9 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i * 2
 
-    def test_prob_with_enc(self, num_data):
+    def test_prob_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption enabled.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -58,10 +57,25 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_prob_with_file(self, num_data, test_file):
+    def test_prob_with_file(self, num_data, client, test_file):
         # Create the oram instance; encryption turned off for testing efficiency.
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client, filename=str(test_file))
+
+        # Initialize the server with storage.
+        oram.init_server_storage()
+
+        # Issue some queries for writing.
+        for i in range(num_data):
+            oram.operate_on_key(key=i, value=i)
+
+        # Check for whether all values are correctly written.
+        for i in range(num_data):
+            assert oram.operate_on_key(key=i) == i
+
+    def test_prob_with_file_enc(self, num_data, client, encryptor, test_file):
+        # Create the oram instance with encryption enabled.
         oram = FreecursiveOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file)
+            num_data=num_data, data_size=10, client=client, filename=str(test_file), encryptor=encryptor
         )
 
         # Initialize the server with storage.
@@ -75,26 +89,9 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_prob_with_file_enc(self, num_data, test_file):
-        # Create the oram instance with encryption enabled.
-        oram = FreecursiveOram(
-            num_data=num_data, data_size=10, client=InteractLocalServer(), filename=str(test_file), encryptor=AesGcm()
-        )
-
-        # Initialize the server with storage.
-        oram.init_server_storage()
-
-        # Issue some queries for writing.
-        for i in range(num_data):
-            oram.operate_on_key(key=i, value=i)
-
-        # Check for whether all values are correctly written.
-        for i in range(num_data):
-            assert oram.operate_on_key(key=i) == i
-
-    def test_prob_operate_then_evict(self, num_data):
+    def test_prob_operate_then_evict(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -108,11 +105,9 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_hard_without_init(self, num_data):
+    def test_hard_without_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=InteractLocalServer()
-        )
+        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -137,11 +132,9 @@ class TestFreecursiveOram:
             # Check if the new value is written properly.
             assert oram.operate_on_key(key=0) == value
 
-    def test_hard_with_init(self, num_data):
+    def test_hard_with_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=InteractLocalServer()
-        )
+        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage({i: i * 2 for i in range(num_data)})
@@ -150,10 +143,10 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i * 2
 
-    def test_hard_with_enc(self, num_data):
+    def test_hard_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption enabled.
         oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=InteractLocalServer(), encryptor=AesGcm()
+            num_data=num_data, data_size=10, reset_method="hard", client=client, encryptor=encryptor
         )
 
         # Initialize the server with storage.
@@ -167,10 +160,10 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_hard_with_file(self, num_data, test_file):
+    def test_hard_with_file(self, num_data, client, test_file):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=InteractLocalServer(), filename=str(test_file)
+            num_data=num_data, data_size=10, reset_method="hard", client=client, filename=str(test_file)
         )
 
         # Initialize the server with storage.
@@ -184,15 +177,15 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_hard_with_file_enc(self, num_data, test_file):
+    def test_hard_with_file_enc(self, num_data, client, encryptor, test_file):
         # Create the oram instance with encryption enabled.
         oram = FreecursiveOram(
             num_data=num_data,
             data_size=10,
             reset_method="hard",
-            client=InteractLocalServer(),
+            client=client,
             filename=str(test_file),
-            encryptor=AesGcm()
+            encryptor=encryptor
         )
 
         # Initialize the server with storage.
@@ -206,11 +199,9 @@ class TestFreecursiveOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_hard_operate_then_evict(self, num_data):
+    def test_hard_operate_then_evict(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=InteractLocalServer()
-        )
+        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -223,4 +214,3 @@ class TestFreecursiveOram:
         # Check for whether all values are correctly written.
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
-

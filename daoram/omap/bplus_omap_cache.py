@@ -1,10 +1,10 @@
 from typing import Any
 
 from daoram.dependency import InteractServer
-from daoram.omap import BPlusOdsOmap
+from daoram.omap import BPlusOmap
 
 
-class BPlusOdsOmapOptimized(BPlusOdsOmap):
+class BPlusOmapOptimized(BPlusOmap):
     def __init__(self,
                  order: int,
                  num_data: int,

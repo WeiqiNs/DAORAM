@@ -1,5 +1,7 @@
 import pytest
 
+from daoram.dependency import AesGcm, InteractLocalServer
+
 
 def pytest_addoption(parser):
     """Add custom command line options."""
@@ -22,3 +24,15 @@ def num_data(request):
 def test_file(tmp_path):
     """Provide a temp file path under pytest's temp directory."""
     return tmp_path / "test.bin"
+
+
+@pytest.fixture
+def client():
+    """Provide a fresh InteractLocalServer instance."""
+    return InteractLocalServer()
+
+
+@pytest.fixture
+def encryptor():
+    """Provide a fresh AesGcm encryptor instance."""
+    return AesGcm()

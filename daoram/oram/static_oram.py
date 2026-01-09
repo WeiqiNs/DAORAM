@@ -5,7 +5,8 @@ StaticOram uses fixed leaf positions based on a PRF of the key, rather than
 randomly reassigning leaves on each access. This breaks obliviousness but
 may be useful for certain non-security-critical scenarios.
 """
-from typing import Any
+import random
+from typing import Any, Optional
 
 from daoram.dependency import BinaryTree, Data, Encryptor, InteractServer, PseudoRandomFunction, Blake2Prf, UNSET
 from daoram.oram.path_oram import PathOram
@@ -50,13 +51,16 @@ class StaticOram(PathOram):
         # PRF for generating fixed path numbers from keys.
         self._prf = prf if prf else Blake2Prf()
 
-    def _get_path_number(self, key: int) -> int:
+    def _get_path_number(self, key: Optional[int]) -> int:
         """
         Generate a fixed path number for the given key using PRF.
 
-        :param key: The key of the data.
-        :return: Fixed path number for this key.
+        :param key: The key of the data, or None to get a random path.
+        :return: Fixed path number for this key, or random if key is None.
         """
+        # If key is None, return a random leaf for dummy accesses.
+        if key is None:
+            return random.randint(0, pow(2, self._level - 1) - 1)
         return self._prf.digest_mod_n(str(key).encode(), pow(2, self._level - 1))
 
     def _init_storage_on_pos_map(self, data_map: dict = None) -> BinaryTree:

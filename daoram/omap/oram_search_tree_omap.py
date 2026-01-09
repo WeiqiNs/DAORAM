@@ -1,21 +1,21 @@
 from typing import Any, List, Optional, Tuple, Union
 
 from daoram.dependency import Helper, Blake2Prf
-from daoram.omap.tree_ods_omap import TreeOdsOmap
+from daoram.omap.oblivious_search_tree import ObliviousSearchTree
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
-class OramTreeOdsOmap:
-    def __init__(self, num_data: int, ods: TreeOdsOmap, oram: TreeBaseOram):
+class OramSearchTreeOmap:
+    def __init__(self, num_data: int, ost: ObliviousSearchTree, oram: TreeBaseOram):
         """Initialize the proposed construction for optimal omap.
 
         :param num_data: The number of data points the oram should store.
-        :param ods: Some tree structured ods omap that inherits the TreeOdsOmap class.
+        :param ost: Some tree structured ods omap that inherits the TreeOdsOmap class.
         :param oram: Some tree-based oram that inherits the TreeBaseOmap class.
         """
         # Save the input as class attributes.
         self._num_data: int = num_data
-        self._ods: TreeOdsOmap = ods
+        self._ods: ObliviousSearchTree = ost
         self._oram: TreeBaseOram = oram
 
         # The ods for tree needs to adjust its height only.

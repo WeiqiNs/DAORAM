@@ -6,10 +6,10 @@ from functools import cached_property
 from typing import Any, List, Tuple
 
 from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
-from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+from daoram.omap.oblivious_search_tree import KV_LIST, ROOT, ObliviousSearchTree
 
 
-class BPlusOdsOmap(TreeOdsOmap):
+class BPlusOmap(ObliviousSearchTree):
     def __init__(self,
                  order: int,
                  num_data: int,

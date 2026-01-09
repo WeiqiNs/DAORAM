@@ -557,12 +557,12 @@ class DAOram(TreeBaseOram):
                 r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
                 # This data block should be placed to where the new leaf is.
                 data.leaf = new_leaf
-                # Set key to None to indicate this has been found and changed.
+                # Set key as None to indicate this has been found and changed.
                 key = None
             elif data.key == r_key:
                 # This data block should be placed to where the new leaf is.
                 data.leaf = r_new_leaf
-                # Set b_key to None to indicate this has been found and changed.
+                # Set b_key as None to indicate this has been found and changed.
                 r_key = None
             # When both are set to None, terminate the loop.
             if key is None and r_key is None:

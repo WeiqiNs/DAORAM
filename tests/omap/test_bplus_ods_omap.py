@@ -3,8 +3,8 @@ import math
 import os
 
 from daoram.dependency import InteractLocalServer
-from daoram.omap import BPlusOdsOmap
-from daoram.omap.bplus_ods_omap_opt import BPlusOdsOmapOptimized
+from daoram.omap import BPlusOmap
+from daoram.omap.bplus_omap_cache import BPlusOmapOptimized
 
 # Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)
@@ -20,7 +20,7 @@ def remove_file():
 class TestBPlusOdsOmap:
     def test_int_key(self):
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -49,7 +49,7 @@ class TestBPlusOdsOmap:
 
     def test_str_key(self):
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=10, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -70,7 +70,7 @@ class TestBPlusOdsOmap:
 
     def test_str_key_with_enc(self):
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=10, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=True
         )
 
@@ -91,7 +91,7 @@ class TestBPlusOdsOmap:
 
     def test_str_key_with_enc_file(self):
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=10,
             num_data=NUM_DATA,
             key_size=10,
@@ -124,7 +124,7 @@ class TestBPlusOdsOmap:
         num_init = pow(2, 8)
 
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=20, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -153,7 +153,7 @@ class TestBPlusOdsOmap:
         init_data = [[(j, j) for j in range(i * 2 * size_group, (i * 2 + 1) * size_group)] for i in range(num_group)]
 
         # Create the omap instance.
-        omap = BPlusOdsOmap(
+        omap = BPlusOmap(
             order=30, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -186,7 +186,7 @@ class TestBPlusOdsOmap:
 class TestBPlusOdsOmapOptimized:
     def test_int_key(self):
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -215,7 +215,7 @@ class TestBPlusOdsOmapOptimized:
 
     def test_str_key(self):
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=10, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -236,7 +236,7 @@ class TestBPlusOdsOmapOptimized:
 
     def test_str_key_with_enc(self):
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=10, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=True
         )
 
@@ -257,7 +257,7 @@ class TestBPlusOdsOmapOptimized:
 
     def test_str_key_with_enc_file(self):
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=10,
             num_data=NUM_DATA,
             key_size=10,
@@ -290,7 +290,7 @@ class TestBPlusOdsOmapOptimized:
         num_init = pow(2, 8)
 
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=20, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 
@@ -319,7 +319,7 @@ class TestBPlusOdsOmapOptimized:
         init_data = [[(j, j) for j in range(i * 2 * size_group, (i * 2 + 1) * size_group)] for i in range(num_group)]
 
         # Create the omap instance.
-        omap = BPlusOdsOmapOptimized(
+        omap = BPlusOmapOptimized(
             order=30, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
         )
 

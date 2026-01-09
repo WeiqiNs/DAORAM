@@ -1,13 +1,12 @@
 import random
 
-from daoram.dependency import AesGcm, InteractLocalServer
 from daoram.oram import StaticOram
 
 
 class TestStaticOram:
-    def test_without_init(self, num_data):
+    def test_without_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -29,9 +28,9 @@ class TestStaticOram:
             # Check if the new value is written properly.
             assert oram.operate_on_key(key=key) == key * 2
 
-    def test_with_init(self, num_data):
+    def test_with_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage(data_map={i: i * 2 for i in range(num_data)})
@@ -40,9 +39,9 @@ class TestStaticOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i * 2
 
-    def test_with_enc(self, num_data):
+    def test_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption enabled.
-        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer(), encryptor=AesGcm())
+        oram = StaticOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -55,9 +54,9 @@ class TestStaticOram:
         for i in range(num_data):
             assert oram.operate_on_key(key=i) == i
 
-    def test_operate_then_evict(self, num_data):
+    def test_operate_then_evict(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = StaticOram(num_data=num_data, data_size=10, client=InteractLocalServer())
+        oram = StaticOram(num_data=num_data, data_size=10, client=client)
 
         # Initialize the server with storage.
         oram.init_server_storage()

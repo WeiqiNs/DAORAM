@@ -112,7 +112,7 @@ class AVLTree:
 
     def _rotate_right(self, in_node: AVLTreeNode) -> AVLTreeNode:
         """
-        Perform a left rotation at the provided input node.
+        Perform a right rotation at the provided input node.
 
         :param in_node: Some AVLTreeNode to rotate.
         :return: The parent node of the rotated node.

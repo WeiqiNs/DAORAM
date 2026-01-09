@@ -1,7 +1,7 @@
 from daoram.dependency import InteractLocalServer
-from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
-from daoram.omap.bplus_ods_omap_opt import BPlusOdsOmapOptimized
+from daoram.omap import AVLOmap, BPlusOmap, OramSearchTreeOmap
+from daoram.omap.avl_omap_cache import AVLOmapOptimized
+from daoram.omap.bplus_omap_cache import BPlusOmapOptimized
 from daoram.oram import DAOram
 
 # Set a global parameter for the number of data the server should store.
@@ -14,13 +14,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = AVLOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -42,13 +42,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmapOptimized(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = AVLOmapOptimized(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -70,13 +70,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = AVLOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -98,13 +98,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=True)
+        ods = AVLOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=True)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=True)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -122,13 +122,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = AVLOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(i, i) for i in range(NUM_DATA // 4)])
@@ -146,13 +146,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = AVLOdsOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = AVLOmap(num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(NUM_DATA // 2)])
@@ -170,13 +170,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmap(order=40, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = BPlusOmap(order=40, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -198,7 +198,7 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmapOptimized(
+        ods = BPlusOmapOptimized(
             order=40, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False
         )
 
@@ -206,7 +206,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -228,13 +228,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmap(order=40, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=True)
+        ods = BPlusOmap(order=40, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=True)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=True)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -252,13 +252,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmap(order=50, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = BPlusOmap(order=50, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -280,13 +280,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmap(order=60, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = BPlusOmap(order=60, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(i, i) for i in range(NUM_DATA // 4)])
@@ -304,13 +304,13 @@ class TestOramOdsOmap:
         client = InteractLocalServer()
 
         # Create the ods object.
-        ods = BPlusOdsOmap(order=70, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
+        ods = BPlusOmap(order=70, num_data=NUM_DATA, key_size=10, data_size=10, client=client, use_encryption=False)
 
         # Create the oram object.
         oram = DAOram(num_data=NUM_DATA, data_size=10, client=client, use_encryption=False)
 
         # Create the omap object.
-        omap = OramTreeOdsOmap(num_data=NUM_DATA, ods=ods, oram=oram)
+        omap = OramSearchTreeOmap(num_data=NUM_DATA, ost=ods, oram=oram)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(NUM_DATA // 2)])

@@ -21,11 +21,11 @@ We list the maintainer’s related publications, which motivated the development
 
 ## OMAP Methods
 
-- [OMAP based on AVL (CCS 2014)](https://dl.acm.org/doi/10.1145/2660267.2660314), implemented [here](daoram/omap/avl_ods_omap.py). Set `distinguishable_search` to `False`.
-- [OMAP based on optimized AVL (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf), implemented [here](daoram/omap/avl_ods_omap.py). Set `distinguishable_search` to `True`.
-- [OMAP based on B+ tree (VLDB 2020)](https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_oblidb.pdf), implemented [here](daoram/omap/bplus_ods_omap.py).
-- [OMAP framework over an underlying search tree (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235), implemented [here](daoram/omap/oram_ods_omap.py). It can be instantiated with any ORAM class in this repo and combined with any tree-based OMAP class in this repo.
-- Cache-optimized AVL and B+ tree variants are implemented [here](daoram/omap/avl_ods_omap_opt.py) and [here](daoram/omap/bplus_ods_omap_opt.py), respectively.
+- [OMAP based on AVL (CCS 2014)](https://dl.acm.org/doi/10.1145/2660267.2660314), implemented [here](daoram/omap/avl_omap.py). Set `distinguishable_search` to `False`.
+- [OMAP based on optimized AVL (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf), implemented [here](daoram/omap/avl_omap.py). Set `distinguishable_search` to `True`.
+- [OMAP based on B+ tree (VLDB 2020)](https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_oblidb.pdf), implemented [here](daoram/omap/bplus_omap.py).
+- [OMAP framework over an underlying search tree (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235), implemented [here](daoram/omap/oram_search_tree_omap.py). It can be instantiated with any ORAM class in this repo and combined with any tree-based OMAP class in this repo.
+- Cache-optimized AVL and B+ tree variants are implemented [here](daoram/omap/avl_omap_cache.py) and [here](daoram/omap/bplus_omap_cache.py), respectively.
 
 ## Project Structure
 

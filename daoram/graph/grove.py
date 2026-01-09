@@ -5,7 +5,7 @@ from decimal import Decimal, localcontext
 from typing import List, Any, Optional, Dict
 
 from daoram.dependency import InteractServer, Data
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
+from daoram.omap.avl_omap_cache import AVLOmapOptimized
 from daoram.oram.mul_path_oram import MulPathOram
 
 
@@ -62,7 +62,7 @@ class Grove:
         meta_bucket_size = self.find_bound()
 
         # Initialize the OMAP.
-        self._pos_omap = AVLOdsOmapOptimized(
+        self._pos_omap = AVLOmapOptimized(
             client=client,
             aes_key=aes_key,
             num_data=num_data,

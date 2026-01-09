@@ -5,11 +5,12 @@ The BaseOmap class defines a set of attributes that an omap should have and some
 """
 
 import math
+import os
 import secrets
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple
 
-from daoram.dependency import AesGcm, BinaryTree, Buckets, Data, InteractServer
+from daoram.dependency import BinaryTree, Data, Encryptor, Helper, InteractServer, PathData
 
 # Root contains the data key and the path.
 ROOT = Tuple[Any, int]
@@ -17,7 +18,7 @@ ROOT = Tuple[Any, int]
 KV_LIST = List[Tuple[Any, Any]]
 
 
-class TreeOdsOmap(ABC):
+class ObliviousSearchTree(ABC):
     def __init__(self,
                  name: str,
                  num_data: int,
@@ -27,9 +28,7 @@ class TreeOdsOmap(ABC):
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  filename: str = None,
-                 aes_key: bytes = None,
-                 num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 encryptor: Encryptor = None):
         """
         Defines the base omap, including its attributes and methods.
 
@@ -41,9 +40,7 @@ class TreeOdsOmap(ABC):
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
-        :param aes_key: The key to use for the AES instance.
-        :param num_key_bytes: The number of bytes the aes key should have.
-        :param use_encryption: A boolean indicating whether to use encryption.
+        :param encryptor: The encryptor to use for encryption.
         """
         # Store the useful input values.
         self._name: str = name
@@ -52,7 +49,7 @@ class TreeOdsOmap(ABC):
         self._key_size: int = key_size
         self._data_size: int = data_size
         self._bucket_size: int = bucket_size
-        self._use_encryption: bool = use_encryption
+        self._encryptor: Encryptor = encryptor
 
         # Compute the level of the binary tree needed.
         self._level: int = int(math.ceil(math.log(num_data, 2))) + 1
@@ -68,10 +65,22 @@ class TreeOdsOmap(ABC):
         self._local: list = []
         self._stash: list = []
 
-        # Use encryption if required.
-        self._aes_key: bytes = aes_key
-        self._num_key_bytes: int = num_key_bytes
-        self._cipher: Optional[AesGcm] = AesGcm(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        # Set dumped data size and disk size for use of encryption or file storage.
+        self._dumped_data_size: Optional[int] = None
+        self._disk_size: Optional[int] = None
+
+        # Compute the padded total data size (needed for encryption or file storage).
+        if self._encryptor or self._filename:
+            self._dumped_data_size = len(
+                Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(data_size)).dump()
+            ) + Helper.LENGTH_HEADER_SIZE
+
+        # Compute the disk length if needed.
+        if self._filename:
+            if encryptor:
+                self._disk_size = encryptor.ciphertext_length(self._dumped_data_size)
+            else:
+                self._disk_size = self._dumped_data_size
 
         # Initialize the client connection.
         self._client: InteractServer = client
@@ -109,24 +118,50 @@ class TreeOdsOmap(ABC):
         """Get the number of bytes equal to the size of actual data block stored in ORAM."""
         raise NotImplementedError
 
-    @abstractmethod
-    def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
+    def _encrypt_path_data(self, path: PathData) -> PathData:
         """
-        Encrypt all data in given buckets.
+        Encrypt all buckets in a PathData dict.
 
-        Note that we first pad data to the desired length and then perform the encryption. This encryption also fills the
-        bucket with the desired amount of dummy data.
+        :param path: PathData dict mapping storage index to bucket.
+        :return: PathData dict with encrypted buckets.
         """
-        raise NotImplementedError
 
-    @abstractmethod
-    def _decrypt_buckets(self, buckets: Buckets) -> List[List[Data]]:
-        """
-        Given encrypted buckets, decrypt all data in it.
+        def _enc_bucket(bucket: List[Data]) -> List[bytes]:
+            """Helper function to add dummy data and encrypt a bucket."""
+            enc_bucket = [
+                self._encryptor.enc(plaintext=data.dump_pad(self._dumped_data_size))
+                for data in bucket
+            ]
 
-        Note that we also remove dummy data where the key is None.
+            # Compute if dummy block is needed.
+            dummy_needed = self._bucket_size - len(bucket)
+            # If needed, perform padding.
+            if dummy_needed > 0:
+                enc_bucket.extend([
+                    self._encryptor.enc(plaintext=Data().dump_pad(self._dumped_data_size))
+                    for _ in range(dummy_needed)
+                ])
+
+            return enc_bucket
+
+        return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
+
+    def _decrypt_path_data(self, path: PathData) -> PathData:
         """
-        raise NotImplementedError
+        Decrypt all buckets in a PathData dict.
+
+        :param path: PathData dict mapping storage index to encrypted bucket.
+        :return: PathData dict with decrypted buckets (dummy blocks filtered out).
+        """
+
+        def _dec_bucket(bucket: List[bytes]) -> List[Data]:
+            """Helper function to decrypt a bucket and filter out dummy data."""
+            return [
+                dec for data in bucket
+                if (dec := Data.load_unpad(self._encryptor.dec(ciphertext=data))).key is not None
+            ]
+
+        return {idx: _dec_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
     def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
@@ -143,7 +178,8 @@ class TreeOdsOmap(ABC):
         self._move_node_to_local_without_eviction(key=key, leaf=leaf)
 
         # Perform eviction and write the path back.
-        self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
+        self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))
+        self._client.execute()
 
     def _move_node_to_local_without_eviction(self, key: Any, leaf: Any) -> None:
         """
@@ -158,11 +194,16 @@ class TreeOdsOmap(ABC):
         found = False
         to_index = len(self._stash)
 
-        # Get the desired path and perform decryption as needed.
-        path = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf))
+        # Read the path from the server.
+        self._client.add_read_path(label=self._name, leaves=[leaf])
+        result = self._client.execute()
+        path_data = result.results[self._name]
+
+        # Decrypt the path.
+        path = self._decrypt_path_data(path=path_data)
 
         # Find the desired data in the path.
-        for bucket in path:
+        for bucket in path.values():
             for data in bucket:
                 if data.key == key:
                     # We append the data we want to stash.
@@ -189,25 +230,25 @@ class TreeOdsOmap(ABC):
             # If also not found in the stash, raise an error.
             raise KeyError(f"The search key {key} is not found.")
 
-    def _evict_stash(self, leaf: int) -> Buckets:
+    def _evict_stash(self, leaves: List[int]) -> PathData:
         """
-        Evict data blocks in the stash while maintaining correctness.
+        Evict data blocks in the stash to one or more paths while maintaining correctness.
 
-        :param leaf: The leaf label of the path we are evicting data to.
-        :return: The leaf label and the path we should write.
+        :param leaves: A list of leaf labels of the paths we are evicting data to.
+        :return: PathData dict mapping storage index to encrypted bucket.
         """
         # Create a temporary stash.
         temp_stash = []
-        # Create a placeholder for the new path.
-        path = [[] for _ in range(self._level)]
+
+        # Create a dictionary contains locations for where all leaves' paths touch.
+        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
 
         # Now we evict the stash by going through all real data in it.
         for data in self._stash:
             # Attempt to insert actual data to the path.
             inserted = BinaryTree.fill_data_to_path(
-                data=data, path=path, leaf=leaf, level=self._level, bucket_size=self._bucket_size
+                data=data, path=path, leaves=leaves, level=self._level, bucket_size=self._bucket_size
             )
-
             # If we were not able to insert data, overflow happened, put the block to the temp stash.
             if not inserted:
                 temp_stash.append(data)
@@ -215,8 +256,7 @@ class TreeOdsOmap(ABC):
         # Update the stash.
         self._stash = temp_stash
 
-        # Note that we return the path in the reversed order because we copy the path from bottom up.
-        return self._encrypt_buckets(buckets=path[::-1])
+        return self._encrypt_path_data(path=path)
 
     def _perform_dummy_operation(self, num_round: int) -> None:
         """Perform the desired number of dummy evictions."""
@@ -229,11 +269,16 @@ class TreeOdsOmap(ABC):
             # Generate a random path.
             leaf = self._get_new_leaf()
 
-            # Read a path from the ODS storage and decrypt it.
-            path = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=leaf))
+            # Read a path from the ODS storage.
+            self._client.add_read_path(label=self._name, leaves=[leaf])
+            result = self._client.execute()
+            path_data = result.results[self._name]
+
+            # Decrypt the path.
+            path = self._decrypt_path_data(path=path_data)
 
             # Add all real data to the stash.
-            for bucket in path:
+            for bucket in path.values():
                 for data in bucket:
                     self._stash.append(data)
 
@@ -242,7 +287,8 @@ class TreeOdsOmap(ABC):
                 raise MemoryError("Stash overflow!")
 
             # Evict the stash and write the path back to the ODS storage.
-            self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
+            self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))
+            self._client.execute()
 
     @abstractmethod
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
@@ -261,7 +307,7 @@ class TreeOdsOmap(ABC):
         :param data: A list of key-value pairs.
         """
         # Let the server store the binary tree.
-        self._client.init(storage={self._name: self._init_ods_storage(data=data)})
+        self._client.init_storage(storage={self._name: self._init_ods_storage(data=data)})
 
     @abstractmethod
     def _init_mul_tree_ods_storage(self, data_list: List[KV_LIST]) -> Tuple[BinaryTree, List[ROOT]]:
@@ -283,7 +329,7 @@ class TreeOdsOmap(ABC):
         # Initialize the server binary tree storage and get a list of roots of AVL trees.
         tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
         # Let the server store the binary tree.
-        self._client.init(storage={self._name: tree})
+        self._client.init_storage(storage={self._name: tree})
         # Return list of roots.
         return root_list
 

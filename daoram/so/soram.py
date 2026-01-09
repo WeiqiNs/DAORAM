@@ -9,7 +9,7 @@ from queue import Queue
 from daoram.dependency.crypto import PRP
 from typing import Any, List
 from daoram.dependency import InteractServer, ServerStorage, Aes
-from daoram.omap import AVLOdsOmap, AVLOdsOmapOptimized
+from daoram.omap import AVLOmap, AVLOmapOptimized
 # Define ServerStorage type
 
 class Soram():
@@ -62,8 +62,8 @@ class Soram():
         self.PRP = PRP(key=aes_key, n=self._extended_size)
 
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
-        self._Ow: AVLOdsOmap = None  # OMAP O_W
-        self._Or: AVLOdsOmap = None  # OMAP O_R
+        self._Ow: AVLOmap = None  # OMAP O_W
+        self._Or: AVLOmap = None  # OMAP O_R
         self._Qw: Queue = None      # Queue Q_W
         self._Qr: Queue = None     # Queue Q_R
 
@@ -163,12 +163,12 @@ class Soram():
 
         # creates two OMAPs denoted by (O𝑊,O𝑅) used to store𝑐 KV pairs, and two queues (𝑄𝑊,𝑄𝑅) of length c
         self._main_storage = [None] * self._extended_size
-        self._Ow  = AVLOdsOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Ow_name, 
-                                         filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                         num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or  = AVLOdsOmapOptimized(num_data = self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Or_name, 
-                                         filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                         num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Ow  = AVLOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Ow_name,
+                                     filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
+                                     num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Or  = AVLOmapOptimized(num_data = self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Or_name,
+                                     filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
+                                     num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
         
         # PRP function 𝐸𝑠𝑘 on Z𝑛+2𝑐−1 to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
