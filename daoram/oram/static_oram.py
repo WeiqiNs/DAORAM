@@ -1,9 +1,7 @@
 """
 This module defines the static oram class, which inherits from PathOram.
 
-StaticOram uses fixed leaf positions based on a PRF of the key, rather than
-randomly reassigning leaves on each access. This breaks obliviousness but
-may be useful for certain non-security-critical scenarios.
+StaticOram uses fixed leaf positions based on a PRF of the key, rather than randomly reassigning leaves on each access.
 """
 import random
 from typing import Any, Optional

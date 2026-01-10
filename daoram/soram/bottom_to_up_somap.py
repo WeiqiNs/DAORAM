@@ -1,10 +1,10 @@
 import pickle
 from typing import Any, Dict
 
-from daoram.dependency.crypto import Aes
+from daoram.dependency.crypto import AesGcm
 from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.omap.avl_omap import AVLOmap
-from daoram.omap.avl_omap_cache import AVLOmapOptimized
+from daoram.omap.avl_omap_cache import AVLOmapCached
 from daoram.oram.static_oram import StaticOram
 
 
@@ -57,7 +57,7 @@ class BottomUpSomap:
         self._use_encryption = use_encryption
 
         # Initialize encryption for list data
-        self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._list_cipher = AesGcm(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
 
         # OMAP caches
         self._Ow: AVLOmap = None
@@ -144,7 +144,7 @@ class BottomUpSomap:
         )
 
         # Initialize OMAP caches and queues
-        self._Ow = AVLOmapOptimized(
+        self._Ow = AVLOmapCached(
             num_data=self._cache_size,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
@@ -158,7 +158,7 @@ class BottomUpSomap:
             use_encryption=self._use_encryption
         )
 
-        self._Or = AVLOmapOptimized(
+        self._Or = AVLOmapCached(
             num_data=self._cache_size,
             key_size=self._num_key_bytes,
             data_size=self._data_size,

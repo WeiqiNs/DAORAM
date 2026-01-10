@@ -5,7 +5,7 @@ from typing import Any, List
 
 from daoram.dependency import InteractServer, Data
 from daoram.dependency.graph import Graph
-from daoram.omap.avl_omap_cache import AVLOmapOptimized
+from daoram.omap.avl_omap_cache import AVLOmapCached
 from daoram.oram.mul_path_oram import MulPathOram
 
 
@@ -47,7 +47,7 @@ class GraphOS:
         self._leaf_range: int = pow(2, self._level - 1)
 
         # Initialize the OMAP.
-        self._omap = AVLOmapOptimized(
+        self._omap = AVLOmapCached(
             client=client,
             aes_key=aes_key,
             num_data=num_data,

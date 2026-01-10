@@ -4,7 +4,7 @@ from daoram.dependency import Encryptor, InteractServer
 from daoram.omap import AVLOmap
 
 
-class AVLOmapOptimized(AVLOmap):
+class AVLOmapCached(AVLOmap):
     def __init__(self,
                  num_data: int,
                  key_size: int,
@@ -61,11 +61,6 @@ class AVLOmapOptimized(AVLOmap):
         else:
             # Not in stash - fetch from server
             self._move_node_to_local(key=key, leaf=leaf)
-
-    def _flush_local_to_stash(self) -> None:
-        """Move all nodes from local to stash and clear local."""
-        self._stash += self._local
-        self._local = []
 
     def insert(self, key: Any, value: Any = None) -> None:
         """
@@ -350,6 +345,6 @@ class AVLOmapOptimized(AVLOmap):
         # Move local to stash and do dummy operations
         num_retrieved = len(self._local)
         self._flush_local_to_stash()
-        self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
+        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved)
 
         return deleted_value

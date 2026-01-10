@@ -3,9 +3,10 @@
 import math
 import os
 from functools import cached_property
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
+from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Data, Encryptor, Helper, InteractServer, \
+    KVPair, PathData
 from daoram.omap.oblivious_search_tree import KV_LIST, ROOT, ObliviousSearchTree
 
 
@@ -20,9 +21,7 @@ class BPlusOmap(ObliviousSearchTree):
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 aes_key: bytes = None,
-                 num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 encryptor: Encryptor = None):
         """
         Initializes the OMAP based on the B+ tree ODS.
 
@@ -35,23 +34,19 @@ class BPlusOmap(ObliviousSearchTree):
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
-        :param aes_key: The key to use for the AES instance.
-        :param num_key_bytes: The number of bytes the aes key should have.
-        :param use_encryption: A boolean indicating whether to use encryption.
+        :param encryptor: The encryptor to use for encryption.
         """
-        # Initialize the parent BaseOmap class.
+        # Initialize the parent ObliviousSearchTree class.
         super().__init__(
             name=name,
             client=client,
-            aes_key=aes_key,
             filename=filename,
             num_data=num_data,
             key_size=key_size,
             data_size=data_size,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
-            num_key_bytes=num_key_bytes,
-            use_encryption=use_encryption
+            encryptor=encryptor
         )
 
         # Save the branching order and middle point.
@@ -63,6 +58,10 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Compute the maximum height of the B+ tree.
         self._max_height: int = math.ceil(math.log(num_data, math.ceil(order / 2)))
+
+        # B+ uses a larger block size, so update disk_size for file storage.
+        if self._filename and self._encryptor:
+            self._disk_size = self._encryptor.ciphertext_length(self._max_block_size)
 
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -92,7 +91,7 @@ class BPlusOmap(ObliviousSearchTree):
                         # The values are (id, leaf), which are integers.
                         values=[(self._num_data - 1, self._num_data - 1) for _ in range(self._order)],
                     ).dump()
-                ).dump_pad()
+                ).dump()
             ),
             len(
                 Data(  # This one is the leaf data.
@@ -104,27 +103,30 @@ class BPlusOmap(ObliviousSearchTree):
                         # The values are actual values.
                         values=[os.urandom(self._data_size) for _ in range(self._order - 1)],
                     ).dump()
-                ).dump_pad()
+                ).dump()
             )
-        )
+        ) + Helper.LENGTH_HEADER_SIZE
 
-    def _encrypt_buckets(self, buckets: List[List[Data]]) -> Buckets:
+    def _encrypt_path_data(self, path: PathData) -> PathData:
         """
-        Encrypt all data in given buckets.
+        Encrypt all data in the given PathData dict.
 
         Note that we first pad data to the desired length and then perform the encryption. This encryption also fills
         the bucket with the desired amount of dummy data.
+
+        :param path: PathData dict mapping storage index to bucket.
+        :return: PathData dict with encrypted buckets.
         """
 
         def _enc_bucket(bucket: List[Data]) -> List[bytes]:
             """Helper function to add dummy data and encrypt a bucket."""
-            # First, each data's value is AVLData; we need to dump it.
+            # First, each data's value is BPlusData; we need to dump it.
             for data in bucket:
                 data.value = data.value.dump()
 
             # Perform encryption.
             enc_bucket = [
-                self._cipher.enc(plaintext=Helper.pad_pickle(data=data.dump_pad(), length=self._max_block_size))
+                self._encryptor.enc(plaintext=Helper.pad_pickle(data=data.dump(), length=self._max_block_size))
                 for data in bucket
             ]
 
@@ -134,37 +136,36 @@ class BPlusOmap(ObliviousSearchTree):
             # If needed, perform padding.
             if dummy_needed > 0:
                 enc_bucket.extend([
-                    self._cipher.enc(plaintext=Helper.pad_pickle(data=Data().dump_pad(), length=self._max_block_size))
+                    self._encryptor.enc(plaintext=Helper.pad_pickle(data=Data().dump(), length=self._max_block_size))
                     for _ in range(dummy_needed)
                 ])
 
             return enc_bucket
 
-        # Return the encrypted list of lists of bytes.
-        return [_enc_bucket(bucket=bucket) for bucket in buckets] if self._use_encryption else buckets
+        return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_buckets(self, buckets: Buckets) -> List[List[Data]]:
-        """Given encrypted buckets, decrypt all data in it."""
+    def _decrypt_path_data(self, path: PathData) -> PathData:
+        """
+        Decrypt all buckets in a PathData dict.
 
-        # First decrypt the data and then load it as AVLData.
+        :param path: PathData dict mapping storage index to encrypted bucket.
+        :return: PathData dict with decrypted buckets (dummy blocks filtered out).
+        """
+
         def _dec_bucket(bucket: List[bytes]) -> List[Data]:
-            """Helper function to add dummy data and encrypt a bucket."""
-            # Perform encryption.
+            """Helper function to decrypt a bucket and filter out dummy data."""
             dec_bucket = [
                 dec for data in bucket
-                if (dec := Data.load_unpad(
-                    Helper.unpad_pickle(data=self._cipher.dec(ciphertext=data)))
-                    ).key is not None
+                if (dec := Data.load_unpad(self._encryptor.dec(ciphertext=data))).key is not None
             ]
 
-            # Load data.
+            # Load BPlusData for each data.
             for data in dec_bucket:
                 data.value = BPlusData.from_pickle(data=data.value)
 
             return dec_bucket
 
-        # Return the decrypted list of lists of Data.
-        return [_dec_bucket(bucket=bucket) for bucket in buckets] if self._use_encryption else buckets
+        return {idx: _dec_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
     def _get_bplus_data(self, keys: Any = None, values: Any = None) -> Data:
         """From the input key and value, create the data should be stored in the B+ tree oram."""
@@ -188,7 +189,8 @@ class BPlusOmap(ObliviousSearchTree):
             num_data=self._num_data,
             data_size=self._max_block_size,
             bucket_size=self._bucket_size,
-            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+            disk_size=self._disk_size,
+            encryption=True if self._encryptor else False,
         )
 
         # Insert all the provided KV pairs to the B+ tree.
@@ -199,10 +201,14 @@ class BPlusOmap(ObliviousSearchTree):
 
             # Insert the kv pairs to the B+ tree.
             for kv_pair in data:
+                # Convert tuple to KVPair if needed.
+                if isinstance(kv_pair, tuple):
+                    kv_pair = KVPair(key=kv_pair[0], value=kv_pair[1])
                 root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
             # Get node from B+ tree and fill them to the oram storage.
-            data_list = bplus_tree.get_data_list(root=root, block_id=self._block_id, encryption=self._use_encryption)
+            data_list = bplus_tree.get_data_list(root=root, block_id=self._block_id,
+                                                 encryption=self._encryptor is not None)
 
             # Update the block id.
             self._block_id += len(data_list)
@@ -216,8 +222,8 @@ class BPlusOmap(ObliviousSearchTree):
             self.root = (root.id, root.leaf)
 
         # Encryption and fill with dummy data if needed.
-        if self._use_encryption:
-            tree.storage.encrypt(encryptor=self._cipher)
+        if self._encryptor:
+            tree.storage.encrypt(encryptor=self._encryptor)
 
         return tree
 
@@ -234,7 +240,8 @@ class BPlusOmap(ObliviousSearchTree):
             num_data=self._num_data,
             data_size=self._max_block_size,
             bucket_size=self._bucket_size,
-            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+            disk_size=self._disk_size,
+            encryption=True if self._encryptor else False,
         )
 
         # Create a root list for each B+ tree.
@@ -242,7 +249,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Enumerate each key-pair list in the input list.
         for index, data in enumerate(data_list):
-            # Insert all data to the AVL tree.
+            # Insert all data to the B+ tree.
             if data:
                 # Create an empty root and the B+ tree object.
                 root = BPlusTreeNode()
@@ -250,18 +257,21 @@ class BPlusOmap(ObliviousSearchTree):
 
                 # Insert the kv pairs to the B+ tree.
                 for kv_pair in data:
+                    # Convert tuple to KVPair if needed.
+                    if isinstance(kv_pair, tuple):
+                        kv_pair = KVPair(key=kv_pair[0], value=kv_pair[1])
                     root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
                 # Get node from B+ tree and fill them to the oram storage.
-                data_list = bplus_tree.get_data_list(
-                    root=root, block_id=self._block_id, encryption=self._use_encryption
+                node_data_list = bplus_tree.get_data_list(
+                    root=root, block_id=self._block_id, encryption=self._encryptor is not None
                 )
 
                 # Update the block id.
-                self._block_id += len(data_list)
+                self._block_id += len(node_data_list)
 
                 # Fill the oram tree according to the position map.
-                for bplus_data in data_list:
+                for bplus_data in node_data_list:
                     # Node is a list containing leaf info and then details of the node.
                     tree.fill_data_to_storage_leaf(data=bplus_data)
 
@@ -272,8 +282,8 @@ class BPlusOmap(ObliviousSearchTree):
                 root_list.append(None)
 
         # Encryption and fill with dummy data if needed.
-        if self._use_encryption:
-            tree.storage.encrypt(encryptor=self._cipher)
+        if self._encryptor:
+            tree.storage.encrypt(encryptor=self._encryptor)
 
         return tree, root_list
 
@@ -316,7 +326,8 @@ class BPlusOmap(ObliviousSearchTree):
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
+                    self._client.execute()
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -329,7 +340,8 @@ class BPlusOmap(ObliviousSearchTree):
                     node.value.values[index] = (node.value.values[index][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
+                    self._client.execute()
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -342,7 +354,8 @@ class BPlusOmap(ObliviousSearchTree):
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     # Add the node to stash and perform eviction before grabbing the next path.
                     self._stash.append(node)
-                    self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
+                    self._client.execute()
                     # Move the next node to local.
                     self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
                     break
@@ -520,13 +533,17 @@ class BPlusOmap(ObliviousSearchTree):
             else:
                 break
 
-    def insert(self, key: Any, value: Any) -> None:
+    def insert(self, key: Any, value: Any = None) -> None:
         """
         Given key-value pair, insert the pair to the tree.
 
         :param key: The search key of interest.
         :param value: The value to insert.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return
+
         # If the current root is empty, we simply set root as this new block.
         if self.root is None:
             # Create a new bplus data block.
@@ -538,6 +555,10 @@ class BPlusOmap(ObliviousSearchTree):
             self._perform_dummy_operation(num_round=3 * self._max_height)
             return
 
+        # Make sure local is empty before starting.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
+
         # Get all nodes we need to visit until finding the key.
         self._find_leaf_to_local(key=key)
 
@@ -545,7 +566,7 @@ class BPlusOmap(ObliviousSearchTree):
         leaf = self._local[-1]
 
         # Find the proper place to insert the leaf.
-        for index, each_key in enumerate(leaf.value.values):
+        for index, each_key in enumerate(leaf.value.keys):
             if key < each_key:
                 leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
                 leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
@@ -562,8 +583,7 @@ class BPlusOmap(ObliviousSearchTree):
         self._perform_insertion()
 
         # Append local data to stash and clear local.
-        self._stash += self._local
-        self._local = []
+        self._flush_local_to_stash()
 
         # Perform the desired number of dummy evictions.
         self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
@@ -577,9 +597,18 @@ class BPlusOmap(ObliviousSearchTree):
         :param value: The updated value.
         :return: The (old) value corresponding to the search key.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
+
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform search.")
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
+
+        # Make sure local is empty before starting.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
 
         # Get all nodes we need to visit until finding the key.
         self._find_leaf_to_local(key=key)
@@ -599,8 +628,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
-        self._stash += self._local
-        self._local = []
+        self._flush_local_to_stash()
         self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
 
         return search_value
@@ -615,9 +643,18 @@ class BPlusOmap(ObliviousSearchTree):
         :param value: The value to update.
         :return: The (old) value corresponding to the search key.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=self._max_height)
+            return None
+
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform search.")
+            self._perform_dummy_operation(num_round=self._max_height)
+            return None
+
+        # Make sure local is empty before starting.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
 
         # Get all nodes we need to visit until finding the key.
         old_leaf, num_retrieved_nodes = self._find_leaf(key=key)
@@ -636,11 +673,277 @@ class BPlusOmap(ObliviousSearchTree):
                 break
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
-        self._stash += self._local
-        self._local = []
+        self._flush_local_to_stash()
+
         # Perform one eviction.
-        self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
+        self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
+        self._client.execute()
+
         # And then the dummy evictions.
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
 
         return search_value
+
+    def _is_leaf_node(self, node: Data) -> bool:
+        """Check if a node is a leaf node (keys and values have same length)."""
+        return len(node.value.keys) == len(node.value.values)
+
+    def _find_path_for_delete(self, key: Any) -> Tuple[Dict[int, Data], List[int]]:
+        """
+        Find the path from root to leaf for the given key, returning nodes by level.
+
+        :param key: Search key of interest.
+        :return: Tuple of (path_nodes dict keyed by level, child_indices list).
+        """
+        # Path nodes stored by level: {0: root, 1: child, 2: grandchild, ...}
+        path_nodes: Dict[int, Data] = {}
+        child_indices: List[int] = []
+        level = 0
+
+        # Get the root node.
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+        node = self._local.pop()  # Remove from local, store in our dict
+
+        # Update node leaf and root.
+        node.leaf = self._get_new_leaf()
+        self.root = (node.key, node.leaf)
+        path_nodes[level] = node
+
+        # Traverse down to leaf.
+        while not self._is_leaf_node(node):
+            # Sample a new leaf for the child.
+            new_leaf = self._get_new_leaf()
+
+            # Find the child index to descend to.
+            child_index = len(node.value.keys)
+            for index, each_key in enumerate(node.value.keys):
+                if key < each_key:
+                    child_index = index
+                    break
+                elif key == each_key:
+                    child_index = index + 1
+                    break
+
+            # Record the child index.
+            child_indices.append(child_index)
+
+            # Move the next node to local.
+            child_key, child_leaf = node.value.values[child_index]
+            self._move_node_to_local(key=child_key, leaf=child_leaf)
+            child_node = self._local.pop()  # Remove from local, store in our dict
+
+            # Update the parent's pointer to child with new leaf.
+            node.value.values[child_index] = (child_key, new_leaf)
+
+            # Update child's leaf and store in path.
+            child_node.leaf = new_leaf
+            level += 1
+            path_nodes[level] = child_node
+            node = child_node
+
+        return path_nodes, child_indices
+
+    def _fetch_sibling_for_delete(self, parent: Data, sibling_index: int) -> Data:
+        """
+        Fetch a sibling node from storage for delete operation.
+
+        :param parent: The parent node containing the sibling.
+        :param sibling_index: Index of the sibling in parent's values.
+        :return: The sibling node.
+        """
+        sibling_key, sibling_leaf = parent.value.values[sibling_index]
+        new_leaf = self._get_new_leaf()
+
+        # Move sibling to local then pop it out.
+        self._move_node_to_local(key=sibling_key, leaf=sibling_leaf)
+        sibling = self._local.pop()
+
+        # Update the sibling's leaf.
+        sibling.leaf = new_leaf
+
+        # Update parent's pointer to sibling.
+        parent.value.values[sibling_index] = (sibling_key, new_leaf)
+
+        return sibling
+
+    def delete(self, key: Any) -> Any:
+        """
+        Given a search key, delete the corresponding node from the tree.
+
+        :param key: The search key of interest.
+        :return: The value of the deleted node, or None if not found.
+        """
+        if key is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
+
+        # If the current root is empty, nothing to delete.
+        if self.root is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
+
+        # Compute the minimum number of keys each node should have.
+        min_keys = (self._order - 1) // 2
+
+        # Find path from root to leaf, stored by level.
+        path_nodes, child_indices = self._find_path_for_delete(key=key)
+        leaf_level = len(path_nodes) - 1
+        leaf = path_nodes[leaf_level]
+
+        # Separately track fetched siblings (not on the original path).
+        fetched_siblings: List[Data] = []
+
+        # Find and delete key from leaf.
+        key_index = None
+        deleted_value = None
+        for i, k in enumerate(leaf.value.keys):
+            if k == key:
+                key_index = i
+                deleted_value = leaf.value.values[i]
+                break
+
+        # Key not found.
+        if key_index is None:
+            # Flush all path nodes to stash.
+            for node in path_nodes.values():
+                self._stash.append(node)
+            self._perform_dummy_operation(num_round=3 * self._max_height - len(path_nodes))
+            return None
+
+        # Delete key and value from leaf.
+        leaf.value.keys.pop(key_index)
+        leaf.value.values.pop(key_index)
+
+        # Handle root leaf case (child_indices is empty when root is the leaf).
+        if not child_indices:
+            if len(leaf.value.keys) == 0:
+                self.root = None
+            else:
+                self._stash.append(leaf)
+            self._perform_dummy_operation(num_round=3 * self._max_height - 1)
+            return deleted_value
+
+        # Handle underflow from bottom to top.
+        node_level = leaf_level
+        node = leaf
+
+        for level in range(len(child_indices) - 1, -1, -1):
+            parent = path_nodes[level]
+            child_index = child_indices[level]
+
+            # No underflow, done.
+            if len(node.value.keys) >= min_keys:
+                break
+
+            # Get sibling info.
+            has_left = child_index > 0
+            has_right = child_index < len(parent.value.values) - 1
+
+            left_sib = None
+            right_sib = None
+
+            # Try borrow from left sibling.
+            if has_left:
+                left_sib = self._fetch_sibling_for_delete(parent, child_index - 1)
+                fetched_siblings.append(left_sib)
+                if len(left_sib.value.keys) > min_keys:
+                    if self._is_leaf_node(node):
+                        # Borrow from left for leaf.
+                        node.value.keys.insert(0, left_sib.value.keys.pop())
+                        node.value.values.insert(0, left_sib.value.values.pop())
+                        parent.value.keys[child_index - 1] = node.value.keys[0]
+                    else:
+                        # Borrow from left for internal node.
+                        node.value.keys.insert(0, parent.value.keys[child_index - 1])
+                        node.value.values.insert(0, left_sib.value.values.pop())
+                        parent.value.keys[child_index - 1] = left_sib.value.keys.pop()
+                    break
+
+            # Try borrow from right sibling.
+            if has_right:
+                right_sib = self._fetch_sibling_for_delete(parent, child_index + 1)
+                fetched_siblings.append(right_sib)
+                if len(right_sib.value.keys) > min_keys:
+                    if self._is_leaf_node(node):
+                        # Borrow from right for leaf.
+                        node.value.keys.append(right_sib.value.keys.pop(0))
+                        node.value.values.append(right_sib.value.values.pop(0))
+                        parent.value.keys[child_index] = right_sib.value.keys[0]
+                    else:
+                        # Borrow from right for internal node.
+                        node.value.keys.append(parent.value.keys[child_index])
+                        node.value.values.append(right_sib.value.values.pop(0))
+                        parent.value.keys[child_index] = right_sib.value.keys.pop(0)
+                    break
+
+            # Cannot borrow, must merge. Prefer left sibling.
+            if has_left and left_sib is not None:
+                if self._is_leaf_node(node):
+                    # Merge leaf into left sibling.
+                    left_sib.value.keys.extend(node.value.keys)
+                    left_sib.value.values.extend(node.value.values)
+                else:
+                    # Merge internal node into left sibling.
+                    left_sib.value.keys.append(parent.value.keys[child_index - 1])
+                    left_sib.value.keys.extend(node.value.keys)
+                    left_sib.value.values.extend(node.value.values)
+
+                # Remove key and child pointer from parent.
+                parent.value.keys.pop(child_index - 1)
+                parent.value.values.pop(child_index)
+
+                # Mark merged node as removed (don't add to stash later).
+                del path_nodes[node_level]
+
+            elif has_right and right_sib is not None:
+                if self._is_leaf_node(node):
+                    # Merge right sibling into node.
+                    node.value.keys.extend(right_sib.value.keys)
+                    node.value.values.extend(right_sib.value.values)
+                else:
+                    # Merge right sibling into node (internal).
+                    node.value.keys.append(parent.value.keys[child_index])
+                    node.value.keys.extend(right_sib.value.keys)
+                    node.value.values.extend(right_sib.value.values)
+
+                # Remove key and child pointer from parent.
+                parent.value.keys.pop(child_index)
+                parent.value.values.pop(child_index + 1)
+
+                # Remove merged sibling from fetched_siblings (don't add to stash).
+                fetched_siblings.remove(right_sib)
+
+            # Move up to parent for next iteration.
+            node_level = level
+            node = parent
+
+        # Check if root needs replacement.
+        root_node = path_nodes.get(0)
+        if root_node is not None and len(root_node.value.keys) == 0:
+            if self._is_leaf_node(root_node):
+                self.root = None
+            else:
+                # Root has no keys but has one child - promote child to root.
+                child_key, child_leaf = root_node.value.values[0]
+                self.root = (child_key, child_leaf)
+            # Remove old root from path_nodes.
+            del path_nodes[0]
+
+        # Update root pointer if root still exists.
+        if self.root is not None and 0 in path_nodes:
+            root_node = path_nodes[0]
+            self.root = (root_node.key, root_node.leaf)
+
+        # Flush all remaining path nodes and fetched siblings to stash.
+        total_nodes = 0
+        for node in path_nodes.values():
+            self._stash.append(node)
+            total_nodes += 1
+        for sib in fetched_siblings:
+            self._stash.append(sib)
+            total_nodes += 1
+
+        # Perform dummy operations.
+        self._perform_dummy_operation(num_round=3 * self._max_height - total_nodes)
+
+        return deleted_value

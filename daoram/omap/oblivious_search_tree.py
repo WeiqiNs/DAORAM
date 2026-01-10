@@ -179,6 +179,11 @@ class ObliviousSearchTree(ABC):
                 return i
         return -1
 
+    def _flush_local_to_stash(self) -> None:
+        """Move all nodes from local to stash and clear local."""
+        self._stash += self._local
+        self._local = []
+
     def _move_node_to_local(self, key: Any, leaf: int) -> None:
         """
         Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
