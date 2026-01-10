@@ -317,13 +317,21 @@ class GroupPathOmap:
         This keeps the single-round batch read/write property: one read_query and one write_query.
         """
         group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
+        group_seed = self._group_seed_map[group_index]
         leaves = [random.randint(0, self._num_groups - 1)]
 
         raw_paths = self._client.read_query(label=self._storage_label, leaf=leaves)
         paths = self._decrypt_buckets(buckets=raw_paths)
 
+        for bucket in paths:
+            for block in bucket:
+                self._stash.append(block)
+
+        seed = group_index.to_bytes(4, byteorder="big") + group_seed[0].to_bytes(2,
+                                                                                 byteorder="big") + group_seed[1].to_bytes(
+            2, byteorder="big")
         data = Data(key=key,
-                    leaf=Helper.hash_data_to_leaf(prf=self._leaf_prf, data=self._group_seed_map[group_index][1],
+                    leaf=Helper.hash_data_to_leaf(prf=self._leaf_prf, data=seed,
                                                   map_size=self._num_groups), value=value)
         self._group_seed_map[group_index][1] += 1
         self._stash.append(data)

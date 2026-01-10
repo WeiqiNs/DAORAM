@@ -13,12 +13,16 @@ def test_group_path_omap_basic():
 
     # create OMAP with 4 groups
     omap = GroupPathOmap(num_groups=pow(2,10), key_size=4, data_size=16, client=server, bucket_size=4,
-                         use_encryption=False)
+                         use_encryption=True)
 
     # init server storage with provided data
     omap.init_server_storage(data=data)
 
     # search all keys and verify
+    for k, v in data:
+        got = omap.search(k)
+        assert got == v
+
     for k, v in data:
         got = omap.search(k)
         assert got == v
