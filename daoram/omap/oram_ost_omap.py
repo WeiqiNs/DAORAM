@@ -5,7 +5,7 @@ from daoram.omap.oblivious_search_tree import ObliviousSearchTree
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
-class OramSearchTreeOmap:
+class OramOstOmap:
     def __init__(self, num_data: int, ost: ObliviousSearchTree, oram: TreeBaseOram):
         """Initialize the proposed construction for optimal omap.
 

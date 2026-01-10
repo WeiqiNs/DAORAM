@@ -39,7 +39,7 @@ detailed overview of all included algorithms.
 - [OMAP based on B+ tree (VLDB 2020)](https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_oblidb.pdf),
   implemented [here](daoram/omap/bplus_omap.py).
 - [OMAP framework over an underlying search tree (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235),
-  implemented [here](daoram/omap/oram_search_tree_omap.py). It can be instantiated with any ORAM class in this repo and
+  implemented [here](daoram/omap/oram_ost_omap.py). It can be instantiated with any ORAM class in this repo and
   combined with any tree-based OMAP class in this repo.
 - Cache-optimized AVL and B+ tree variants are implemented [here](daoram/omap/avl_omap_cache.py)
   and [here](daoram/omap/bplus_omap_cache.py), respectively.

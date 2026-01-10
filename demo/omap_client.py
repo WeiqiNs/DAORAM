@@ -4,7 +4,7 @@ Each function shows how the client should initialize the server and how to perfo
 """
 
 from daoram.dependency import InteractRemoteServer
-from daoram.omap import AVLOmap, BPlusOmap, OramSearchTreeOmap
+from daoram.omap import AVLOmap, BPlusOmap, OramOstOmap
 from daoram.oram import DAOram
 
 
@@ -72,7 +72,7 @@ def daoram_avl_omap_client():
     oram = DAOram(num_data=num_data, data_size=10, client=client)
 
     # Create the omap object.
-    omap = OramSearchTreeOmap(num_data=num_data, ost=ods, oram=oram)
+    omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
 
     # Initialize the client to make a connection.
     client.init_connection()
@@ -106,7 +106,7 @@ def daoram_bplus_omap_client():
     oram = DAOram(num_data=num_data, data_size=10, client=client)
 
     # Create the omap object.
-    omap = OramSearchTreeOmap(num_data=num_data, ost=ods, oram=oram)
+    omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
 
     # Initialize the client to make a connection.
     client.init_connection()

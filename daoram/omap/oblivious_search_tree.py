@@ -167,6 +167,18 @@ class ObliviousSearchTree(ABC):
         """Get a random leaf label within the range."""
         return secrets.randbelow(self._leaf_range)
 
+    def _find_in_stash(self, key: Any) -> int:
+        """
+        Check if a node with the given key is in the stash.
+
+        :param key: The key to search for.
+        :return: Index in stash if found, -1 otherwise.
+        """
+        for i, node in enumerate(self._stash):
+            if node.key == key:
+                return i
+        return -1
+
     def _move_node_to_local(self, key: Any, leaf: int) -> None:
         """
         Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
@@ -219,13 +231,12 @@ class ObliviousSearchTree(ABC):
 
         # If the desired data is not found in the path, we check the stash.
         if not found:
-            for i in range(to_index):
-                # If we find the data, we add it to local and remove it from the stash.
-                if self._stash[i].key == key:
-                    self._local.append(self._stash[i])
-                    del self._stash[i]
-                    # Terminate the function.
-                    return
+            stash_idx = self._find_in_stash(key)
+            if stash_idx >= 0 and stash_idx < to_index:
+                # Found in stash - move to local and remove from stash.
+                self._local.append(self._stash[stash_idx])
+                del self._stash[stash_idx]
+                return
 
             # If also not found in the stash, raise an error.
             raise KeyError(f"The search key {key} is not found.")
