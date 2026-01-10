@@ -5,9 +5,9 @@ MulPathOram extends PathOram to support batch operations where multiple paths
 are read and written at once, improving efficiency for operations that need
 to access multiple keys.
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
-from daoram.dependency import BinaryTree, Data, Encryptor, InteractServer, PathData, UNSET
+from daoram.dependency import Encryptor, InteractServer, PathData, UNSET
 from daoram.oram.path_oram import PathOram
 
 
@@ -59,10 +59,10 @@ class MulPathOram(PathOram):
         self._stash = value
 
     def _retrieve_mul_data_blocks(
-        self,
-        key_leaf_map: Dict[int, int],
-        path: PathData,
-        values: Dict[int, Any] = None
+            self,
+            key_leaf_map: Dict[int, int],
+            path: PathData,
+            values: Dict[int, Any] = None
     ) -> Dict[int, Any]:
         """
         Retrieve multiple data blocks from the path. If values provided, write them.
@@ -119,9 +119,9 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys(
-        self,
-        key_value_map: Dict[int, Any] = None,
-        keys: List[int] = None
+            self,
+            key_value_map: Dict[int, Any] = None,
+            keys: List[int] = None
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys. Reads all paths at once,
@@ -180,9 +180,9 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys_without_eviction(
-        self,
-        key_value_map: Dict[int, Any] = None,
-        keys: List[int] = None
+            self,
+            key_value_map: Dict[int, Any] = None,
+            keys: List[int] = None
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys without eviction.
