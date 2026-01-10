@@ -322,4 +322,3 @@ class TestOramOdsOmap:
         # Issue some search queries.
         for i in range(NUM_DATA):
             assert omap.search(key=f"Key {i}") == f"Value {i}"
-

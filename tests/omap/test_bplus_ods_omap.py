@@ -347,4 +347,3 @@ class TestBPlusOdsOmapOptimized:
             # Fast search for data in this root.
             for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
                 assert omap.fast_search(key=j) == j
-

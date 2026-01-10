@@ -10,12 +10,12 @@ import random
 import sys
 
 from daoram.dependency.interact_server import InteractLocalServer
+
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 print("project_root: ", project_root)
 sys.path.insert(0, project_root)
 
 import time
-from daoram.dependency import InteractRemoteServer
 from daoram.so import BottomUpSomap
 
 
@@ -27,7 +27,7 @@ def main():
     num_data = pow(2, 14)
     cache_size = 200  # Cache size (window parameter c)
     data_size = 1024  # Data block size in bytes
-    
+
     # Create BottomUpSomap instance
     somap = BottomUpSomap(
         num_data=num_data,
@@ -45,11 +45,11 @@ def main():
 
     for i in range(num_data):
         start_time = time.time()
-        value = somap.access(key=i, op="write", value=i+1)
+        value = somap.access(key=i, op="write", value=i + 1)
         value = somap.access(key=i, op="read")
         end_time = time.time() - start_time
         print(f"Updated key {i} value:{value} in {end_time:.2f} seconds")
-        
+
     somap.adjust_cache_size(40)
 
     for i in range(num_data):
@@ -63,6 +63,7 @@ def main():
         # Read and verify
         read_value = somap.access(key=random_key, op="read")
         print(f"Loop progress: {i}, Random key: {random_key}, Read value: {read_value}")
+
 
 if __name__ == "__main__":
     start_time = time.time()

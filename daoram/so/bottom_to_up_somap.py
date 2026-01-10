@@ -1,11 +1,12 @@
-import os
-from daoram.dependency.interact_server import InteractServer, ServerStorage
+import pickle
+from typing import Any, Dict
+
 from daoram.dependency.crypto import Aes
+from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.omap.avl_omap import AVLOmap
 from daoram.omap.avl_omap_cache import AVLOmapOptimized
 from daoram.oram.static_oram import StaticOram
-from typing import Any, Dict
-import pickle
+
 
 class BottomUpSomap:
     """
@@ -15,7 +16,7 @@ class BottomUpSomap:
     This protocol maintains two OMAP caches (O_W for writes and O_R for reads) and two queues (Q_W and Q_R)
     to provide oblivious access with adjustable security parameters.
     """
-    
+
     def __init__(self,
                  num_data: int,
                  cache_size: int,
@@ -54,24 +55,24 @@ class BottomUpSomap:
         self._aes_key = aes_key
         self._num_key_bytes = num_key_bytes
         self._use_encryption = use_encryption
-        
+
         # Initialize encryption for list data
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
-        
+
         # OMAP caches
         self._Ow: AVLOmap = None
         self._Or: AVLOmap = None
-        
+
         # Queues
-        self._Qw: list = []  
-        self._Qr: list = [] 
-        
+        self._Qw: list = []
+        self._Qr: list = []
+
         # Static ORAM tree (server state D_S)
         self._Ds: StaticOram = None
-        
+
         # Timestamp management
         self._timestamp = 0
-        
+
         self._Qw_len = 0
         self._Qr_len = 0
 
@@ -93,7 +94,7 @@ class BottomUpSomap:
         """Encrypt data if encryption is enabled"""
         if not self._use_encryption:
             return data
-        
+
         try:
             # Serialize the data
             serialized_data = pickle.dumps(data)
@@ -103,12 +104,12 @@ class BottomUpSomap:
         except Exception as e:
             print(f"Error encrypting data: {e}")
             return data
-    
+
     def _decrypt_data(self, encrypted_data: Any) -> Any:
         """Decrypt data if encryption is enabled"""
         if not self._use_encryption:
             return encrypted_data
-        
+
         try:
             # Decrypt the data
             decrypted_data = self._list_cipher.dec(encrypted_data)
@@ -118,7 +119,7 @@ class BottomUpSomap:
         except Exception as e:
             print(f"Error decrypting data: {e}")
             return encrypted_data
-    
+
     def setup(self, data_map: Dict[int, Any] = None) -> None:
         """
         Initialization phase: Build client and server states
@@ -127,7 +128,7 @@ class BottomUpSomap:
         """
         if data_map is None:
             data_map = {}
-            
+
         # Initialize static ORAM tree D_S
         self._Ds = StaticOram(
             num_data=self._num_data,
@@ -141,7 +142,7 @@ class BottomUpSomap:
             num_key_bytes=self._num_key_bytes,
             use_encryption=self._use_encryption
         )
-        
+
         # Initialize OMAP caches and queues
         self._Ow = AVLOmapOptimized(
             num_data=self._cache_size,
@@ -156,7 +157,7 @@ class BottomUpSomap:
             num_key_bytes=self._num_key_bytes,
             use_encryption=self._use_encryption
         )
-        
+
         self._Or = AVLOmapOptimized(
             num_data=self._cache_size,
             key_size=self._num_key_bytes,
@@ -170,7 +171,7 @@ class BottomUpSomap:
             num_key_bytes=self._num_key_bytes,
             use_encryption=self._use_encryption
         )
-        
+
         # Initialize OMAP storage
         st_ow = self._Ow._init_ods_storage([])
         st_or = self._Or._init_ods_storage([])
@@ -183,7 +184,7 @@ class BottomUpSomap:
             self._Qr_name: self._Qr,
             self._Ds_name: self._Ds._init_storage_on_pos_map(data_map=data_map)
         }
-        
+
         self._client.init(server_storage)
 
     def access(self, key: Any, op: str, value: Any = None) -> Any:
@@ -205,50 +206,50 @@ class BottomUpSomap:
         if value_ow is not None:
             old_value = value_ow
             # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key = None)
+            self._Ds.operate_on_key(op="r", key=None)
             # update (𝑘,𝑣) in O_W
             if op == 'read':
                 self._Ow.search(key)
             else:
                 self._Ow.search(key, value)
-                
+
             self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Dummy"))
-               
+
         # Case b: Key is in read cache O_R
         elif value_or is not None:
-            old_value,_ = value_or
+            old_value, _ = value_or
             # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key = None)
+            self._Ds.operate_on_key(op="r", key=None)
             #  insert (𝑘,𝑣) to O_W
             if op == 'read':
-                self._Ow.insert(key, old_value)  
+                self._Ow.insert(key, old_value)
             else:
                 self._Ow.insert(key, value)
-            
+
             self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
-              
+
         # Case c: Key is not in cache
         else:
             # Retrieve from static ORAM tree using path number
             old_value = self._Ds.operate_on_key(op="r", key=key)
             #  insert (𝑘,𝑣) to O_W
             if op == 'read':
-                self._Ow.insert(key, old_value)  
+                self._Ow.insert(key, old_value)
             else:
                 self._Ow.insert(key, value)
 
             self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
 
         self._Qw_len += 1
-                         
+
         # Adjust security level
         self._adjust_security_level()
 
         # Update timestamp and operation count
         self._timestamp += 1
-        
+
         return old_value
-    
+
     def _adjust_security_level(self) -> None:
         """
         Adjust security level: Dynamically manage cache sizes
@@ -266,12 +267,12 @@ class BottomUpSomap:
             for _ in range(self._Qw_len - self._cache_size):
                 popped_items.append(self.operate_on_list(label=self._Qw_name, op="pop"))
             self._Qw_len = self._cache_size
-           
+
             # Process each popped key-value pair
             for key, marker in popped_items:
                 # Actual key
-                if marker == "Key":  
-                    
+                if marker == "Key":
+
                     # delete form Ow and Move to O_R cache
                     value = self._Ow.delete(key)
 
@@ -281,17 +282,17 @@ class BottomUpSomap:
                     tmp = self._Or.search(key)
                     if tmp is None:
                         self._Or.insert(key, (value, self._timestamp))
-                        
+
                     # If some of them already exist in Or
                     else:
                         self._Or.search(key, (value, self._timestamp))
 
                     self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
                     self._Qr_len += 1
-        
+
                 else:
                     self._Ow.delete(None)
-                    self._Ds.operate_on_key(op="r", key = None)
+                    self._Ds.operate_on_key(op="r", key=None)
                     self._Or.insert(None)
                     self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
 
@@ -330,14 +331,14 @@ class BottomUpSomap:
             self._cache_size = new_cache_size
             # Immediately adjust security level to adapt to new size
             self._adjust_security_level()
-    
-    def operate_on_list(self, label:str, op: str, pos: int = None, data: Any = None)-> Any:
+
+    def operate_on_list(self, label: str, op: str, pos: int = None, data: Any = None) -> Any:
         """Perform an operation on a list stored on the server"""
         if op == 'insert':
             # Encrypt data before inserting if encryption is enabled
             encrypted_data = self._encrypt_data(data)
             self._client.list_insert(label=label, value=encrypted_data)
-        elif op == 'pop':            
+        elif op == 'pop':
             # Get the encrypted data from the list
             encrypted_data = self._client.list_pop(label=label)
             # Decrypt the data if encryption is enabled

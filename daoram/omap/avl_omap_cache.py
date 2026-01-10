@@ -1,4 +1,5 @@
 from typing import Any
+
 from daoram.dependency import Encryptor, InteractServer
 from daoram.omap import AVLOmap
 

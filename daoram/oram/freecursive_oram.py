@@ -354,7 +354,8 @@ class FreecursiveOram(TreeBaseOram):
         if key_two is not None:
             raise KeyError(f"Key {key_two} not found.")
 
-    def _update_block_leaves(self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int, path: PathData) -> None:
+    def _update_block_leaves(self, key_one: int, key_two: int, n_leaf_one: int, n_leaf_two: int,
+                             path: PathData) -> None:
         """
         Perform a null operation to update leaves of a data block.
 

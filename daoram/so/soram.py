@@ -3,13 +3,15 @@ SORAM is a type of ORAM that provides access pattern protection under a weaker t
 where the adversary can only observe access patterns of consecutive c operations.
 It is more efficient than traditional ORAM while still providing security guarantees.
 """
-import os
 import pickle
 from queue import Queue
-from daoram.dependency.crypto import PRP
 from typing import Any, List
+
 from daoram.dependency import InteractServer, ServerStorage, Aes
+from daoram.dependency.crypto import PRP
 from daoram.omap import AVLOmap, AVLOmapOptimized
+
+
 # Define ServerStorage type
 
 class Soram():
@@ -64,8 +66,8 @@ class Soram():
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
         self._Ow: AVLOmap = None  # OMAP O_W
         self._Or: AVLOmap = None  # OMAP O_R
-        self._Qw: Queue = None      # Queue Q_W
-        self._Qr: Queue = None     # Queue Q_R
+        self._Qw: Queue = None  # Queue Q_W
+        self._Qr: Queue = None  # Queue Q_R
 
         self._Ow_name = "O_W"
         self._Or_name = "O_R"
@@ -87,10 +89,10 @@ class Soram():
         """
         if not self._use_encryption or self._list_cipher is None or data is None:
             return data
-        
+
         # Serialize the data
         serialized_data = pickle.dumps(data)
-        
+
         # Encrypt the serialized data
         return self._list_cipher.enc(serialized_data)
 
@@ -103,20 +105,20 @@ class Soram():
         """
         if not self._use_encryption or self._list_cipher is None or encrypted_data is None:
             return encrypted_data
-        
+
         # Decrypt the data
         decrypted_data = self._list_cipher.dec(encrypted_data)
-        
+
         # Deserialize the data
         return pickle.loads(decrypted_data)
 
-    def operate_on_list(self, label:str, op: str, pos: int = None, data: Any = None)-> Any:
+    def operate_on_list(self, label: str, op: str, pos: int = None, data: Any = None) -> Any:
         """Perform an operation on a key in the SORAM"""
         if op == 'insert':
             # Encrypt data before sending to server
             encrypted_data = self._encrypt_data(data)
             self._client.list_insert(label=label, value=encrypted_data)
-        elif op == 'pop':            
+        elif op == 'pop':
             # Get encrypted data from server and decrypt it
             encrypted_data = self._client.list_pop(label=label)
             return self._decrypt_data(encrypted_data)
@@ -159,17 +161,20 @@ class Soram():
 
         # initializes a variable 𝑑 = 0 as the index for dummy data
         self._dummy_index = 0
-            
 
         # creates two OMAPs denoted by (O𝑊,O𝑅) used to store𝑐 KV pairs, and two queues (𝑄𝑊,𝑄𝑅) of length c
         self._main_storage = [None] * self._extended_size
-        self._Ow  = AVLOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Ow_name,
-                                     filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                     num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or  = AVLOmapOptimized(num_data = self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size, client=self._client, name=self._Or_name,
-                                     filename=self._filename, bucket_size=self._bucket_size, stash_scale = self._stash_scale, aes_key=self._aes_key,
-                                     num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        
+        self._Ow = AVLOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size,
+                                    client=self._client, name=self._Ow_name,
+                                    filename=self._filename, bucket_size=self._bucket_size,
+                                    stash_scale=self._stash_scale, aes_key=self._aes_key,
+                                    num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Or = AVLOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes, data_size=self._data_size,
+                                    client=self._client, name=self._Or_name,
+                                    filename=self._filename, bucket_size=self._bucket_size,
+                                    stash_scale=self._stash_scale, aes_key=self._aes_key,
+                                    num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+
         # PRP function 𝐸𝑠𝑘 on Z𝑛+2𝑐−1 to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
         for i, (key, value) in enumerate(extended_data.items()):
@@ -181,21 +186,21 @@ class Soram():
         extended_data_list = list(extended_data.items())
         keys_list = list(extended_data.keys())
         st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
-        st2 = self._Or._init_ods_storage(extended_data_list[self._cache_size: 2*self._cache_size])
-        
+        st2 = self._Or._init_ods_storage(extended_data_list[self._cache_size: 2 * self._cache_size])
+
         # Encrypt queue data if encryption is enabled
         if self._use_encryption:
             self._Qw = [self._encrypt_data(key) for key in keys_list[:self._cache_size]]
-            self._Qr = [self._encrypt_data(key) for key in keys_list[self._cache_size: 2*self._cache_size]]
+            self._Qr = [self._encrypt_data(key) for key in keys_list[self._cache_size: 2 * self._cache_size]]
         else:
             self._Qw = keys_list[:self._cache_size]
-            self._Qr = keys_list[self._cache_size:  2*self._cache_size]
-        
+            self._Qr = keys_list[self._cache_size:  2 * self._cache_size]
+
         print("Qw:", self._Qw)
         print("Qr:", self._Qr)
 
         # The client initializes the server storage with the OMAPs and queues
-        Serverstorage:ServerStorage = {
+        Serverstorage: ServerStorage = {
             self._Ow_name: st1,
             self._Or_name: st2,
             self._Qw_name: self._Qw,
@@ -219,48 +224,48 @@ class Soram():
         value_old2 = self._Or.search(key)
         value_old = None
         # Case a: key in cache Ow
-        if value_old1 is not None:  
+        if value_old1 is not None:
             value_old = value_old1
             # self.operate_on_list(label='DB', op='get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
-            self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data+self._dummy_index))
-            #If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
+            self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
+            # If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             if op == 'read':
                 self._Ow.search(key)
             else:
                 self._Ow.search(key, value)
-            self.operate_on_list(label= self._Qw_name, op='insert', data=self._num_data + self._dummy_index)
+            self.operate_on_list(label=self._Qw_name, op='insert', data=self._num_data + self._dummy_index)
             # execute𝑑 = 𝑑 + 1 mod 2c           
-            self._dummy_index += 1 
-            self._dummy_index = self._dummy_index % (2 * self._cache_size) 
-            
-        # Case b: key in cache Or 
-        elif value_old2 is not None:  
+            self._dummy_index += 1
+            self._dummy_index = self._dummy_index % (2 * self._cache_size)
+
+            # Case b: key in cache Or
+        elif value_old2 is not None:
             value_old = value_old2
             # visit (𝑛+𝑑,𝑣_𝑛+𝑑) from D
             # self.operate_on_list('DB', 'get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
-            self.operate_on_list(label='DB', op='get',pos = self.PRP.encrypt(self._num_data+self._dummy_index))
+            self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
 
-            #Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
+            # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             if op == 'read':
                 self._Ow.insert(key, value_old)
             else:
                 self._Ow.insert(key, value)
             self.operate_on_list(self._Qw_name, 'insert', data=key)
             # execute𝑑 = 𝑑 + 1 mod 2c
-            self._dummy_index += 1 
-            self._dummy_index = self._dummy_index % (2 * self._cache_size) 
+            self._dummy_index += 1
+            self._dummy_index = self._dummy_index % (2 * self._cache_size)
 
-        # Case c: key not in cache
-        else:  
+            # Case c: key not in cache
+        else:
             # visit (key,vale) from D
             # value_old = self.operate_on_list('DB', 'get', pos = self._prp.digest_mod_n(str(key).encode(), self._extended_size))
-            value_old = self.operate_on_list('DB', 'get', pos = self.PRP.encrypt(key))
-            #Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
+            value_old = self.operate_on_list('DB', 'get', pos=self.PRP.encrypt(key))
+            # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             if op == 'read':
                 self._Ow.insert(key, value_old)
             else:
                 self._Ow.insert(key, value)
-            self.operate_on_list(self._Qw_name, 'insert', data = key)
+            self.operate_on_list(self._Qw_name, 'insert', data=key)
 
         # pop from Qw, push what have been poped into Qr
         key = self.operate_on_list(self._Qw_name, 'pop')
@@ -269,7 +274,7 @@ class Soram():
         else:
             value = self._Ow.delete(key)
 
-        self.operate_on_list(self._Qr_name, 'insert', data = key)
+        self.operate_on_list(self._Qr_name, 'insert', data=key)
 
         # delete what have been poped from Ow and insert into Or and DB
         if key >= self._num_data:
@@ -278,12 +283,11 @@ class Soram():
             self._Or.insert(key, value)
 
         if key >= self._num_data:
-            self.operate_on_list('DB', 'update', pos= self.PRP.encrypt(key), data=value)
+            self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(key), data=value)
             self._dummy_index += 1
             self._dummy_index = self._dummy_index % (2 * self._cache_size)
         else:
             self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(key), data=value)
-
 
         # pop from Qr,delete what have been poped from Or
         key = self.operate_on_list(self._Qr_name, 'pop')

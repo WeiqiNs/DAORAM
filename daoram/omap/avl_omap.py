@@ -281,24 +281,24 @@ class AVLOmap(ObliviousSearchTree):
         else:
             parent.value.r_leaf = child.leaf
 
-    def _update_height(self) ->None:
+    def _update_height(self) -> None:
         """Traverse the nodes in local and update their heights accordingly."""
-        for i in range(len(self._local)-1, -1, -1):
+        for i in range(len(self._local) - 1, -1, -1):
             node = self._local[i]
 
             # Calculate new height based on children
             l_height = node.value.l_height if node.value.l_key is not None else 0
             r_height = node.value.r_height if node.value.r_key is not None else 0
             new_height = 1 + max(l_height, r_height)
-                
+
             # Update the node's height property
             if i > 0:  # Not root
-                parent = self._local[i-1]
+                parent = self._local[i - 1]
                 if parent.value.l_key == node.key:
                     parent.value.l_height = new_height
                 else:
                     parent.value.r_height = new_height
-        
+
     def _rotate(self, index: int, in_node: Data, rotate_left: bool, is_delete: bool = False) -> Tuple[Any, int, int]:
         """
         Perform a rotation at the provided input node.
@@ -399,7 +399,7 @@ class AVLOmap(ObliviousSearchTree):
 
         return node.key, node.leaf, 1 + max(node.value.l_height, node.value.r_height)
 
-    def _balance_local(self, is_delete= False):
+    def _balance_local(self, is_delete=False):
         """Balance the AVL tree path downloaded to local."""
         # Perform rotation on the nodes stored in local.
         node_index = len(self._local) - 1
@@ -434,7 +434,7 @@ class AVLOmap(ObliviousSearchTree):
 
         # Update the root after balance.
         if is_delete:
-            self.root = (key,leaf)
+            self.root = (key, leaf)
         else:
             self.root = (self._local[0].key, self._local[0].leaf)
 
@@ -796,7 +796,7 @@ class AVLOmap(ObliviousSearchTree):
         self._update_leaves()
         # Perform balance 
         self._balance_local()
-        
+
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
         self._stash += self._local
@@ -1049,7 +1049,7 @@ class AVLOmap(ObliviousSearchTree):
         self._move_node_to_local(key=self.root[0], leaf=self.root[1])
         node = self._local[-1]
         # Track the index of the node to delete in local
-        node_index = 0  
+        node_index = 0
 
         # Find the node to delete
         while node.key != key:
@@ -1065,7 +1065,7 @@ class AVLOmap(ObliviousSearchTree):
                     self._local = []
                     self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
                     return None
-                    
+
             else:
                 if node.value.l_key is not None:
                     self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
@@ -1090,12 +1090,12 @@ class AVLOmap(ObliviousSearchTree):
                 self._perform_dummy_operation(num_round=2 * self._max_height)
                 return deleted_value
 
-            if node_index != len(self._local) -1:
+            if node_index != len(self._local) - 1:
                 raise ValueError("node_index is not the last index in local")
-            
+
             # Remove the node from its parent
             parent = self._local[node_index - 1]
-            
+
             if parent.value.l_key == node.key:
                 parent.value.l_key = None
                 parent.value.l_leaf = None
@@ -1108,8 +1108,8 @@ class AVLOmap(ObliviousSearchTree):
 
             # Remove the node from local
             self._local.pop()
-            
-            
+
+
         # Case 2: Node has one child
         elif node.value.l_key is None or node.value.r_key is None:
             # Find the replacement child
@@ -1124,9 +1124,9 @@ class AVLOmap(ObliviousSearchTree):
                 self._local = []
                 self._perform_dummy_operation(num_round=2 * self._max_height)
                 return deleted_value
-            
+
             else:
-                if node_index != len(self._local) -1:
+                if node_index != len(self._local) - 1:
                     raise ValueError("node_index is not the last index in local")
                 # Replace the node with its child in the parent
                 parent = self._local[node_index - 1]
@@ -1143,7 +1143,7 @@ class AVLOmap(ObliviousSearchTree):
 
                 # Remove the successor node
                 self._local.pop()
-                                      
+
         # Case 3: Node has two children; choose based on subtree height.
         else:
             # Use predecessor (left then all right) if left is taller, else successor (right then all left).
@@ -1178,7 +1178,8 @@ class AVLOmap(ObliviousSearchTree):
             # Get the child to replace with (opposite of traversal direction).
             child_key = replacement_node.value.l_key if use_predecessor else replacement_node.value.r_key
             child_leaf = replacement_node.value.l_leaf if use_predecessor else replacement_node.value.r_leaf
-            child_height = (replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height) if child_key else 0
+            child_height = (
+                replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height) if child_key else 0
 
             # Update parent's pointer.
             parent = self._local[replacement_index - 1]
@@ -1200,7 +1201,7 @@ class AVLOmap(ObliviousSearchTree):
                     parent_of_node.value.l_key = node.key
                 else:
                     parent_of_node.value.r_key = node.key
-                       
+
         # Update heights
         self._update_height()
         # Update leaves

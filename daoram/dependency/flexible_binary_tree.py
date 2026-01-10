@@ -279,7 +279,7 @@ class FlexibleBinaryTree:
 
     @staticmethod
     def adjust_to_same_level(leaf_one_index: int, leaf_two_index: int, leaf_one_level: int, leaf_two_level: int) -> \
-    Tuple[int, int]:
+            Tuple[int, int]:
         """Given two indices of node, adjust them to the same level.
 
         :param leaf_one_index: The index of a node.

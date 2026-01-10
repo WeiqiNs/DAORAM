@@ -3,7 +3,6 @@ from typing import Any, Dict, List, NamedTuple, Tuple, Union, Optional
 
 from daoram.dependency.helper import Data
 
-
 # Sentinel value to distinguish "no value provided" from "None provided"
 UNSET = object()
 
