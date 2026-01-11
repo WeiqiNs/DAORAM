@@ -6,8 +6,8 @@ from daoram.oram.mul_path_oram import MulPathOram
 
 class TestMulPathOram:
     def test_batch_write_and_read(self, num_data, client):
-        # Create the oram instance.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client)
+        # Create the oram instance with stash scale multiplier for 5-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=5)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -18,15 +18,15 @@ class TestMulPathOram:
 
         # Batch read multiple keys at once.
         keys_to_read = [0, 1, 2, 3, 4]
-        results = oram.operate_on_keys(keys=keys_to_read)
+        results = oram.operate_on_keys(key_value_map={k: UNSET for k in keys_to_read})
 
         # Verify we got all values back.
         for key in keys_to_read:
             assert results[key] == key
 
     def test_batch_write(self, num_data, client):
-        # Create the oram instance.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client)
+        # Create the oram instance with stash scale multiplier for 3-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=3)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -49,8 +49,8 @@ class TestMulPathOram:
             assert oram.operate_on_key(key=key) == new_value
 
     def test_batch_read_only(self, num_data, client):
-        # Create the oram instance.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client)
+        # Create the oram instance with stash scale multiplier for 3-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=3)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -74,8 +74,8 @@ class TestMulPathOram:
         assert oram.operate_on_key(key=10) == 20
 
     def test_without_eviction(self, num_data, client):
-        # Create the oram instance.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client)
+        # Create the oram instance with stash scale multiplier for 3-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=3)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -86,7 +86,9 @@ class TestMulPathOram:
 
         # Read without eviction.
         keys_to_read = [0, 1, 2]
-        results = oram.operate_on_keys_without_eviction(keys=keys_to_read)
+        results = oram.operate_on_keys_without_eviction(
+            key_value_map={k: UNSET for k in keys_to_read}
+        )
 
         # Verify we got the values.
         assert results[0] == 0
@@ -102,8 +104,8 @@ class TestMulPathOram:
         assert oram.operate_on_key(key=2) == 2  # Not updated
 
     def test_with_enc(self, num_data, client, encryptor):
-        # Create the oram instance with encryption.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor)
+        # Create the oram instance with encryption and stash scale multiplier for 5-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor, stash_scale_multiplier=5)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -114,7 +116,7 @@ class TestMulPathOram:
 
         # Batch read multiple keys.
         keys_to_read = [0, 1, 2, 3, 4]
-        results = oram.operate_on_keys(keys=keys_to_read)
+        results = oram.operate_on_keys(key_value_map={k: UNSET for k in keys_to_read})
 
         # Verify values.
         for key in keys_to_read:
@@ -129,8 +131,8 @@ class TestMulPathOram:
         assert oram.operate_on_key(key=6) == 60
 
     def test_with_file(self, num_data, client, test_file):
-        # Create the oram instance with file storage.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client, filename=str(test_file))
+        # Create the oram instance with file storage and stash scale multiplier for 3-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, filename=str(test_file), stash_scale_multiplier=3)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -140,14 +142,14 @@ class TestMulPathOram:
             oram.operate_on_key(key=i, value=i)
 
         # Batch operations.
-        results = oram.operate_on_keys(keys=[0, 1, 2])
+        results = oram.operate_on_keys(key_value_map={0: UNSET, 1: UNSET, 2: UNSET})
         assert results[0] == 0
         assert results[1] == 1
         assert results[2] == 2
 
     def test_random_batch_operations(self, num_data, client):
-        # Create the oram instance.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client)
+        # Create the oram instance with stash scale multiplier for up to 10-key batch operations.
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=10)
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -163,7 +165,7 @@ class TestMulPathOram:
             keys = random.sample(range(num_data), batch_size)
 
             # Read all keys.
-            results = oram.operate_on_keys(keys=keys)
+            results = oram.operate_on_keys(key_value_map={k: UNSET for k in keys})
 
             # Verify all keys have values.
             assert len(results) == batch_size

@@ -9,6 +9,213 @@ from daoram.dependency import AVLData, AVLTree, BinaryTree, Data, Encryptor, Hel
 from daoram.omap.oblivious_search_tree import KV_LIST, ROOT, ObliviousSearchTree
 
 
+class LocalNodes:
+    """
+    A container for managing nodes retrieved during AVL tree operations.
+
+    Uses a dictionary with explicit parent tracking instead of a flat list,
+    making rotations cleaner and eliminating the need for positional assumptions.
+    """
+
+    def __init__(self):
+        self.nodes: dict[Any, Data] = {}       # key -> Data node
+        self.parent_of: dict[Any, Any] = {}    # key -> parent_key
+        self.root_key: Any = None
+        self.path: List[Any] = []              # Keys in traversal order (root to current)
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def __bool__(self) -> bool:
+        return len(self.nodes) > 0
+
+    def add(self, node: Data, parent_key: Any = None) -> None:
+        """Add a node with its parent relationship and track in path."""
+        self.nodes[node.key] = node
+        self.parent_of[node.key] = parent_key
+        self.path.append(node.key)
+        if parent_key is None:
+            self.root_key = node.key
+
+    def get(self, key: Any) -> Data:
+        """Get a node by its key."""
+        return self.nodes.get(key)
+
+    def get_parent(self, key: Any) -> Data | None:
+        """Get the parent node of a given key."""
+        parent_key = self.parent_of.get(key)
+        return self.nodes.get(parent_key) if parent_key is not None else None
+
+    def get_parent_key(self, key: Any) -> Any:
+        """Get the parent key of a given key."""
+        return self.parent_of.get(key)
+
+    def reparent(self, child_key: Any, new_parent_key: Any) -> None:
+        """Update the parent relationship for a node."""
+        self.parent_of[child_key] = new_parent_key
+        # Update root_key if this node becomes the root
+        if new_parent_key is None:
+            self.root_key = child_key
+
+    def swap_in_path(self, key1: Any, key2: Any) -> None:
+        """
+        Swap positions of two keys in the path (used after rotation).
+
+        If a key is not in path (e.g., fetched during rotation), swapping is skipped.
+        """
+        if key1 in self.path and key2 in self.path:
+            idx1 = self.path.index(key1)
+            idx2 = self.path.index(key2)
+            self.path[idx1], self.path[idx2] = self.path[idx2], self.path[idx1]
+
+    def get_root(self) -> Data | None:
+        """Get the root node."""
+        return self.nodes.get(self.root_key) if self.root_key is not None else None
+
+    def update_all_leaves(self, get_new_leaf) -> None:
+        """
+        Update leaves for all nodes and fix parent pointers in a single pass.
+
+        :param get_new_leaf: A callable that returns a new random leaf.
+        """
+        for key, node in self.nodes.items():
+            node.leaf = get_new_leaf()
+            parent = self.get_parent(key)
+            if parent:
+                if parent.value.l_key == key:
+                    parent.value.l_leaf = node.leaf
+                elif parent.value.r_key == key:
+                    parent.value.r_leaf = node.leaf
+
+    def remove(self, key: Any) -> Data | None:
+        """Remove and return a node by its key."""
+        node = self.nodes.pop(key, None)
+        if node:
+            self.parent_of.pop(key, None)
+            if key in self.path:
+                self.path.remove(key)
+            if self.root_key == key:
+                self.root_key = None
+        return node
+
+    def update_child_in_parent(self, parent_key: Any, old_child_key: Any,
+                                new_key: Any, new_leaf: Any, new_height: int) -> None:
+        """
+        Update a parent's child pointer to new values.
+
+        :param parent_key: Key of the parent node.
+        :param old_child_key: The current child key to identify which side (left or right).
+        :param new_key: New child key (can be None to remove child).
+        :param new_leaf: New child leaf.
+        :param new_height: New child height.
+        """
+        parent = self.nodes.get(parent_key)
+        if parent is None:
+            return
+
+        if parent.value.l_key == old_child_key:
+            parent.value.l_key = new_key
+            parent.value.l_leaf = new_leaf
+            parent.value.l_height = new_height
+        elif parent.value.r_key == old_child_key:
+            parent.value.r_key = new_key
+            parent.value.r_leaf = new_leaf
+            parent.value.r_height = new_height
+
+    def replace_node_key(self, old_key: Any, new_key: Any) -> None:
+        """
+        Replace a node's key in all tracking structures.
+
+        Used when a node's key changes (e.g., during delete with two children).
+
+        :param old_key: The current key of the node.
+        :param new_key: The new key for the node.
+        """
+        if old_key not in self.nodes:
+            return
+
+        # Update nodes dict
+        self.nodes[new_key] = self.nodes.pop(old_key)
+
+        # Update parent_of dict
+        self.parent_of[new_key] = self.parent_of.pop(old_key)
+
+        # Update path
+        if old_key in self.path:
+            idx = self.path.index(old_key)
+            self.path[idx] = new_key
+
+        # Update root_key
+        if self.root_key == old_key:
+            self.root_key = new_key
+
+        # Update any children's parent references
+        for key, parent_key in self.parent_of.items():
+            if parent_key == old_key:
+                self.parent_of[key] = new_key
+
+    def rotate(self, node_key: Any, rotate_left: bool) -> Tuple[Any, int, int]:
+        """
+        Perform an AVL rotation at the given node.
+
+        :param node_key: Key of the node to rotate (will become child after rotation).
+        :param rotate_left: True for left rotation, False for right rotation.
+        :return: Tuple of (new_parent_key, new_parent_leaf, new_parent_height).
+        :raises ValueError: If the pivot node is not loaded.
+        """
+        node = self.nodes.get(node_key)
+        if node is None:
+            raise ValueError(f"Node {node_key} not found in local.")
+
+        # Get pivot (the child that will become parent)
+        pivot_key = node.value.r_key if rotate_left else node.value.l_key
+        pivot = self.nodes.get(pivot_key)
+        if pivot is None or pivot.key != pivot_key:
+            side = "Right" if rotate_left else "Left"
+            raise ValueError(f"{side} node is not loaded when it is supposed to.")
+
+        if rotate_left:
+            # Left rotation: pivot's left subtree becomes node's right subtree
+            node.value.r_key = pivot.value.l_key
+            node.value.r_leaf = pivot.value.l_leaf
+            node.value.r_height = pivot.value.l_height
+            # Node becomes pivot's left child
+            pivot.value.l_key = node.key
+            pivot.value.l_leaf = node.leaf
+            pivot.value.l_height = 1 + max(node.value.l_height, node.value.r_height)
+        else:
+            # Right rotation: pivot's right subtree becomes node's left subtree
+            node.value.l_key = pivot.value.r_key
+            node.value.l_leaf = pivot.value.r_leaf
+            node.value.l_height = pivot.value.r_height
+            # Node becomes pivot's right child
+            pivot.value.r_key = node.key
+            pivot.value.r_leaf = node.leaf
+            pivot.value.r_height = 1 + max(node.value.l_height, node.value.r_height)
+
+        # Update parent relationships: pivot takes node's position
+        grandparent_key = self.parent_of.get(node_key)
+        self.reparent(pivot_key, grandparent_key)
+        self.reparent(node_key, pivot_key)
+
+        # Swap positions in path
+        self.swap_in_path(node_key, pivot_key)
+
+        new_height = 1 + max(pivot.value.l_height, pivot.value.r_height)
+        return pivot.key, pivot.leaf, new_height
+
+    def to_list(self) -> List[Data]:
+        """Return all nodes as a list (for moving to stash)."""
+        return list(self.nodes.values())
+
+    def clear(self) -> None:
+        """Clear all stored nodes."""
+        self.nodes.clear()
+        self.parent_of.clear()
+        self.root_key = None
+        self.path.clear()
+
+
 class AVLOmap(ObliviousSearchTree):
     def __init__(self,
                  num_data: int,
@@ -41,13 +248,16 @@ class AVLOmap(ObliviousSearchTree):
             num_data=num_data,
             key_size=key_size,
             data_size=data_size,
+            encryptor=encryptor,
             bucket_size=bucket_size,
-            stash_scale=stash_scale,
-            encryptor=encryptor
+            stash_scale=stash_scale
         )
 
         # Compute the maximum height of the AVL tree.
         self._max_height: int = math.ceil(1.44 * math.log(self._num_data, 2))
+
+        # Override _local with LocalNodes for explicit parent tracking.
+        self._local: LocalNodes = LocalNodes()
 
         # AVL uses a larger block size, so update disk_size for file storage.
         if self._filename and self._encryptor:
@@ -153,6 +363,67 @@ class AVLOmap(ObliviousSearchTree):
         # In the AVLData, only value needs to be filled.
         return Data(key=key, leaf=self._get_new_leaf(), value=AVLData(value=value))
 
+    def _move_node_to_local(self, key: Any, leaf: int, parent_key: Any = None) -> None:
+        """
+        Retrieve a node and add it to local with parent tracking.
+
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data is stored in the ORAM.
+        :param parent_key: The key of the parent node (None if this is the root).
+        """
+        self._move_node_to_local_without_eviction(key=key, leaf=leaf, parent_key=parent_key)
+
+        # Perform eviction and write the path back.
+        self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))
+        self._client.execute()
+
+    def _move_node_to_local_without_eviction(self, key: Any, leaf: int, parent_key: Any = None) -> None:
+        """
+        Retrieve a node and add it to local without eviction.
+
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data is stored in the ORAM.
+        :param parent_key: The key of the parent node (None if this is the root).
+        """
+        found = False
+        to_index = len(self._stash)
+
+        # Read the path from the server.
+        self._client.add_read_path(label=self._name, leaves=[leaf])
+        result = self._client.execute()
+        path_data = result.results[self._name]
+
+        # Decrypt the path.
+        path = self._decrypt_path_data(path=path_data)
+
+        # Find the desired data in the path.
+        for bucket in path.values():
+            for data in bucket:
+                if data.key == key:
+                    self._local.add(node=data, parent_key=parent_key)
+                    found = True
+                else:
+                    self._stash.append(data)
+
+        # Check if stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # If the desired data is not found in the path, check the stash.
+        if not found:
+            stash_idx = self._find_in_stash(key)
+            if 0 <= stash_idx < to_index:
+                self._local.add(node=self._stash[stash_idx], parent_key=parent_key)
+                del self._stash[stash_idx]
+                return
+
+            raise KeyError(f"The search key {key} is not found.")
+
+    def _flush_local_to_stash(self) -> None:
+        """Move all nodes from local to stash and clear local."""
+        self._stash += self._local.to_list()
+        self._local.clear()
+
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
         """
         Initialize a binary tree storage to store the AVL tree holding input key-value pairs.
@@ -164,9 +435,9 @@ class AVLOmap(ObliviousSearchTree):
         tree = BinaryTree(
             filename=self._filename,
             num_data=self._num_data,
-            data_size=self._max_block_size,
-            bucket_size=self._bucket_size,
             disk_size=self._disk_size,
+            bucket_size=self._bucket_size,
+            data_size=self._max_block_size,
             encryption=True if self._encryptor else False,
         )
 
@@ -207,9 +478,9 @@ class AVLOmap(ObliviousSearchTree):
         tree = BinaryTree(
             filename=self._filename,
             num_data=self._num_data,
-            data_size=self._max_block_size,
-            bucket_size=self._bucket_size,
             disk_size=self._disk_size,
+            bucket_size=self._bucket_size,
+            data_size=self._max_block_size,
             encryption=True if self._encryptor else False,
         )
 
@@ -248,195 +519,118 @@ class AVLOmap(ObliviousSearchTree):
 
         return tree, root_list
 
-    def _update_leaves(self) -> None:
-        """Traverse the nodes in local and update their children leaves accordingly."""
-        # Iterate backwards from len(local) - 2 down to 0.
-        for i in range(len(self._local) - 1, -1, -1):
-            # Set the current node as child node and sample a new leaf for it.
-            child = self._local[i]
-            child.leaf = self._get_new_leaf()
-
-            # If parent exists, we update the parent information.
-            if i - 1 >= 0:
-                parent = self._local[i - 1]
-
-                # Update the child leaf.
-                if parent.value.l_key == child.key:
-                    parent.value.l_leaf = child.leaf
-                else:
-                    parent.value.r_leaf = child.leaf
-
-    def _update_leaves_one(self, index: int) -> None:
-        """Update the leaves of the node at the given index and its parent."""
-        # Set the current node as child node and sample a new leaf for it.
-        child = self._local[index]
-        child.leaf = self._get_new_leaf()
-
-        # If parent exists, we update the parent information.
-        parent = self._local[index - 1]
-
-        # Update the child leaf.
-        if parent.value.l_key == child.key:
-            parent.value.l_leaf = child.leaf
-        else:
-            parent.value.r_leaf = child.leaf
-
     def _update_height(self) -> None:
-        """Traverse the nodes in local and update their heights accordingly."""
-        for i in range(len(self._local) - 1, -1, -1):
-            node = self._local[i]
+        """Traverse the nodes in local (bottom-up) and update their heights accordingly."""
+        for node_key in reversed(self._local.path):
+            node = self._local.get(node_key)
 
             # Calculate new height based on children
             l_height = node.value.l_height if node.value.l_key is not None else 0
             r_height = node.value.r_height if node.value.r_key is not None else 0
             new_height = 1 + max(l_height, r_height)
 
-            # Update the node's height property
-            if i > 0:  # Not root
-                parent = self._local[i - 1]
-                if parent.value.l_key == node.key:
+            # Update the parent's record of this node's height
+            parent = self._local.get_parent(node_key)
+            if parent:
+                if parent.value.l_key == node_key:
                     parent.value.l_height = new_height
                 else:
                     parent.value.r_height = new_height
 
-    def _rotate(self, index: int, in_node: Data, rotate_left: bool, is_delete: bool = False) -> Tuple[Any, int, int]:
+    def _balance_node(self, node_key: Any, is_delete: bool = False) -> Tuple[Any, int, int]:
         """
-        Perform a rotation at the provided input node.
+        Re-balance a node if it is unbalanced.
 
-        :param index: The index of the node to rotate in local.
-        :param in_node: Some AVLTreeNode to rotate.
-        :param rotate_left: True for left rotation, False for right rotation.
-        :param is_delete: Whether this rotation is during a delete operation.
-        :return: The (key, leaf, height) of the new parent node after rotation.
+        :param node_key: Key of the node to balance.
+        :param is_delete: Whether this is during a delete operation.
+        :return: The (key, leaf, height) of the node at this position after balancing.
         """
-        # Get the pivot node.
-        p_node = self._local[-1] if is_delete else self._local[index + 1]
-
-        if rotate_left:
-            # Left rotation: pivot is right child, pivot's left becomes in_node's right.
-            if p_node.key != in_node.value.r_key:
-                raise ValueError("Right node is not loaded when it is supposed to.")
-
-            # Move pivot's left child to in_node's right position.
-            in_node.value.r_key = p_node.value.l_key
-            in_node.value.r_leaf = p_node.value.l_leaf
-            in_node.value.r_height = p_node.value.l_height
-
-            # Set in_node as pivot's left child.
-            p_node.value.l_key = in_node.key
-            p_node.value.l_leaf = in_node.leaf
-            p_node.value.l_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
-        else:
-            # Right rotation: pivot is left child, pivot's right becomes in_node's left.
-            if p_node.key != in_node.value.l_key:
-                raise ValueError("Left node is not loaded when it is supposed to.")
-
-            # Move pivot's right child to in_node's left position.
-            in_node.value.l_key = p_node.value.r_key
-            in_node.value.l_leaf = p_node.value.r_leaf
-            in_node.value.l_height = p_node.value.r_height
-
-            # Set in_node as pivot's right child.
-            p_node.value.r_key = in_node.key
-            p_node.value.r_leaf = in_node.leaf
-            p_node.value.r_height = 1 + max(in_node.value.l_height, in_node.value.r_height)
-
-        # Switch nodes in local.
-        if is_delete:
-            self._local[-1], self._local[-2] = self._local[-2], self._local[-1]
-        else:
-            self._local[index], self._local[index + 1] = self._local[index + 1], self._local[index]
-
-        return p_node.key, p_node.leaf, 1 + max(p_node.value.l_height, p_node.value.r_height)
-
-    def _balance_node(self, index: int, node: Data, is_delete: bool = False):
-        """Re-balance a node if it is unbalanced."""
+        node = self._local.get(node_key)
         balance = node.value.l_height - node.value.r_height
 
         # Left heavy subtree rotation.
         if balance > 1:
-            # Get left child node.
-            if is_delete:
-                self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
-            child_node = self._local[-1] if is_delete else self._local[index + 1]
-            if child_node.key != node.value.l_key:
-                raise ValueError("Left node is not loaded when it is supposed to.")
+            child_key = node.value.l_key
+            if is_delete and not self._local.get(child_key):
+                self._move_node_to_local(key=child_key, leaf=node.value.l_leaf, parent_key=node_key)
 
+            child_node = self._local.get(child_key)
             # Left-right case: first rotate left on child.
             if child_node.value.l_height - child_node.value.r_height < 0:
-                if is_delete:
-                    self._move_node_to_local(key=child_node.value.r_key, leaf=child_node.value.r_leaf)
-                key, leaf, height = self._rotate(index + 1, child_node, rotate_left=True, is_delete=is_delete)
+                grandchild_key = child_node.value.r_key
+                if is_delete and not self._local.get(grandchild_key):
+                    self._move_node_to_local(key=grandchild_key, leaf=child_node.value.r_leaf, parent_key=child_key)
+
+                key, leaf, height = self._local.rotate(child_key, rotate_left=True)
                 node.value.l_key, node.value.l_leaf, node.value.l_height = key, leaf, height
-                if is_delete:
-                    self._update_leaves_one(-1)
-                    self._stash.append(self._local.pop())
 
             # Left-left case: rotate right.
-            return self._rotate(index, node, rotate_left=False, is_delete=is_delete)
+            return self._local.rotate(node_key, rotate_left=False)
 
         # Right heavy subtree rotation.
         if balance < -1:
-            # Get right child node.
-            if is_delete:
-                self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
-            child_node = self._local[-1] if is_delete else self._local[index + 1]
-            if child_node.key != node.value.r_key:
-                raise ValueError("Right node is not loaded when it is supposed to.")
+            child_key = node.value.r_key
+            if is_delete and not self._local.get(child_key):
+                self._move_node_to_local(key=child_key, leaf=node.value.r_leaf, parent_key=node_key)
 
+            child_node = self._local.get(child_key)
             # Right-left case: first rotate right on child.
             if child_node.value.l_height - child_node.value.r_height > 0:
-                if is_delete:
-                    self._move_node_to_local(key=child_node.value.l_key, leaf=child_node.value.l_leaf)
-                key, leaf, height = self._rotate(index + 1, child_node, rotate_left=False, is_delete=is_delete)
+                grandchild_key = child_node.value.l_key
+                if is_delete and not self._local.get(grandchild_key):
+                    self._move_node_to_local(key=grandchild_key, leaf=child_node.value.l_leaf, parent_key=child_key)
+
+                key, leaf, height = self._local.rotate(child_key, rotate_left=False)
                 node.value.r_key, node.value.r_leaf, node.value.r_height = key, leaf, height
-                if is_delete:
-                    self._update_leaves_one(-1)
-                    self._stash.append(self._local.pop())
 
             # Right-right case: rotate left.
-            return self._rotate(index, node, rotate_left=True, is_delete=is_delete)
+            return self._local.rotate(node_key, rotate_left=True)
 
         return node.key, node.leaf, 1 + max(node.value.l_height, node.value.r_height)
 
-    def _balance_local(self, is_delete=False):
+    def _balance_local(self, is_delete: bool = False) -> None:
         """Balance the AVL tree path downloaded to local."""
-        # Perform rotation on the nodes stored in local.
-        node_index = len(self._local) - 1
-        key = None
-        leaf = None
-        while node_index >= 0:
-            # Get the current node of interest.
-            node = self._local[node_index]
+        # Iterate from the end of the path towards the root (bottom-up)
+        # Use index-based iteration since rotations modify the path
+        idx = len(self._local.path) - 1
+
+        while idx >= 0:
+            node_key = self._local.path[idx]
+            node = self._local.get(node_key)
+            if node is None:
+                idx -= 1
+                continue
+
+            original_key = node.key
 
             # Get balanced information.
-            key, leaf, height = self._balance_node(index=node_index, node=node, is_delete=is_delete)
+            key, leaf, height = self._balance_node(node_key=node_key, is_delete=is_delete)
 
-            # If the parent exists, update which node the parent should point to.
-            if node_index > 0:
-                parent = self._local[node_index - 1]
+            # After rotation, the returned key is the node now at this position
+            # Update parent's pointer if parent exists
+            new_node = self._local.get(key)
+            parent = self._local.get_parent(key) if new_node else None
+
+            if parent:
                 # If node was the right child, update right child information.
-                if parent.value.r_key == node.key:
+                if parent.value.r_key == original_key or parent.value.r_key == key:
                     parent.value.r_key = key
                     parent.value.r_leaf = leaf
                     parent.value.r_height = height
                 # Otherwise, update left child information.
-                elif parent.value.l_key == node.key:
+                elif parent.value.l_key == original_key or parent.value.l_key == key:
                     parent.value.l_key = key
                     parent.value.l_leaf = leaf
                     parent.value.l_height = height
-                # The between parent and child is broken somehow.
                 else:
-                    raise ValueError("This node is not connected to a parent.")
+                    raise ValueError("This node is not connected to its parent.")
 
-            # Decrease the node index.
-            node_index -= 1
+            idx -= 1
 
         # Update the root after balance.
-        if is_delete:
-            self.root = (key, leaf)
-        else:
-            self.root = (self._local[0].key, self._local[0].leaf)
+        root_node = self._local.get_root()
+        if root_node:
+            self.root = (root_node.key, root_node.leaf)
 
     def insert(self, key: Any, value: Any = None) -> None:
         """
@@ -464,20 +658,21 @@ class AVLOmap(ObliviousSearchTree):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Get the node information from oram storage.
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+        # Get the root node from oram storage.
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
+        current_key = self.root[0]
 
         # Keep adding node to local until we find a place to insert the new node.
         while True:
-            # Save the last node data and its value.
-            node = self._local[-1]
+            node = self._local.get(current_key)
 
             # If a node key is smaller, we go right and check whether a child is already there.
             if node.key < key:
                 # If the child is there, we keep grabbing the next node.
                 if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
-                # Else we store link the parent with the new node, other information will be updated during balance.
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
+                    current_key = node.value.r_key
+                # Else we link the parent with the new node.
                 else:
                     node.value.r_key = data_block.key
                     break
@@ -485,25 +680,26 @@ class AVLOmap(ObliviousSearchTree):
             # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
+                    current_key = node.value.l_key
                 else:
                     node.value.l_key = data_block.key
                     break
 
-        # Append the newly inserted node to local as well
-        self._local.append(data_block)
+        # Add the newly inserted node to local.
+        self._local.add(node=data_block, parent_key=current_key)
         # Update the heights
         self._update_height()
         # Update the leaves
-        self._update_leaves()
-        # Perform balance 
+        self._local.update_all_leaves(self._get_new_leaf)
+        # Perform balance
         self._balance_local()
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
-        self._stash += self._local
-        self._local = []
-        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+        self._stash += self._local.to_list()
+        self._local.clear()
+        self._perform_dummy_operation(num_round=3 * self._max_height + 1 - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -519,27 +715,28 @@ class AVLOmap(ObliviousSearchTree):
             raise ValueError(f"It seems the tree is empty and can't perform search.")
 
         # Otherwise get information about node.
-        self._move_node_to_local(key=self._root[0], leaf=self._root[1])
-
-        # Set the node as root.
-        node = self._local[-1]
+        self._move_node_to_local(key=self._root[0], leaf=self._root[1], parent_key=None)
+        current_key = self._root[0]
 
         # Find the desired search key.
+        node = self._local.get(current_key)
         while node.key != key:
             # If a node key is smaller, we go right and check whether a child is already there.
             if node.key < key:
                 if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
+                    current_key = node.value.r_key
                 else:
                     break
             # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
+                    current_key = node.value.l_key
                 else:
                     break
             # Update the node to keep searching.
-            node = self._local[-1]
+            node = self._local.get(current_key)
 
         # Get the desired search value and update the stored value if needed.
         if node.key == key:
@@ -550,16 +747,17 @@ class AVLOmap(ObliviousSearchTree):
             node.value.value = value
 
         # Update new leaves.
-        self._update_leaves()
+        self._local.update_all_leaves(self._get_new_leaf)
 
         # Update the root stored.
-        self.root = (self._local[0].key, self._local[0].leaf)
+        root_node = self._local.get_root()
+        self.root = (root_node.key, root_node.leaf)
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
-        self._stash += self._local
-        self._local = []
-        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+        self._stash += self._local.to_list()
+        self._local.clear()
+        self._perform_dummy_operation(num_round=3 * self._max_height + 1 - num_retrieved_nodes)
 
         return search_value
 
@@ -576,16 +774,17 @@ class AVLOmap(ObliviousSearchTree):
         if self.root is None:
             return None
 
-        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
+        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1], parent_key=None)
+        current_key = self.root[0]
 
         old_child_path = self.root[1]
         child_leaf = self._get_new_leaf()
         self.root = (self.root[0], child_leaf)
         num_retrieved_nodes = 1
 
-        while self._local[0].key != key:
+        current = self._local.get(current_key)
+        while current.key != key:
             num_retrieved_nodes += 1
-            current = self._local[0]
             go_right = current.key < key
             next_key = current.value.r_key if go_right else current.value.l_key
 
@@ -610,20 +809,22 @@ class AVLOmap(ObliviousSearchTree):
 
             # Get next node and update old_child_path.
             next_leaf = current.value.r_leaf if go_right else current.value.l_leaf
-            self._move_node_to_local_without_eviction(key=next_key, leaf=next_leaf)
+            self._move_node_to_local_without_eviction(key=next_key, leaf=next_leaf, parent_key=current_key)
             old_child_path = next_leaf
-            del self._local[0]
+            self._local.remove(current_key)
+            current_key = next_key
+            current = self._local.get(current_key)
 
         # Get result and optionally update value.
-        search_value = self._local[0].value.value if self._local[0].key == key else None
+        search_value = current.value.value if current.key == key else None
         if value is not None:
-            self._local[0].value.value = value
+            current.value.value = value
 
         # Write final node back.
-        node_to_return = copy.deepcopy(self._local[0])
+        node_to_return = copy.deepcopy(current)
         node_to_return.leaf = child_leaf
         self._stash.append(node_to_return)
-        self._local = []
+        self._local.clear()
         self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_child_path]))
         self._client.execute()
 
@@ -645,172 +846,123 @@ class AVLOmap(ObliviousSearchTree):
             raise ValueError(f"It seems the tree is empty and can't perform deletion.")
 
         # First, find the node to delete by traversing the tree
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
-        node = self._local[-1]
-        # Track the index of the node to delete in local
-        node_index = 0
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
+        current_key = self.root[0]
+        node = self._local.get(current_key)
 
         # Find the node to delete
         while node.key != key:
             if node.key < key:
                 if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
-                    node = self._local[-1]
-                    node_index = len(self._local) - 1
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
+                    current_key = node.value.r_key
+                    node = self._local.get(current_key)
                 else:
                     # Key not found, return None
                     num_retrieved_nodes = len(self._local)
-                    self._stash += self._local
-                    self._local = []
+                    self._stash += self._local.to_list()
+                    self._local.clear()
                     self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
                     return None
 
             else:
                 if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
-                    node = self._local[-1]
-                    node_index = len(self._local) - 1
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
+                    current_key = node.value.l_key
+                    node = self._local.get(current_key)
                 else:
                     # Key not found, return None
                     num_retrieved_nodes = len(self._local)
-                    self._stash += self._local
-                    self._local = []
+                    self._stash += self._local.to_list()
+                    self._local.clear()
                     self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
                     return None
 
         # At this point, node contains the key to delete
         deleted_value = node.value.value
+        node_key = node.key
+        parent_key = self._local.get_parent_key(node_key)
+
         # Case 1: Node has no children (leaf node)
         if node.value.l_key is None and node.value.r_key is None:
-            # If deleting the root
             if len(self._local) == 1:
                 self.root = None
-                self._local = []
+                self._local.clear()
                 self._perform_dummy_operation(num_round=2 * self._max_height)
                 return deleted_value
 
-            if node_index != len(self._local) - 1:
-                raise ValueError("node_index is not the last index in local")
-
-            # Remove the node from its parent
-            parent = self._local[node_index - 1]
-
-            if parent.value.l_key == node.key:
-                parent.value.l_key = None
-                parent.value.l_leaf = None
-                parent.value.l_height = 0
-
-            else:
-                parent.value.r_key = None
-                parent.value.r_leaf = None
-                parent.value.r_height = 0
-
-            # Remove the node from local
-            self._local.pop()
-
+            # Remove from parent and local
+            self._local.update_child_in_parent(parent_key, node_key, None, None, 0)
+            self._local.remove(node_key)
 
         # Case 2: Node has one child
         elif node.value.l_key is None or node.value.r_key is None:
-            # Find the replacement child
-            child_key = node.value.l_key if node.value.l_key is not None else node.value.r_key
-            child_leaf = node.value.l_leaf if node.value.l_key is not None else node.value.r_leaf
-            child_height = node.value.l_height if node.value.l_key is not None else node.value.r_height
+            has_left = node.value.l_key is not None
+            child_key = node.value.l_key if has_left else node.value.r_key
+            child_leaf = node.value.l_leaf if has_left else node.value.r_leaf
+            child_height = node.value.l_height if has_left else node.value.r_height
 
-            # If deleting the root
             if len(self._local) == 1:
-                # update root
                 self.root = (child_key, child_leaf)
-                self._local = []
+                self._local.clear()
                 self._perform_dummy_operation(num_round=2 * self._max_height)
                 return deleted_value
 
-            else:
-                if node_index != len(self._local) - 1:
-                    raise ValueError("node_index is not the last index in local")
-                # Replace the node with its child in the parent
-                parent = self._local[node_index - 1]
+            # Replace in parent and remove from local
+            self._local.update_child_in_parent(parent_key, node_key, child_key, child_leaf, child_height)
+            self._local.remove(node_key)
 
-                if parent.value.l_key == node.key:
-                    parent.value.l_key = child_key
-                    parent.value.l_leaf = child_leaf
-                    parent.value.l_height = child_height
-
-                else:
-                    parent.value.r_key = child_key
-                    parent.value.r_leaf = child_leaf
-                    parent.value.r_height = child_height
-
-                # Remove the successor node
-                self._local.pop()
-
-        # Case 3: Node has two children; choose based on subtree height.
+        # Case 3: Node has two children
         else:
-            # Use predecessor (left then all right) if left is taller, else successor (right then all left).
             use_predecessor = node.value.l_height > node.value.r_height
-
-            # Save reference to parent of deleted node and original key.
-            parent_of_node = self._local[node_index - 1] if node_index > 0 else None
             original_key = node.key
 
-            # Go to the taller subtree.
-            current_key = node.value.l_key if use_predecessor else node.value.r_key
-            current_leaf = node.value.l_leaf if use_predecessor else node.value.r_leaf
-            self._move_node_to_local(key=current_key, leaf=current_leaf)
-            current = self._local[-1]
+            # Traverse to find replacement node
+            traverse_key = node.value.l_key if use_predecessor else node.value.r_key
+            traverse_leaf = node.value.l_leaf if use_predecessor else node.value.r_leaf
+            self._move_node_to_local(key=traverse_key, leaf=traverse_leaf, parent_key=node_key)
+            current = self._local.get(traverse_key)
+            parent_of_replacement_key = node_key
 
-            # Traverse in opposite direction to find replacement.
             next_key = current.value.r_key if use_predecessor else current.value.l_key
             while next_key is not None:
                 next_leaf = current.value.r_leaf if use_predecessor else current.value.l_leaf
-                self._move_node_to_local(key=next_key, leaf=next_leaf)
-                current = self._local[-1]
+                self._move_node_to_local(key=next_key, leaf=next_leaf, parent_key=traverse_key)
+                parent_of_replacement_key = traverse_key
+                traverse_key = next_key
+                current = self._local.get(traverse_key)
                 next_key = current.value.r_key if use_predecessor else current.value.l_key
 
-            # Replacement node is the last in local.
-            replacement_node = self._local[-1]
-            replacement_index = len(self._local) - 1
-
-            # Copy replacement's data to the node being deleted.
+            # Copy replacement's data to the node being deleted
+            replacement_node = current
             node.key = replacement_node.key
             node.value.value = replacement_node.value.value
 
-            # Get the child to replace with (opposite of traversal direction).
+            # Update replacement's parent to point to replacement's child
             child_key = replacement_node.value.l_key if use_predecessor else replacement_node.value.r_key
             child_leaf = replacement_node.value.l_leaf if use_predecessor else replacement_node.value.r_leaf
             child_height = (
-                replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height) if child_key else 0
+                replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height
+            ) if child_key else 0
+            self._local.update_child_in_parent(
+                parent_of_replacement_key, replacement_node.key, child_key, child_leaf, child_height
+            )
+            self._local.remove(replacement_node.key)
 
-            # Update parent's pointer.
-            parent = self._local[replacement_index - 1]
-            if parent.value.l_key == replacement_node.key:
-                parent.value.l_key = child_key
-                parent.value.l_leaf = child_leaf
-                parent.value.l_height = child_height
-            else:
-                parent.value.r_key = child_key
-                parent.value.r_leaf = child_leaf
-                parent.value.r_height = child_height
-
-            # Remove replacement node from local.
-            self._local.pop()
-
-            # Update parent of the deleted node to point to new key.
-            if parent_of_node is not None:
-                if parent_of_node.value.l_key == original_key:
-                    parent_of_node.value.l_key = node.key
-                else:
-                    parent_of_node.value.r_key = node.key
+            # Update parent of deleted node to point to new key, then update LocalNodes tracking
+            self._local.update_child_in_parent(parent_key, original_key, node.key, node.leaf, 0)
+            self._local.replace_node_key(original_key, node.key)
 
         # Update heights
         self._update_height()
         # Update leaves
-        self._update_leaves()
+        self._local.update_all_leaves(self._get_new_leaf)
         # Balance the tree
         self._balance_local(True)
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
-        self._stash += self._local
-        self._local = []
-        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+        self._stash += self._local.to_list()
+        self._local.clear()
+        self._perform_dummy_operation(num_round=3 * self._max_height + 1 - num_retrieved_nodes)
         return deleted_value

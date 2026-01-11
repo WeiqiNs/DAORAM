@@ -88,6 +88,16 @@ class TreeBaseOram(ABC):
         return self._client
 
     @property
+    def stash(self) -> list:
+        """Return the stash."""
+        return self._stash
+
+    @stash.setter
+    def stash(self, value: list):
+        """Update the stash with input."""
+        self._stash = value
+
+    @property
     def stash_size(self) -> int:
         """Return the stash size."""
         return len(self._stash)
@@ -329,10 +339,11 @@ class TreeBaseOram(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def eviction_with_update_stash(self, key: int, value: Any) -> None:
+    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
         :param key: The key of the data block of interest.
         :param value: The value to update the data block of interest.
+        :param execute: If True, execute immediately. If False, queue write for batching.
         """
         raise NotImplementedError

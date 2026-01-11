@@ -1,3 +1,5 @@
+"""Cryptographic primitives: encryption, PRF, and PRP implementations."""
+
 import hashlib
 import os
 from abc import ABC, abstractmethod

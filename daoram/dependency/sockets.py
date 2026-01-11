@@ -33,7 +33,7 @@ class BaseSocket(ABC):
 
 
 class ZMQSocket(BaseSocket):
-    """ZeroMQ socket implementation with automatic message framing.hmm"""
+    """ZeroMQ socket implementation with automatic message framing."""
 
     def __init__(self, ip: str, port: int, is_server: bool):
         """Initialize the ZeroMQ socket for client or server.

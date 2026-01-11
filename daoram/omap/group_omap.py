@@ -1,265 +1,410 @@
+"""Group-by-hash OMAP that maps group members to paths via PRF and batch-reads those paths.
+
+Design notes:
+- On init_server_storage(data): we partition input KV into `num_groups` using Helper.hash_data_to_map.
+- We create a single BinaryTree storage that holds all blocks. Each KV is assigned a leaf via a PRF
+  (with a small rehash loop if the chosen path is full during initialization).
+- The client keeps a local mapping `group_seed_map` from group index to metadata so
+  we can deterministically compute the list of leaves to batch-read for a group in one interaction.
+
+This class provides `init_server_storage`, `search`, `search_group`, and `insert` with
+batch reads/writes using the InteractServer batching API.
 """
-This module defines an OMAP class that uses multi-path ORAM for batch retrieval.
+import math
+import random
+from typing import Any, Dict, List, Optional, Tuple
 
-The first layer is an ORAM that stores PRF seeds. When accessing a key, we retrieve
-the PRF seed, use it to generate multiple path indices, then use MulPathOram to
-retrieve all paths at once.
-"""
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-from daoram.dependency import Blake2Prf, Helper, PseudoRandomFunction
-from daoram.omap.oblivious_search_tree import ObliviousSearchTree
-from daoram.oram.mul_path_oram import MulPathOram
-from daoram.oram.tree_base_oram import TreeBaseOram
+from daoram.dependency import BinaryTree, Blake2Prf, Data, Encryptor, Helper, InteractServer
 
 
-class MulPathOmap:
-    def __init__(
-        self,
-        num_data: int,
-        num_paths: int,
-        ost: ObliviousSearchTree,
-        seed_oram: TreeBaseOram,
-        data_oram: MulPathOram
-    ):
+class GroupOmap:
+    def __init__(self,
+                 num_groups: int,
+                 key_size: int,
+                 data_size: int,
+                 client: InteractServer,
+                 name: str = "group_omap",
+                 bucket_size: int = 4,
+                 stash_scale: int = 100,
+                 encryptor: Encryptor = None):
+        """Initialize the group-path OMAP.
+
+        :param num_groups: number of groups to partition keys into, should be a power of 2.
+        :param key_size: bytes for random dummy keys (used for padding/encryption sizing).
+        :param data_size: bytes for random dummy data used for padding/encryption sizing.
+        :param client: InteractServer to talk to server.
+        :param name: The name of the protocol, used as storage label on the server.
+        :param bucket_size: bucket size for the underlying binary tree.
+        :param stash_scale: scaling factor for stash size limit.
+        :param encryptor: The encryptor to use for encryption.
         """
-        Initialize the multi-path OMAP construction.
+        self._num_groups = num_groups
+        self._operation_num = num_groups
+        self._num_data = 0
+        self._stash_scale = stash_scale
+        self._key_size = key_size
+        self._data_size = data_size
+        self._bucket_size = bucket_size
+        self._client = client
+        self._encryptor = encryptor
+        self._name = name
 
-        This OMAP uses a two-layer structure:
-        - First layer (seed_oram): Stores PRF seeds for each logical bucket
-        - Second layer (data_oram): MulPathOram that stores actual data across multiple paths
+        # PRFs: one for group hashing, one for leaf mapping
+        self._group_prf = Blake2Prf()
+        self._leaf_prf = Blake2Prf()
+        self._stash: List[Data] = []
 
-        When searching for a key:
-        1. Hash the key to find which seed bucket it belongs to
-        2. Retrieve the PRF seed from seed_oram
-        3. Use the seed to generate `num_paths` path indices
-        4. Use data_oram to batch retrieve all paths
-        5. Search for the key in the retrieved data
+        # First compute how many are in the buckets, according to https://eprint.iacr.org/2021/1280.
+        self.upper_bound = math.ceil(
+            math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(self._num_groups, 2) + 128 - 1)).real + 1)
+        )
 
-        :param num_data: The number of data points the omap should store.
-        :param num_paths: The number of paths to retrieve per operation.
-        :param ost: Oblivious search tree for organizing data within paths.
-        :param seed_oram: ORAM for storing PRF seeds (first layer).
-        :param data_oram: MulPathOram for storing actual data (second layer).
-        """
-        self._num_data: int = num_data
-        self._num_paths: int = num_paths
-        self._ost: ObliviousSearchTree = ost
-        self._seed_oram: TreeBaseOram = seed_oram
-        self._data_oram: MulPathOram = data_oram
+        # Storage label on server
+        self._name = name
 
-        # Update the OST height for multiple trees.
-        self._ost.update_mul_tree_height(num_tree=num_data)
+        # Local mapping: group index -> [access_count, item_count]
+        self._group_seed_map: Dict[int, List[int]] = {}
 
-        # PRF for hashing input keys to seed bucket indices.
-        self._key_prf: Blake2Prf = Blake2Prf()
+        # Underlying BinaryTree storage (created at init_server_storage)
+        self._tree: Optional[BinaryTree] = None
 
-    def _generate_path_keys(self, seed: bytes, num_paths: int) -> List[int]:
-        """
-        Use the PRF seed to generate a list of path keys.
+    def _compute_max_block_size(self) -> int:
+        """Compute a conservative block size for storage padding."""
+        sample = Data(key=b"k" * self._key_size, leaf=0, value=b"v" * self._data_size)
+        return len(sample.dump()) + Helper.LENGTH_HEADER_SIZE
 
-        :param seed: The PRF seed retrieved from seed_oram.
-        :param num_paths: Number of path keys to generate.
-        :return: List of path keys for data_oram.
-        """
-        # Create a PRF from the seed.
-        prf = Blake2Prf(key=seed)
+    def _encrypt_path_data(self, path: Dict[int, List[Data]]) -> Dict[int, List[bytes]]:
+        """Encrypt PathData for writing to the server."""
+        if not self._encryptor:
+            return path  # type: ignore
 
-        # Generate path keys using the PRF.
-        path_keys = []
-        for i in range(num_paths):
-            # Hash the index to get a path key within data_oram's range.
-            path_key = prf.hash_to_int(
-                data=i.to_bytes(4, 'big'),
-                output_range=self._data_oram._num_data
-            )
-            path_keys.append(path_key)
+        max_block = self._compute_max_block_size()
 
-        return path_keys
+        enc_path: Dict[int, List[bytes]] = {}
+        for idx, bucket in path.items():
+            enc_bucket = [
+                self._encryptor.enc(plaintext=data.dump_pad(max_block))
+                for data in bucket
+            ]
+            # Pad with dummy encrypted blocks to bucket_size
+            dummy_needed = self._bucket_size - len(enc_bucket)
+            if dummy_needed > 0:
+                enc_bucket.extend([
+                    self._encryptor.enc(plaintext=Data().dump_pad(max_block))
+                    for _ in range(dummy_needed)
+                ])
+            enc_path[idx] = enc_bucket
 
-    def init_server_storage(
-        self,
-        data: Optional[List[Tuple[Union[str, int, bytes], Any]]] = None
-    ) -> None:
-        """
-        Initialize the server storage for the input list of key-value pairs.
+        return enc_path
 
-        :param data: A list of key-value pairs to store.
+    def _decrypt_path_data(self, path: Dict[int, List[bytes]]) -> Dict[int, List[Data]]:
+        """Decrypt PathData read from server into Data objects (dropping dummies)."""
+        if not self._encryptor:
+            return path  # type: ignore
+
+        dec_path: Dict[int, List[Data]] = {}
+        for idx, bucket in path.items():
+            dec_bucket: List[Data] = []
+            for blob in bucket:
+                dec = Data.load_unpad(self._encryptor.dec(ciphertext=blob))
+                if dec.key is not None:
+                    dec_bucket.append(dec)
+            dec_path[idx] = dec_bucket
+
+        return dec_path
+
+    def init_server_storage(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
+        """Partition input KV into groups, place all blocks into one BinaryTree storage, and upload it.
+
+        Client stores the mapping group->metadata locally to allow deterministic batch reads later.
         """
         if data is None:
             data = []
 
-        # Hash data to buckets based on keys.
-        data_map = Helper.hash_data_to_map(
-            prf=self._key_prf,
-            data=data,
-            map_size=self._num_data
+        # Partition into groups
+        self._num_data = len(data)
+        data_map = Helper.hash_data_to_map(prf=self._group_prf, data=data, map_size=self._num_groups)
+
+        # Each group corresponds to two integers: access_count and item_count
+        self._group_seed_map = {i: [0, len(data_map[i])] for i in range(self._num_groups)}
+
+        # Initialize the BinaryTree storage
+        max_block = self._compute_max_block_size()
+        tree = BinaryTree(
+            num_data=self._num_groups,
+            bucket_size=self._bucket_size,
+            data_size=max_block,
+            filename=None,
+            encryption=True if self._encryptor else False
         )
 
-        # Convert to list format for OST initialization.
-        data_list = [data_map[key] for key in range(self._num_data)]
+        # Fill the tree with each KV mapped to a PRF-determined leaf.
+        for group_index in range(self._num_groups):
+            tmp = 0
+            for kv in data_map[group_index]:
+                key, value = kv
+                seed = (group_index.to_bytes(4, byteorder="big") +
+                        self._group_seed_map[group_index][0].to_bytes(2, byteorder="big") +
+                        tmp.to_bytes(2, byteorder="big"))
+                tmp += 1
+                leaf = self._leaf_prf.digest_mod_n(message=seed, mod=self._num_groups)
 
-        # Initialize multiple trees in the OST.
-        roots = self._ost.init_mul_tree_server_storage(data_list=data_list)
+                data_block = Data(key=key, leaf=leaf, value=value)
+                inserted = tree.fill_data_to_storage_leaf(data=data_block)
 
-        # Generate PRF seeds for each bucket and store in seed_oram.
-        # The seed_oram stores: key -> (seed, root)
-        seed_map: Dict[int, Tuple[bytes, Any]] = {}
-        for key in range(self._num_data):
-            # Generate a random seed for this bucket.
-            seed = Blake2Prf().key  # Use a new PRF's key as the seed
-            seed_map[key] = (seed, roots[key])
+                if not inserted:
+                    self._stash.append(data_block)
 
-        # Initialize seed_oram with the seeds and roots.
-        self._seed_oram.init_server_storage(data_map=seed_map)
+            if len(data_map[group_index]) > self.upper_bound:
+                raise MemoryError(
+                    f"Group {group_index} has more items ({len(data_map[group_index])}) than upper bound "
+                    f"({self.upper_bound}); increase the bound."
+                )
 
-        # Initialize data_oram (empty initially, data added via insert).
-        self._data_oram.init_server_storage()
+        if len(self._stash) > self._stash_scale * int(math.log2(self._num_groups)):
+            raise MemoryError(
+                f"Stash size {len(self._stash)} exceeds allowed limit "
+                f"{self._stash_scale * int(math.log2(self._num_groups))}; increase the limit."
+            )
 
-    def search(self, key: Union[str, int, bytes], value: Any = None) -> Any:
-        """
-        Search for a key and optionally update its value.
+        # Encrypt storage if needed
+        if self._encryptor:
+            tree.storage.encrypt(encryptor=self._encryptor)
 
-        :param key: The search key.
-        :param value: If provided, update the value for this key.
-        :return: The current (or old, if updating) value for the key.
-        """
-        # Hash the key to find which seed bucket it belongs to.
-        seed_key = Helper.hash_data_to_leaf(
-            prf=self._key_prf,
-            data=key,
-            map_size=self._num_data
+        # Save tree locally and upload to server
+        self._tree = tree
+        self._client.init_storage(storage={self._name: tree})
+
+    def _collect_group_leaves_retrieve(self, group_index: int) -> List[int]:
+        """Deterministically compute the leaf indices for all keys in a group (unique, in stable order)."""
+        group_seed = self._group_seed_map[group_index]
+
+        # Compute the leaves for all keys in the group
+        leaves: List[int] = []
+        for item_index in range(self.upper_bound):
+            seed = (group_index.to_bytes(4, byteorder="big") +
+                    group_seed[0].to_bytes(2, byteorder="big") +
+                    item_index.to_bytes(2, byteorder="big"))
+            leaf = self._leaf_prf.digest_mod_n(message=seed, mod=self._num_groups)
+            leaves.append(leaf)
+
+        # Remove duplicates while preserving order, adding random leaves for duplicates
+        seen = set()
+        uniq_leaves = []
+        for leaf in leaves:
+            if leaf not in seen:
+                seen.add(leaf)
+                uniq_leaves.append(leaf)
+            else:
+                while True:
+                    t = random.randint(0, self._num_groups - 1)
+                    if t not in seen:
+                        seen.add(t)
+                        uniq_leaves.append(t)
+                        break
+
+        return uniq_leaves
+
+    def _collect_group_leaves_generate(self, group_index: int) -> List[int]:
+        """Deterministically compute the leaf indices for all keys in a group (in stable order)."""
+        group_seed = self._group_seed_map[group_index]
+
+        # Compute the leaves for all keys in the group
+        leaves: List[int] = []
+        for item_index in range(self.upper_bound):
+            seed = (group_index.to_bytes(4, byteorder="big") +
+                    group_seed[0].to_bytes(2, byteorder="big") +
+                    item_index.to_bytes(2, byteorder="big"))
+            leaf = self._leaf_prf.digest_mod_n(message=seed, mod=self._num_groups)
+            leaves.append(leaf)
+
+        return leaves
+
+    def search(self, key: Any) -> Any:
+        """Given a key, batch-download its group's paths and return the value for the key."""
+        group_index = self._group_prf.digest_mod_n(
+            message=key if isinstance(key, bytes) else str(key).encode(),
+            mod=self._num_groups
         )
 
-        # Retrieve the seed and root from seed_oram.
-        seed_root = self._seed_oram.operate_on_key_without_eviction(key=seed_key)
-        seed, root = seed_root
+        retrieve_leaves = self._collect_group_leaves_retrieve(group_index=group_index)
 
-        # Generate path keys using the seed.
-        path_keys = self._generate_path_keys(seed=seed, num_paths=self._num_paths)
+        # Batch read using the current API
+        self._client.add_read_path(label=self._name, leaves=retrieve_leaves)
+        result = self._client.execute()
+        raw_paths = result.results[self._name]
 
-        # Batch retrieve all paths from data_oram.
-        path_values = self._data_oram.operate_on_keys_without_eviction(keys=path_keys)
+        # Decrypt paths
+        paths = self._decrypt_path_data(path=raw_paths)
 
-        # Set the OST root and search within the tree.
-        self._ost.root = root
-        result = self._ost.search(key=key, value=value)
+        # Flatten and find the desired key
+        local_data = []
+        value = None
 
-        # Update the root in seed_oram and evict.
-        new_seed_root = (seed, self._ost.root)
-        self._seed_oram.eviction_with_update_stash(key=seed_key, value=new_seed_root)
+        # Check stash for items in this group
+        for data in list(self._stash):
+            data_group = self._group_prf.digest_mod_n(
+                message=data.key if isinstance(data.key, bytes) else str(data.key).encode(),
+                mod=self._num_groups
+            )
+            if data_group == group_index:
+                local_data.append(data)
+                self._stash.remove(data)
+            if data.key == key:
+                value = data.value
 
-        # Evict data_oram paths.
-        self._data_oram.eviction_for_mul_keys()
+        # Check paths for items
+        for bucket in paths.values():
+            for data in bucket:
+                data_group = self._group_prf.digest_mod_n(
+                    message=data.key if isinstance(data.key, bytes) else str(data.key).encode(),
+                    mod=self._num_groups
+                )
+                if data_group == group_index:
+                    local_data.append(data)
+                else:
+                    self._stash.append(data)
 
-        return result
+                if data.key == key:
+                    value = data.value
 
-    def insert(self, key: Union[str, int, bytes], value: Any) -> None:
-        """
-        Insert a key-value pair into the OMAP.
+        self._group_seed_map[group_index][0] += 1
 
-        :param key: The key to insert.
-        :param value: The value to associate with the key.
-        """
-        # Hash the key to find which seed bucket it belongs to.
-        seed_key = Helper.hash_data_to_leaf(
-            prf=self._key_prf,
-            data=key,
-            map_size=self._num_data
+        generated_leaves = self._collect_group_leaves_generate(group_index=group_index)
+        for i in range(len(local_data)):
+            local_data[i].leaf = generated_leaves[i]
+            self._stash.append(local_data[i])
+
+        # Evict stash to write paths back
+        evicted_path = self._evict_paths(retrieve_leaves=retrieve_leaves)
+        encrypted_path = self._encrypt_path_data(path=evicted_path)
+
+        self._client.add_write_path(label=self._name, data=encrypted_path)
+        self._client.execute()
+
+        return value
+
+    def search_group(self, index: int) -> List[Tuple[Any, Any]]:
+        """Given a group index, batch-download the group's paths and return all key-value pairs."""
+        group_index = index
+        retrieve_leaves = self._collect_group_leaves_retrieve(group_index=group_index)
+
+        # Batch read
+        self._client.add_read_path(label=self._name, leaves=retrieve_leaves)
+        result = self._client.execute()
+        raw_paths = result.results[self._name]
+
+        # Decrypt paths
+        paths = self._decrypt_path_data(path=raw_paths)
+
+        # Flatten and collect items in this group
+        local = []
+
+        for data in list(self._stash):
+            data_group = self._group_prf.digest_mod_n(
+                message=data.key if isinstance(data.key, bytes) else str(data.key).encode(),
+                mod=self._num_groups
+            )
+            if data_group == group_index:
+                local.append(data)
+                self._stash.remove(data)
+
+        for bucket in paths.values():
+            for data in bucket:
+                data_group = self._group_prf.digest_mod_n(
+                    message=data.key if isinstance(data.key, bytes) else str(data.key).encode(),
+                    mod=self._num_groups
+                )
+                if data_group == group_index:
+                    local.append(data)
+                else:
+                    self._stash.append(data)
+
+        self._group_seed_map[group_index][0] += 1
+
+        generated_leaves = self._collect_group_leaves_generate(group_index=group_index)
+        for i in range(len(local)):
+            local[i].leaf = generated_leaves[i]
+            self._stash.append(local[i])
+
+        # Evict stash to write paths back
+        evicted_path = self._evict_paths(retrieve_leaves=retrieve_leaves)
+        encrypted_path = self._encrypt_path_data(path=evicted_path)
+
+        self._client.add_write_path(label=self._name, data=encrypted_path)
+        self._client.execute()
+
+        return [(data.key, data.value) for data in local]
+
+    def insert(self, key: Any, value: Any) -> None:
+        """Insert or update a key by batch reading a random path, updating, and writing back."""
+        group_index = self._group_prf.digest_mod_n(
+            message=key if isinstance(key, bytes) else str(key).encode(),
+            mod=self._num_groups
         )
+        group_seed = self._group_seed_map[group_index]
+        leaves = [random.randint(0, self._num_groups - 1)]
 
-        # Retrieve the seed and root from seed_oram.
-        seed_root = self._seed_oram.operate_on_key_without_eviction(key=seed_key)
-        seed, root = seed_root
+        self._client.add_read_path(label=self._name, leaves=leaves)
+        result = self._client.execute()
+        raw_paths = result.results[self._name]
 
-        # Generate path keys using the seed.
-        path_keys = self._generate_path_keys(seed=seed, num_paths=self._num_paths)
+        paths = self._decrypt_path_data(path=raw_paths)
 
-        # Batch retrieve all paths from data_oram.
-        self._data_oram.operate_on_keys_without_eviction(keys=path_keys)
+        for bucket in paths.values():
+            for block in bucket:
+                self._stash.append(block)
 
-        # Set the OST root and perform insert.
-        self._ost.root = root
-        self._ost.insert(key=key, value=value)
-
-        # Update the root in seed_oram and evict.
-        new_seed_root = (seed, self._ost.root)
-        self._seed_oram.eviction_with_update_stash(key=seed_key, value=new_seed_root)
-
-        # Evict data_oram paths.
-        self._data_oram.eviction_for_mul_keys()
-
-    def fast_search(self, key: Union[str, int, bytes], value: Any = None) -> Any:
-        """
-        Fast search for a key using the OST's fast_search method.
-
-        :param key: The search key.
-        :param value: If provided, update the value for this key.
-        :return: The current (or old, if updating) value for the key.
-        """
-        # Hash the key to find which seed bucket it belongs to.
-        seed_key = Helper.hash_data_to_leaf(
-            prf=self._key_prf,
-            data=key,
-            map_size=self._num_data
+        seed = (group_index.to_bytes(4, byteorder="big") +
+                group_seed[0].to_bytes(2, byteorder="big") +
+                group_seed[1].to_bytes(2, byteorder="big"))
+        data = Data(
+            key=key,
+            leaf=self._leaf_prf.digest_mod_n(message=seed, mod=self._num_groups),
+            value=value
         )
+        self._group_seed_map[group_index][1] += 1
+        self._stash.append(data)
 
-        # Retrieve the seed and root from seed_oram.
-        seed_root = self._seed_oram.operate_on_key_without_eviction(key=seed_key)
-        seed, root = seed_root
+        if self._group_seed_map[group_index][1] > self.upper_bound:
+            raise MemoryError(
+                f"Group {group_index} has more items ({self._group_seed_map[group_index][1]}) than upper bound "
+                f"({self.upper_bound}); increase the bound."
+            )
 
-        # Generate path keys using the seed.
-        path_keys = self._generate_path_keys(seed=seed, num_paths=self._num_paths)
+        self._num_data += 1
 
-        # Batch retrieve all paths from data_oram.
-        self._data_oram.operate_on_keys_without_eviction(keys=path_keys)
+        # Evict stash to write paths back
+        evicted_path = self._evict_paths(retrieve_leaves=leaves)
+        encrypted_path = self._encrypt_path_data(path=evicted_path)
 
-        # Set the OST root and perform fast search.
-        self._ost.root = root
-        result = self._ost.fast_search(key=key, value=value)
+        self._client.add_write_path(label=self._name, data=encrypted_path)
+        self._client.execute()
 
-        # Update the root in seed_oram and evict.
-        new_seed_root = (seed, self._ost.root)
-        self._seed_oram.eviction_with_update_stash(key=seed_key, value=new_seed_root)
+    def _evict_paths(self, retrieve_leaves: List[int]) -> Dict[int, List[Data]]:
+        """Evict data blocks in the stash to multiple paths.
 
-        # Evict data_oram paths.
-        self._data_oram.eviction_for_mul_keys()
-
-        return result
-
-    def delete(self, key: Union[str, int, bytes]) -> Any:
+        :param retrieve_leaves: list of leaf labels to evict to.
+        :return: PathData dict mapping storage index to bucket.
         """
-        Delete a key from the OMAP.
+        temp_stash: List[Data] = []
 
-        :param key: The key to delete.
-        :return: The deleted value, or None if key not found.
-        """
-        # Hash the key to find which seed bucket it belongs to.
-        seed_key = Helper.hash_data_to_leaf(
-            prf=self._key_prf,
-            data=key,
-            map_size=self._num_data
-        )
+        # Create a dict keyed by storage indices that covers all nodes on the multiple paths
+        path_dict = BinaryTree.get_mul_path_dict(level=self._tree.level, indices=retrieve_leaves)
 
-        # Retrieve the seed and root from seed_oram.
-        seed_root = self._seed_oram.operate_on_key_without_eviction(key=seed_key)
-        seed, root = seed_root
+        # Try to place every real data item from stash into one of the provided paths
+        for data in self._stash:
+            inserted = BinaryTree.fill_data_to_path(
+                data=data,
+                path=path_dict,
+                leaves=retrieve_leaves,
+                level=self._tree.level,
+                bucket_size=self._bucket_size,
+            )
+            if not inserted:
+                temp_stash.append(data)
 
-        # Generate path keys using the seed.
-        path_keys = self._generate_path_keys(seed=seed, num_paths=self._num_paths)
+        # Update the stash to only those elements that could not be placed
+        self._stash = temp_stash
 
-        # Batch retrieve all paths from data_oram.
-        self._data_oram.operate_on_keys_without_eviction(keys=path_keys)
-
-        # Set the OST root and perform delete.
-        self._ost.root = root
-        result = self._ost.delete(key=key)
-
-        # Update the root in seed_oram and evict.
-        new_seed_root = (seed, self._ost.root)
-        self._seed_oram.eviction_with_update_stash(key=seed_key, value=new_seed_root)
-
-        # Evict data_oram paths.
-        self._data_oram.eviction_for_mul_keys()
-
-        return result
+        return path_dict

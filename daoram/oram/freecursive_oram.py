@@ -933,11 +933,13 @@ class FreecursiveOram(TreeBaseOram):
 
         return read_value
 
-    def eviction_with_update_stash(self, key: int, value: Any) -> None:
+    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
         """Update a data block stored in the stash and then perform eviction.
 
         :param key: The key of the data block of interest.
         :param value: The value to update the data block of interest.
+        :param execute: If True, execute immediately. If False, queue write for batching.
+        Note: For complex cases with reset leaves, internal executes are always performed.
         """
         # Set found the key to False.
         found = False
@@ -959,7 +961,6 @@ class FreecursiveOram(TreeBaseOram):
             evicted_path = self._evict_stash(leaves=[self._tmp_leaf])
             # Interact with server to store a path.
             self.client.add_write_path(label=self._name, data=evicted_path)
-            self.client.execute()
             # Set temporary leaf to None.
             self._tmp_leaf = None
         else:
@@ -967,6 +968,7 @@ class FreecursiveOram(TreeBaseOram):
             evicted_path = self._evict_stash(leaves=self._tmp_leaves)
             # Interact with server to store a path.
             self.client.add_write_path(label=self._name, data=evicted_path)
+            # Must execute here due to internal dependencies with reset operations.
             self.client.execute()
             # Set temporary leaves to None.
             self._tmp_leaves = None
@@ -991,7 +993,9 @@ class FreecursiveOram(TreeBaseOram):
 
                     # Interact with the server to store the path.
                     self.client.add_write_path(label=self._name, data=evicted_path)
-                    self.client.execute()
+                    # Set temporary reset leaves to None.
+                    self._tmp_reset_leaves = None
 
-            # Set temporary reset leaves to None.
-            self._tmp_reset_leaves = None
+        # If execution is required, we execute.
+        if execute:
+            self.client.execute()

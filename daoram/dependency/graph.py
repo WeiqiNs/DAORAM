@@ -1,3 +1,5 @@
+"""Graph data structures and algorithms for ORAM constructions."""
+
 import random
 from typing import Dict, List
 

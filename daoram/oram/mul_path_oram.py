@@ -1,9 +1,8 @@
 """
 This module defines the multi-path oram class.
 
-MulPathOram extends PathOram to support batch operations where multiple paths
-are read and written at once, improving efficiency for operations that need
-to access multiple keys.
+MulPathOram extends PathOram to support batch operations where multiple paths are read and written at once,
+improving efficiency for operations that need to access multiple keys.
 """
 from typing import Any, Dict, List
 
@@ -16,11 +15,12 @@ class MulPathOram(PathOram):
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
-                 name: str = "mp",
+                 name: str = "mul_path_oram",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 encryptor: Encryptor = None):
+                 encryptor: Encryptor = None,
+                 stash_scale_multiplier: int = 1):
         """
         Defines the multi-path oram for batch operations.
 
@@ -31,6 +31,7 @@ class MulPathOram(PathOram):
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
+        :param stash_scale_multiplier: Multiplier for the stash size (default 1).
         :param encryptor: The encryptor to use for encryption.
         """
         # Initialize the parent PathOram class.
@@ -42,33 +43,23 @@ class MulPathOram(PathOram):
             encryptor=encryptor,
             data_size=data_size,
             bucket_size=bucket_size,
-            stash_scale=stash_scale
+            stash_scale=stash_scale * stash_scale_multiplier
         )
 
         # Store temporary leaves for batch operations without immediate eviction.
         self._tmp_leaves: List[int] = []
 
-    @property
-    def stash(self) -> list:
-        """Return the stash."""
-        return self._stash
-
-    @stash.setter
-    def stash(self, value: list):
-        """Update the stash with input."""
-        self._stash = value
-
     def _retrieve_mul_data_blocks(
             self,
-            key_leaf_map: Dict[int, int],
             path: PathData,
-            values: Dict[int, Any] = None
+            key_leaf_map: Dict[int, int],
+            values: Dict[int, Any] = None,
     ) -> Dict[int, Any]:
         """
         Retrieve multiple data blocks from the path. If values provided, write them.
 
-        :param key_leaf_map: Dict mapping key to its new leaf.
         :param path: PathData dict mapping storage index to bucket.
+        :param key_leaf_map: Dict mapping key to its new leaf.
         :param values: If provided, dict mapping key to value to write.
         :return: Dict mapping key to its current value.
         """
@@ -119,29 +110,19 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys(
-            self,
-            key_value_map: Dict[int, Any] = None,
-            keys: List[int] = None
+            self, key_value_map: Dict[int, Any], key_path_map: Dict[int, int] = None,
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys. Reads all paths at once,
         performs operations, and evicts all paths at once.
 
-        Either provide key_value_map for read/write operations, or keys for read-only.
-
         :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
-        :param keys: List of keys to read (alternative to key_value_map for read-only).
+        :param key_path_map: Optional dict mapping key to path. If None, paths are
+            retrieved from the position map.
         :return: Dict mapping key to its value (before write if writing).
         """
-        # Build the key list from either parameter.
-        if key_value_map is not None:
-            key_list = list(key_value_map.keys())
-            values = {k: v for k, v in key_value_map.items() if v is not UNSET}
-        elif keys is not None:
-            key_list = keys
-            values = None
-        else:
-            raise ValueError("Must provide either key_value_map or keys")
+        key_list = list(key_value_map.keys())
+        values = {k: v for k, v in key_value_map.items() if v is not UNSET}
 
         if not key_list:
             return {}
@@ -152,7 +133,10 @@ class MulPathOram(PathOram):
 
         for key in key_list:
             # Find which path the data lies on.
-            old_leaf = self._look_up_pos_map(key=key)
+            if key_path_map is not None:
+                old_leaf = key_path_map[key]
+            else:
+                old_leaf = self._look_up_pos_map(key=key)
             old_leaves.append(old_leaf)
 
             # Generate a new leaf and update position map.
@@ -167,7 +151,7 @@ class MulPathOram(PathOram):
 
         # Retrieve values from paths and optionally write to them.
         read_values = self._retrieve_mul_data_blocks(
-            key_leaf_map=key_leaf_map, path=path_data, values=values
+            path=path_data, key_leaf_map=key_leaf_map, values=values
         )
 
         # Evict stash to all paths at once.
@@ -180,27 +164,19 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys_without_eviction(
-            self,
-            key_value_map: Dict[int, Any] = None,
-            keys: List[int] = None
+            self, key_value_map: Dict[int, Any], key_path_map: Dict[int, int] = None,
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys without eviction.
         Call eviction_for_mul_keys() later to complete the operation.
 
         :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
-        :param keys: List of keys to read (alternative to key_value_map for read-only).
+        :param key_path_map: Optional dict mapping key to path. If None, paths are
+            retrieved from the position map.
         :return: Dict mapping key to its value (before write if writing).
         """
-        # Build the key list from either parameter.
-        if key_value_map is not None:
-            key_list = list(key_value_map.keys())
-            values = {k: v for k, v in key_value_map.items() if v is not UNSET}
-        elif keys is not None:
-            key_list = keys
-            values = None
-        else:
-            raise ValueError("Must provide either key_value_map or keys")
+        key_list = list(key_value_map.keys())
+        values = {k: v for k, v in key_value_map.items() if v is not UNSET}
 
         if not key_list:
             return {}
@@ -211,7 +187,10 @@ class MulPathOram(PathOram):
 
         for key in key_list:
             # Find which path the data lies on.
-            old_leaf = self._look_up_pos_map(key=key)
+            if key_path_map is not None:
+                old_leaf = key_path_map[key]
+            else:
+                old_leaf = self._look_up_pos_map(key=key)
             old_leaves.append(old_leaf)
 
             # Generate a new leaf and update position map.
@@ -226,7 +205,7 @@ class MulPathOram(PathOram):
 
         # Retrieve values from paths and optionally write to them.
         read_values = self._retrieve_mul_data_blocks(
-            key_leaf_map=key_leaf_map, path=path_data, values=values
+            path=path_data, key_leaf_map=key_leaf_map, values=values
         )
 
         # Store leaves for later eviction.
@@ -234,11 +213,12 @@ class MulPathOram(PathOram):
 
         return read_values
 
-    def eviction_for_mul_keys(self, updates: Dict[int, Any] = None) -> None:
+    def eviction_for_mul_keys(self, updates: Dict[int, Any] = None, execute: bool = True) -> None:
         """
         Complete the batch operation by updating stash and evicting.
 
         :param updates: Optional dict mapping key to new value to update in stash.
+        :param execute: If True, execute immediately. If False, queue write for batching.
         """
         # Apply any updates to stash.
         if updates:
@@ -251,9 +231,12 @@ class MulPathOram(PathOram):
         # Evict stash to all paths.
         evicted_path = self._evict_stash(leaves=self._tmp_leaves)
 
-        # Write all paths back.
+        # Add write to client queue.
         self._client.add_write_path(label=self._name, data=evicted_path)
-        self._client.execute()
+
+        # Execute if requested.
+        if execute:
+            self._client.execute()
 
         # Clear temporary leaves.
         self._tmp_leaves = []

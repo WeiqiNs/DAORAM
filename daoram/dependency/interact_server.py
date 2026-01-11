@@ -1,3 +1,5 @@
+"""Client-server interaction layer for local and remote ORAM storage."""
+
 import pickle
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Tuple, Union

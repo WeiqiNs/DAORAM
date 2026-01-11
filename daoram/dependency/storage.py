@@ -1,3 +1,5 @@
+"""Storage backend for ORAM tree nodes, supporting memory and file-based storage."""
+
 import os
 from typing import BinaryIO, Optional, List
 

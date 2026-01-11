@@ -1,3 +1,5 @@
+"""OMAP combining an ORAM with an Oblivious Search Tree for optimal construction."""
+
 from typing import Any, List, Optional, Tuple, Union
 
 from daoram.dependency import Helper, Blake2Prf

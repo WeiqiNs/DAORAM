@@ -1,31 +1,26 @@
+"""SORAM Client Demo.
+
+Usage:
+    python soram_client.py [--num-data N] [--cache-size N]
+
+Examples:
+    python soram_client.py
+    python soram_client.py --num-data 512 --cache-size 100
 """
-SORAM client example.
-"""
-import os
-import random
-import sys
 
-from daoram.dependency.interact_server import InteractLocalServer
-
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-print("project_root: ", project_root)
-sys.path.insert(0, project_root)
-
+import argparse
 import time
-from daoram.so.soram import Soram
+
+from daoram.dependency import InteractLocalServer
+from daoram.soram import Soram
 
 
-def main():
-    # Initialize server
-    # client = InteractRemoteServer()
+def run_demo(num_data: int, cache_size: int, data_size: int):
+    """Run SORAM demo: setup, write, read, and verify."""
+    # Create local client (SORAM uses local server).
     client = InteractLocalServer()
 
-    # SORAM parameters
-    num_data = pow(2, 10)
-    cache_size = 200
-    data_size = 1024
-
-    # Create SORAM instance
+    # Create and setup SORAM.
     soram = Soram(
         num_data=num_data,
         cache_size=cache_size,
@@ -33,36 +28,42 @@ def main():
         client=client,
         name="demo_soram"
     )
-    # client.init_connection()
 
-    data_map = {}
-    for i in range(num_data):
-        data_map[i] = f"Data value {i}".encode()
-
+    # Initialize with data.
+    data_map = {i: f"value_{i}".encode() for i in range(num_data)}
     soram.setup(data_map=data_map)
+    print(f"Initialized SORAM with {num_data} entries, cache_size={cache_size}.")
 
-    print("Performing operations...")
+    # Write phase.
+    start = time.time()
     for i in range(num_data):
-        new_value = f"Updated value {i}".encode()
-        value = soram.access(key=i, op='write', value=new_value)
-        value = soram.access(key=i, op='read')
-        print(f"Updated key {i} value:{value}")
+        soram.access(key=i, op="write", value=f"updated_{i}".encode())
+    write_time = time.time() - start
 
+    # Read phase.
+    start = time.time()
+    errors = 0
     for i in range(num_data):
-        value = soram.access(key=i, op='read')
-        print(f"Read key {i}: {value}...")
+        value = soram.access(key=i, op="read")
+        if value != f"updated_{i}".encode():
+            errors += 1
+    read_time = time.time() - start
 
-    for i in range(num_data):
-        # Get random value between 0-20
-        random_key = random.randint(0, 120)
-        # Write random value
-        soram.access(key=random_key, op="write", value=f"Random value {random_key}".encode())
-        # Read and verify
-        read_value = soram.access(key=random_key, op="read")
-        print(f"Loop progress: {i}, Random key: {random_key}, Read value: {read_value}")
+    # Summary.
+    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Errors: {errors}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="SORAM Client Demo")
+    parser.add_argument("--num-data", type=int, default=1024, help="Number of entries (default: 1024)")
+    parser.add_argument("--cache-size", type=int, default=200, help="Cache size (default: 200)")
+    parser.add_argument("--data-size", type=int, default=64, help="Data size in bytes (default: 64)")
+    args = parser.parse_args()
+
+    run_demo(args.num_data, args.cache_size, args.data_size)
 
 
 if __name__ == "__main__":
-    start_time = time.time()
     main()
-    print("--- %s seconds ---" % (time.time() - start_time))

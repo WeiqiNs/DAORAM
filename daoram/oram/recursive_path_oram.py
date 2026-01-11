@@ -381,12 +381,13 @@ class RecursivePathOram(TreeBaseOram):
 
         return read_value
 
-    def eviction_with_update_stash(self, key: int, value: Any) -> None:
+    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
         """
         Update a data block stored in the stash and then perform eviction.
 
         :param key: The key of the data block of interest.
         :param value: The value to update the data block of interest.
+        :param execute: If True, execute immediately. If False, queue write for batching.
         """
         # Set found the key to False.
         found = False
@@ -407,7 +408,8 @@ class RecursivePathOram(TreeBaseOram):
 
         # Write the path back to the server.
         self.client.add_write_path(label=self._name, data=evicted_path)
-        self.client.execute()
+        if execute:
+            self.client.execute()
 
         # Set temporary leaf to None.
         self._tmp_leaf = None

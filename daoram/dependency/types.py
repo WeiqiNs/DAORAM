@@ -1,3 +1,5 @@
+"""Type definitions and data classes used throughout the ORAM library."""
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, NamedTuple, Tuple, Union, Optional
 
