@@ -512,6 +512,167 @@ class TestBPlusOdsOmap:
             for j in range(i * 2 * size_group, (i * 2 + 1) * size_group + extra):
                 assert omap.fast_search(key=j) == j
 
+    def test_delete_basic(self):
+        """Test basic delete operations."""
+        omap = BPlusOdsOmap(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert and update like the original tests (required for proper tree structure)
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA):
+            omap.search(key=i, value=i * 2)  # This updates and "fixes" the tree
+
+        # Delete every other element in first 50
+        for i in range(0, 50, 2):
+            deleted_value = omap.delete(key=i)
+            assert deleted_value == i * 2  # value was updated to i * 2
+
+        # Verify deleted keys are gone and remaining keys are still there
+        for i in range(50):
+            result = omap.search(key=i)
+            if i % 2 == 0:
+                assert result is None  # Deleted
+            else:
+                assert result == i * 2  # Still exists with updated value
+
+    def test_delete_with_underflow(self):
+        """Test delete that triggers underflow handling."""
+        omap = BPlusOdsOmap(
+            order=3, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert and update like original tests
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA):
+            omap.search(key=i, value=i)
+
+        # Delete elements to trigger underflow
+        for i in range(10):
+            omap.delete(key=i)
+
+        # Remaining elements should still be searchable
+        for i in range(10, 20):
+            assert omap.search(key=i) == i
+
+    def test_delete_all_elements(self):
+        """Test deleting all elements from the tree."""
+        omap = BPlusOdsOmap(
+            order=4, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert and update
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA):
+            omap.search(key=i, value=i)
+
+        # Delete first 30 elements
+        for i in range(30):
+            deleted = omap.delete(key=i)
+            assert deleted == i
+
+    def test_delete_nonexistent_key(self):
+        """Test deleting a key that doesn't exist."""
+        omap = BPlusOdsOmap(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert and update
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA):
+            omap.search(key=i, value=i)
+
+        # Try to delete nonexistent key (larger than NUM_DATA)
+        result = omap.delete(key=NUM_DATA + 100)
+        assert result is None
+
+        # Original keys should still exist
+        for i in range(10):
+            assert omap.search(key=i) == i
+
+    def test_delete_and_reinsert(self):
+        """Test deleting and then updating values with search."""
+        omap = BPlusOdsOmap(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert and update
+        for i in range(NUM_DATA):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA):
+            omap.search(key=i, value=i)
+
+        # Delete first 20 elements
+        for i in range(20):
+            omap.delete(key=i)
+
+        # Verify they're gone
+        for i in range(20):
+            assert omap.search(key=i) is None
+
+        # Remaining elements should work
+        for i in range(20, 30):
+            assert omap.search(key=i) == i
+
+    def test_delete_with_encryption(self):
+        """Test delete with encryption enabled."""
+        omap = BPlusOdsOmap(
+            order=5, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=True
+        )
+        omap.init_server_storage()
+
+        # Insert and update
+        for i in range(NUM_DATA // 10):
+            omap.insert(key=i, value=i)
+        for i in range(NUM_DATA // 10):
+            omap.search(key=i, value=i)
+
+        # Delete some elements
+        for i in range(0, 20, 2):
+            deleted = omap.delete(key=i)
+            assert deleted == i
+
+        # Verify remaining elements
+        for i in range(1, 20, 2):
+            assert omap.search(key=i) == i
+
+    def test_delete_string_keys(self):
+        """Test delete with string keys."""
+        omap = BPlusOdsOmap(
+            order=10, num_data=NUM_DATA, key_size=10, data_size=10, client=InteractLocalServer(), use_encryption=False
+        )
+        omap.init_server_storage()
+
+        # Insert string key-value pairs (note: order=10 is used for string keys, key==value)
+        for i in range(NUM_DATA):
+            omap.insert(key=f"{i}", value=f"{i}")
+
+        # Verify search works
+        for i in range(30):
+            assert omap.search(key=f"{i}") == f"{i}"
+
+        # Delete some
+        for i in range(0, 30, 3):
+            deleted = omap.delete(key=f"{i}")
+            assert deleted == f"{i}"
+
+        # Verify
+        for i in range(30):
+            result = omap.search(key=f"{i}")
+            if i % 3 == 0:
+                assert result is None
+            else:
+                assert result == f"{i}"
+
 
 class TestBPlusOdsOmapOptimized:
     def test_int_key(self):
