@@ -27,11 +27,12 @@ class TopDownSomap:
                  stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 use_encryption: bool = True,
+                 key_size: int = 16):
         """
         Initialize Top-down SOMAP.
 
-        :param num_data: Database size (N).
+        :param num_data: Database size (N). Must be a power of 2 and >= total data count.
         :param cache_size: The size of the caches (O_W and O_R), denoted as 'c' in the algorithm.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
@@ -42,11 +43,13 @@ class TopDownSomap:
         :param aes_key: The key to use for the AES instance.
         :param num_key_bytes: The number of bytes the aes key should have.
         :param use_encryption: A boolean indicating whether to use encryption.
+        :param key_size: The number of bytes for keys (used for padding).
         """
         self._num_data = num_data
         self._num_groups = num_data
         self._cache_size = cache_size
         self._data_size = data_size
+        self._key_size = key_size
         self._client = client
         self._name = name
         self._filename = filename
@@ -62,6 +65,8 @@ class TopDownSomap:
         self._leaf_prf = Prf()
         self._tree_stash: List[Data] = []
 
+        # Initialize cipher for encryption
+        self._cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         # Initialize cipher for list encryption if encryption is enabled
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         self.PRP = PRP(key=aes_key, n=self._extended_size)
@@ -290,15 +295,20 @@ class TopDownSomap:
         extended_data_list = list(extended_data.items())
         keys_list = list(extended_data.keys())
         st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
-        st2 = self._Or._init_ods_storage(extended_data_list[self._cache_size: 2 * self._cache_size])
+        # O_R stores (seed, timestamp) format where seed is [read_count, write_count]
+        # Initialize with timestamp 0 for all entries
+        or_data_list = [(key, (value, 0)) for key, value in extended_data_list[self._cache_size: 2 * self._cache_size]]
+        st2 = self._Or._init_ods_storage(or_data_list)
 
         # Encrypt queue data if encryption is enabled
+        # Q_W entries are stored as (key, marker) tuples where marker is "Key" or "Dummy"
+        # Q_R entries are stored as (key, timestamp, marker) tuples
         if self._use_encryption:
-            self._Qw = [self._encrypt_data(key) for key in keys_list[:self._cache_size]]
-            self._Qr = [self._encrypt_data(key) for key in keys_list[self._cache_size: 2 * self._cache_size]]
+            self._Qw = [self._encrypt_data((key, "Key")) for key in keys_list[:self._cache_size]]
+            self._Qr = [self._encrypt_data((key, 0, "Key")) for key in keys_list[self._cache_size: 2 * self._cache_size]]
         else:
-            self._Qw = keys_list[:self._cache_size]
-            self._Qr = keys_list[self._cache_size:  2 * self._cache_size]
+            self._Qw = [(key, "Key") for key in keys_list[:self._cache_size]]
+            self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size:  2 * self._cache_size]]
 
 
 
@@ -334,31 +344,33 @@ class TopDownSomap:
             # self.operate_on_list(label='DB', op='get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
             self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
             # If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
+            # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])
+                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
             else:
-                self._Ow.search(key, [value_old[0]+1, value_old[1]+1])
+                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
             self.operate_on_list(label=self._Qw_name, op='insert', data=(self._num_data + self._dummy_index, "Dummy"))
-            # execute𝑑 = 𝑑 + 1 mod 2c
-            self._dummy_index += 1
-            self._dummy_index = self._dummy_index % self._num_data
+            # execute d = d + 1 mod n
+            self._dummy_index = (self._dummy_index + 1) % self._num_data
 
             # Case b: key in cache Or
         elif value_old2 is not None:
-            value_old = value_old2
+            # O_R stores (seed, timestamp) format, where seed is [read_count, write_count]
+            # Extract the seed (value_old2[0]) as the actual value_old
+            value_old = value_old2[0]
             # visit (𝑛+𝑑,𝑣_𝑛+𝑑) from D
             # self.operate_on_list('DB', 'get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
             self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
 
             # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
+            # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])
+                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
             else:
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]+1])
+                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
             self.operate_on_list(self._Qw_name, 'insert', data=(key, "Key"))
-            # execute𝑑 = 𝑑 + 1 mod 2c
-            self._dummy_index += 1
-            self._dummy_index = self._dummy_index % self._num_data
+            # execute𝑑 = 𝑑 + 1 mod n
+            self._dummy_index = (self._dummy_index + 1) % self._num_data
 
             # Case c: key not in cache
         else:
@@ -366,10 +378,11 @@ class TopDownSomap:
             # value_old = self.operate_on_list('DB', 'get', pos = self._prp.digest_mod_n(str(key).encode(), self._extended_size))
             value_old = self.operate_on_list('DB', 'get', pos=self.PRP.encrypt(key))
             # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
+            # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])
+                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
             else:
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]+1])
+                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
             self.operate_on_list(self._Qw_name, 'insert', data=(key, "Key"))
 
         if op == 'search':
@@ -378,7 +391,7 @@ class TopDownSomap:
             value = self.insert(general_key, general_value, value_old)
 
         # Adjust security level
-        self._adjust_security_level()
+        self.adjust_security_level()
         self._timestamp += 1
 
         return value
@@ -455,41 +468,41 @@ class TopDownSomap:
                     break
 
 
-        def adjust_cache_size(self, new_cache_size: int) -> None:
-            """
-            Dynamically adjust cache size (window parameter c)
+    def adjust_cache_size(self, new_cache_size: int) -> None:
+        """
+        Dynamically adjust cache size (window parameter c)
 
-            :param new_cache_size: new cache size
-            """
-            if new_cache_size > 0:
-                self._cahce_size = new_cache_size
-                # Immediately adjust security level to adapt to new size
-                self._adjust_security_level()
+        :param new_cache_size: new cache size
+        """
+        if new_cache_size > 0:
+            self._cache_size = new_cache_size
+            # Immediately adjust security level to adapt to new size
+            self.adjust_security_level()
 
 
-        def operate_on_list(self, label: str, op: str, pos: int = None, data: Any = None) -> Any:
-            """Perform an operation on a list stored on the server"""
-            if op == 'insert':
-                # Encrypt data before inserting if encryption is enabled
-                encrypted_data = self._encrypt_data(data)
-                self._client.list_insert(label, data=encrypted_data)
-            elif op == 'pop':
-                encrypted_data = self._client.list_pop(label=label)
-                return self._decrypt_data(encrypted_data)
-            elif op == 'get':
-                encrypted_data = self._client.list_get(label=label, index=pos)
-                return self._decrypt_data(encrypted_data)
-            elif op == 'update':
-                encrypted_data = self._encrypt_data(data)
-                self._client.list_update(label=label, index=pos, value=encrypted_data)
-            elif op == 'all':
-                encrypted_data_list = self._client.list_all(label=label)
-                if self._use_encryption:
-                    return [self._decrypt_data(encrypted_data) for encrypted_data in encrypted_data_list]
-                return encrypted_data_list
-            else:
-                print(f"error: unknown operation {op}")
-            return None
+    def operate_on_list(self, label: str, op: str, pos: int = None, data: Any = None) -> Any:
+        """Perform an operation on a list stored on the server"""
+        if op == 'insert':
+            # Encrypt data before inserting if encryption is enabled
+            encrypted_data = self._encrypt_data(data)
+            self._client.list_insert(label, value=encrypted_data)
+        elif op == 'pop':
+            encrypted_data = self._client.list_pop(label=label)
+            return self._decrypt_data(encrypted_data)
+        elif op == 'get':
+            encrypted_data = self._client.list_get(label=label, index=pos)
+            return self._decrypt_data(encrypted_data)
+        elif op == 'update':
+            encrypted_data = self._encrypt_data(data)
+            self._client.list_update(label=label, index=pos, value=encrypted_data)
+        elif op == 'all':
+            encrypted_data_list = self._client.list_all(label=label)
+            if self._use_encryption:
+                return [self._decrypt_data(encrypted_data) for encrypted_data in encrypted_data_list]
+            return encrypted_data_list
+        else:
+            print(f"error: unknown operation {op}")
+        return None
 
     def _collect_group_leaves_retrieve(self, group_index: int, seed: list) -> List[int]:
         """Deterministically compute the leaf indices for all keys in a group (unique, in stable order)."""
