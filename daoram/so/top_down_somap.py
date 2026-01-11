@@ -346,9 +346,11 @@ class TopDownSomap:
             # If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
+                # Key exists in O_W; update its seed counts in-place
+                self._Ow.search(key, value=[value_old[0]+1, value_old[1]])
             else:
-                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
+                # Key exists in O_W; update write count in-place
+                self._Ow.search(key, value=[value_old[0], value_old[1]+1])
             self.operate_on_list(label=self._Qw_name, op='insert', data=(self._num_data + self._dummy_index, "Dummy"))
             # execute d = d + 1 mod n
             self._dummy_index = (self._dummy_index + 1) % self._num_data

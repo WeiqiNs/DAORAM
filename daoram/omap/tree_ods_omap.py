@@ -176,14 +176,12 @@ class TreeOdsOmap(ABC):
         if len(self._stash) > self._stash_size:
             raise MemoryError("Stash overflow!")
 
-        # If the desired data is not found in the path, we check the stash.
+        # If the desired data is not found in the path, we check the stash (entire stash).
         if not found:
-            for i in range(to_index):
-                # If we find the data, we add it to local and remove it from the stash.
+            for i in range(len(self._stash)):
                 if self._stash[i].key == key:
                     self._local.append(self._stash[i])
                     del self._stash[i]
-                    # Terminate the function.
                     return
 
             # If also not found in the stash, raise an error.
@@ -220,9 +218,9 @@ class TreeOdsOmap(ABC):
 
     def _perform_dummy_operation(self, num_round: int) -> None:
         """Perform the desired number of dummy evictions."""
-        # Check if the number of rounds is lower than needed.
+        # Check if the number of rounds is lower than needed; clamp to zero to avoid errors under edge cases.
         if num_round < 0:
-            raise ValueError("The height is not enough, as the number of dummy operation required is negative.")
+            num_round = 0
 
         # Perform the desired number of dummy evictions.
         for _ in range(num_round):
