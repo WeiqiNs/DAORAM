@@ -802,7 +802,10 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Traverse to the leaf containing key AND fetch siblings at each level.
         
-        This enables underflow handling without additional ORAM reads.
+        This method uses batch read/write (read_mul_query/write_mul_query) to 
+        piggyback the fetching of target child and its siblings in a single 
+        network round-trip per level, reducing WAN interaction overhead.
+        
         The path nodes are stored in _local, siblings are stored in _sibling_cache.
         """
         if self._local:
@@ -811,7 +814,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Initialize sibling cache
         self._sibling_cache = []
         
-        # Get the root node from ORAM storage
+        # Get the root node from ORAM storage (single read for root)
         self._move_node_to_local(key=self.root[0], leaf=self.root[1])
         
         # Get the node from local
@@ -823,8 +826,6 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         # While we do not reach a leaf
         while not self._is_leaf_node(node):
-            new_leaf = self._get_new_leaf()
-            
             # Find which child to follow
             child_idx = None
             for index, each_key in enumerate(node.value.keys):
@@ -841,38 +842,127 @@ class BPlusOdsOmap(TreeOdsOmap):
             if child_idx is None:
                 child_idx = 0
             
-            # Fetch the target child
-            if child_idx < len(node.value.values):
-                child_key, child_leaf = node.value.values[child_idx]
-                self._move_node_to_local(key=child_key, leaf=child_leaf)
-                node.value.values[child_idx] = (child_key, new_leaf)
-                
-                # Now fetch siblings using piggyback
-                # Left sibling
-                if child_idx > 0:
-                    left_sib_key, left_sib_leaf = node.value.values[child_idx - 1]
-                    self._fetch_sibling_to_cache(left_sib_key, left_sib_leaf)
-                    # Update parent's reference to sibling
-                    sibling = self._sibling_cache[-1] if self._sibling_cache else None
-                    if sibling and sibling.key == left_sib_key:
-                        node.value.values[child_idx - 1] = (left_sib_key, sibling.leaf)
-                
-                # Right sibling
-                if child_idx + 1 < len(node.value.values):
-                    right_sib_key, right_sib_leaf = node.value.values[child_idx + 1]
-                    self._fetch_sibling_to_cache(right_sib_key, right_sib_leaf)
-                    # Update parent's reference to sibling
-                    sibling = self._sibling_cache[-1] if self._sibling_cache else None
-                    if sibling and sibling.key == right_sib_key:
-                        node.value.values[child_idx + 1] = (right_sib_key, sibling.leaf)
+            if child_idx >= len(node.value.values):
+                break
             
-            # Update the node
+            # Collect all nodes to read in this level: target child + siblings
+            nodes_to_read = []  # List of (node_key, oram_leaf, is_target)
+            
+            # Target child
+            child_key, child_leaf = node.value.values[child_idx]
+            nodes_to_read.append((child_key, child_leaf, True))
+            
+            # Left sibling (if exists)
+            if child_idx > 0:
+                left_sib_key, left_sib_leaf = node.value.values[child_idx - 1]
+                nodes_to_read.append((left_sib_key, left_sib_leaf, False))
+            
+            # Right sibling (if exists)
+            if child_idx + 1 < len(node.value.values):
+                right_sib_key, right_sib_leaf = node.value.values[child_idx + 1]
+                nodes_to_read.append((right_sib_key, right_sib_leaf, False))
+            
+            # Batch read all paths in one network round-trip
+            self._batch_read_nodes_to_local_and_cache(nodes_to_read, node, child_idx)
+            
+            # Update the node to the newly fetched child
             node = self._local[-1]
-            node.leaf = new_leaf
+
+    def _batch_read_nodes_to_local_and_cache(
+        self, 
+        nodes_to_read: list, 
+        parent_node: Any, 
+        child_idx: int
+    ) -> None:
+        """
+        Batch read multiple ORAM paths and process them.
+        
+        :param nodes_to_read: List of (node_key, oram_leaf, is_target) tuples.
+        :param parent_node: The parent node whose child references need updating.
+        :param child_idx: The index of the target child in parent's values.
+        """
+        if not nodes_to_read:
+            return
+        
+        # Prepare labels and leaves for batch read
+        labels = [self._name] * len(nodes_to_read)
+        leaves = [item[1] for item in nodes_to_read]
+        
+        # Batch read all paths in one network round-trip
+        all_paths = self._client.read_mul_query(label=labels, leaf=leaves)
+        
+        # Decrypt all paths
+        decrypted_paths = [self._decrypt_buckets(buckets=path) for path in all_paths]
+        
+        # Process each path
+        new_leaves = []  # Store new leaves for write-back
+        evicted_data = []  # Store evicted buckets for write-back
+        
+        for i, (node_key, old_leaf, is_target) in enumerate(nodes_to_read):
+            path = decrypted_paths[i]
+            new_leaf = self._get_new_leaf()
+            new_leaves.append(new_leaf)
+            
+            # Find the node in the path
+            found_node = None
+            for bucket in path:
+                for data in bucket:
+                    if data.key == node_key:
+                        found_node = data
+                    else:
+                        self._stash.append(data)
+            
+            # If not found in path, check stash
+            if found_node is None:
+                for j, data in enumerate(self._stash):
+                    if data.key == node_key:
+                        found_node = data
+                        del self._stash[j]
+                        break
+            
+            if found_node is None:
+                raise KeyError(f"Node with key {node_key} not found.")
+            
+            # Update the node's leaf
+            found_node.leaf = new_leaf
+            
+            if is_target:
+                # Add to _local for path traversal
+                self._local.append(found_node)
+            else:
+                # Add to sibling cache
+                self._sibling_cache.append(found_node)
+            
+            # Check stash overflow
+            if len(self._stash) > self._stash_size:
+                raise MemoryError("Stash overflow!")
+            
+            # Prepare eviction for this path
+            evicted_data.append(self._evict_stash(leaf=old_leaf))
+        
+        # Batch write all paths in one network round-trip
+        self._client.write_mul_query(label=labels, leaf=leaves, data=evicted_data)
+        
+        # Update parent's references to children with new leaves
+        for i, (node_key, old_leaf, is_target) in enumerate(nodes_to_read):
+            new_leaf = new_leaves[i]
+            
+            if is_target:
+                # Update target child reference
+                parent_node.value.values[child_idx] = (node_key, new_leaf)
+            else:
+                # Find which sibling this is and update reference
+                if child_idx > 0 and parent_node.value.values[child_idx - 1][0] == node_key:
+                    parent_node.value.values[child_idx - 1] = (node_key, new_leaf)
+                elif child_idx + 1 < len(parent_node.value.values) and parent_node.value.values[child_idx + 1][0] == node_key:
+                    parent_node.value.values[child_idx + 1] = (node_key, new_leaf)
 
     def _fetch_sibling_to_cache(self, sibling_key: int, sibling_leaf: int) -> None:
         """
         Fetch a sibling node and store in _sibling_cache.
+        
+        Note: This method is kept for backward compatibility but the optimized
+        _find_leaf_with_siblings_to_local now uses batch reads instead.
         """
         # Get the desired path and perform decryption
         path = self._decrypt_buckets(buckets=self._client.read_query(label=self._name, leaf=sibling_leaf))
