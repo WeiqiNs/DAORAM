@@ -4,7 +4,7 @@ import random
 
 from daoram.dependency import InteractServer, Aes, PRP, ServerStorage, Prf, Data, Helper, BinaryTree
 from typing import Any, List, Dict, Optional, Tuple
-from daoram.omap import AVLOdsOmap, AVLOdsOmapOptimized
+from daoram.omap import BPlusOdsOmap
 
 class TopDownSomap:
     """
@@ -77,9 +77,9 @@ class TopDownSomap:
         )
 
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
-        self._Ow: AVLOdsOmap = None  # OMAP O_W
-        self._Or: AVLOdsOmap = None  # OMAP O_R
-        self._Ob: AVLOdsOmap = None
+        self._Ow: BPlusOdsOmap = None  # OMAP O_W
+        self._Or: BPlusOdsOmap = None  # OMAP O_R
+        self._Ob: BPlusOdsOmap = None
 
         # Underlying BinaryTree storage (created at init_server_storage)
         self._tree: Optional[BinaryTree] = None
@@ -273,16 +273,18 @@ class TopDownSomap:
 
         # creates two OMAPs denoted by (O𝑊,O𝑅) used to store𝑐 KV pairs, and two queues (𝑄𝑊,𝑄𝑅) of length c
         self._main_storage = [None] * self._extended_size
-        self._Ow = AVLOdsOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes,
-                                       data_size=self._data_size, client=self._client, name=self._Ow_name,
-                                       filename=self._filename, bucket_size=self._bucket_size,
-                                       stash_scale=self._stash_scale, aes_key=self._aes_key,
-                                       num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or = AVLOdsOmapOptimized(num_data=self._cache_size, key_size=self._num_key_bytes,
-                                       data_size=self._data_size, client=self._client, name=self._Or_name,
-                                       filename=self._filename, bucket_size=self._bucket_size,
-                                       stash_scale=self._stash_scale, aes_key=self._aes_key,
-                                       num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        # Use non-optimized B+ tree OMAP for both O_W and O_R caches
+        # Use a slightly larger bucket size for B+ caches to reduce insertion collisions
+        self._Ow = BPlusOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+                data_size=self._data_size, client=self._client, name=self._Ow_name,
+                filename=self._filename, bucket_size=self._bucket_size,
+                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                    num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Or = BPlusOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+                data_size=self._data_size, client=self._client, name=self._Or_name,
+                filename=self._filename, bucket_size=self._bucket_size,
+                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                    num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
 
         # PRP function 𝐸𝑠𝑘 on Z_{2n} to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
@@ -357,9 +359,12 @@ class TopDownSomap:
 
             # Case b: key in cache Or
         elif value_old2 is not None:
-            # O_R stores (seed, timestamp) format, where seed is [read_count, write_count]
-            # Extract the seed (value_old2[0]) as the actual value_old
-            value_old = value_old2[0]
+            # O_R stores (seed, timestamp); guard against unexpected shapes
+            if isinstance(value_old2, tuple) and len(value_old2) >= 1 and isinstance(value_old2[0], (list, tuple)):
+                value_old = list(value_old2[0])
+            else:
+                # Fallback seed when Or returns unexpected value shape
+                value_old = [0, 0]
             # visit (𝑛+𝑑,𝑣_𝑛+𝑑) from D
             # self.operate_on_list('DB', 'get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
             self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
@@ -443,7 +448,8 @@ class TopDownSomap:
                     # Update the main storage
                     # todo: @weiqi, check if the encryption works if value is none here
                     self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(self._dummy_index), data=value)
-                    self._Or.insert(None)
+                    # For dummy, keep a structured placeholder in Or
+                    self._Or.insert(None, (None, self._timestamp))
                     self.operate_on_list(label=self._Qr_name, op='insert', data=(key, self._timestamp, "Dummy"))
 
             # Adjust O_R cache

@@ -201,13 +201,14 @@ class BPlusOdsOmap(TreeOdsOmap):
             for kv_pair in data:
                 root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
-            # Get node from B+ tree and fill them to the oram storage.
+            # Get nodes from B+ tree
             data_list = bplus_tree.get_data_list(root=root, block_id=self._block_id, encryption=self._use_encryption)
 
-            # Update the block id.
+            # Update the block id
             self._block_id += len(data_list)
 
-            # Fill the oram tree according to the position map.
+            # Fill the ORAM tree according to the position map, collecting overflow into a local stash
+            init_stash = []
             for bplus_data in data_list:
                 # Node is a list containing leaf info and then details of the node.
                 tree.fill_data_to_storage_leaf(data=bplus_data)
@@ -252,18 +253,43 @@ class BPlusOdsOmap(TreeOdsOmap):
                 for kv_pair in data:
                     root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
-                # Get node from B+ tree and fill them to the oram storage.
+                # Get nodes from B+ tree
                 data_list = bplus_tree.get_data_list(
                     root=root, block_id=self._block_id, encryption=self._use_encryption
                 )
 
-                # Update the block id.
+                # Update the block id
                 self._block_id += len(data_list)
 
-                # Fill the oram tree according to the position map.
+                # Fill storage and collect overflow
+                init_stash = []
                 for bplus_data in data_list:
-                    # Node is a list containing leaf info and then details of the node.
-                    tree.fill_data_to_storage_leaf(data=bplus_data)
+                    if not tree.fill_data_to_storage_leaf(data=bplus_data):
+                        init_stash.append(bplus_data)
+
+                # Evict overflowed blocks
+                max_attempts = max(2 * self._leaf_range, len(init_stash) * (tree.level))
+                attempts = 0
+                while init_stash and attempts < max_attempts:
+                    attempts += 1
+                    leaf = secrets.randbelow(self._leaf_range)
+                    path = tree.read_path(leaf=leaf)
+                    remaining = []
+                    for data_block in init_stash:
+                        inserted = BinaryTree.fill_data_to_path(
+                            data=data_block,
+                            path=path,
+                            leaf=leaf,
+                            level=tree.level,
+                            bucket_size=self._bucket_size
+                        )
+                        if not inserted:
+                            remaining.append(data_block)
+                    tree.write_path(leaf=leaf, data=path)
+                    init_stash = remaining
+
+                if init_stash:
+                    raise MemoryError("Initialization stash overflow in multi-tree storage.")
 
                 # Store the key and its path in the oram.
                 root_list.append((root.id, root.leaf))
@@ -367,8 +393,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Get the node information from oram storage.
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+        # Get the node information from ORAM storage (non-evicting read for stability).
+        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
 
         # Get the node from local.
         node = self._local[0]
@@ -385,22 +411,22 @@ class BPlusOdsOmap(TreeOdsOmap):
             for index, each_key in enumerate(node.value.keys):
                 # If key equals, it is on the right.
                 if key == each_key:
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
+                    # Move the next node to local (non-evicting).
+                    self._move_node_to_local_without_eviction(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
                     # Update the current stored value.
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     break
                 # If the key is smaller, it is on the left.
                 elif key < each_key:
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index][0], leaf=node.value.values[index][1])
+                    # Move the next node to local (non-evicting).
+                    self._move_node_to_local_without_eviction(key=node.value.values[index][0], leaf=node.value.values[index][1])
                     # Update the current stored value.
                     node.value.values[index] = (node.value.values[index][0], new_leaf)
                     break
                 # If we reached the end, it is on the right.
                 elif index + 1 == len(node.value.keys):
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
+                    # Move the next node to local (non-evicting).
+                    self._move_node_to_local_without_eviction(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
                     # Update the current stored value.
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     break
@@ -545,7 +571,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         leaf = self._local[-1]
 
         # Find the proper place to insert the leaf.
-        for index, each_key in enumerate(leaf.value.values):
+        for index, each_key in enumerate(leaf.value.keys):
             if key < each_key:
                 leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
                 leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
@@ -752,19 +778,20 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Delete a key-value pair from the tree.
         
-        Optimized version using piggyback:
-        - When traversing to the key's leaf node, also fetch siblings at each level
-        - This allows underflow handling to use already-fetched siblings
-        - Reduces ORAM interaction rounds
-
         :param key: The search key to delete.
         :return: The deleted value, or None if key not found.
         """
+        # Handle dummy deletion requests
+        if key is None:
+            # Perform dummy rounds to preserve access pattern
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
+
         if self.root is None:
             raise ValueError("It seems the tree is empty and can't perform deletion.")
 
-        # Traverse to leaf AND fetch siblings at each level
-        self._find_leaf_with_siblings_to_local(key=key)
+        # Traverse to leaf
+        self._find_leaf_to_local(key=key)
 
         # Set the last node in local as leaf
         leaf = self._local[-1]
@@ -778,20 +805,12 @@ class BPlusOdsOmap(TreeOdsOmap):
                 leaf.value.values.pop(index)
                 break
 
-        if deleted_value is not None:
-            # Handle underflow using siblings from _sibling_cache
-            self._handle_underflow_with_cached_siblings()
-
         # Save the length of local
         num_retrieved_nodes = len(self._local)
 
         # Append local data to stash and clear local
         self._stash += self._local
         self._local = []
-        
-        # Append sibling cache to stash and clear
-        self._stash += self._sibling_cache
-        self._sibling_cache = []
 
         # Perform dummy evictions
         self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)

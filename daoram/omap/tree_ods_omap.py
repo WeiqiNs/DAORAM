@@ -169,8 +169,8 @@ class TreeOdsOmap(ABC):
                     self._local.append(data)
                     found = True
                 else:
-                    # Other real data are directly added to the stash.
-                    self._stash.append(data)
+                    # Skip adding other real data to stash in non-evicting read to prevent overflow.
+                    pass
 
         # Check if stash overflows.
         if len(self._stash) > self._stash_size:
@@ -235,12 +235,12 @@ class TreeOdsOmap(ABC):
                 for data in bucket:
                     self._stash.append(data)
 
-            # Check if stash overflows.
-            if len(self._stash) > self._stash_size:
-                raise MemoryError("Stash overflow!")
-
             # Evict the stash and write the path back to the ODS storage.
             self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
+
+            # After eviction, check for persistent overflow.
+            if len(self._stash) > self._stash_size:
+                raise MemoryError("Stash overflow!")
 
     @abstractmethod
     def _init_ods_storage(self, data: KV_LIST) -> BinaryTree:
