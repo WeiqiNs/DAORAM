@@ -20,10 +20,10 @@ class BinaryTree:
         """
         Initializes the binary tree based on input parameters.
 
-        :param num_data: The Number of data points the tree should hold.
+        :param num_data: The number of data points the tree should hold.
         :param bucket_size: Size of each node/bucket in the tree.
-        :param data_size: Plaintext byte size of each data point (padding header is handled by Storage).
         :param filename: Optional backing file to persist the tree.
+        :param data_size: Plaintext byte size of each data point (padding header is handled by Storage).
         :param disk_size: Plaintext byte length of each on-disk block; Storage adds the padding header internally.
         :param encryption: Deprecated alias for use_encryption; kept for compatibility.
         """

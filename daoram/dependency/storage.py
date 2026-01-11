@@ -42,7 +42,7 @@ class Storage:
         if self._encryption:
             # When the encryption is used, data size must be provided (to hide length).
             if data_size is None:
-                raise ValueError("Data size if required to be provided for encryption.")
+                raise ValueError("Data size is required to be provided for encryption.")
 
             # Add the padding header so callers do not need to account for it.
             self._data_size: int = data_size
@@ -193,14 +193,14 @@ class Storage:
         # If we do not need to load from the file
         if self._filename is None:
             for bucket in self._internal_data:
-                # Encrypt the existing data.
+                # Decrypt the existing data.
                 for index, data in enumerate(bucket):
                     bucket[index] = Data.load_unpad(data=encryptor.dec(ciphertext=data))
 
             # Terminate the function.
             return
 
-        # Otherwise, we load from the disk and encrypt.
+        # Otherwise, we load from the disk and decrypt.
         for i in range(self._size * self._bucket_size):
             # Compute the location to read.
             location = i * self._disk_size

@@ -263,7 +263,7 @@ class RecursivePathOram(TreeBaseOram):
                     data.value[offset] = value
                     data.leaf = new_leaf
 
-                # And all real data to the stash.
+                # Add all real data to the stash.
                 self._stash.append(data)
 
         # Check if the stash overflows.

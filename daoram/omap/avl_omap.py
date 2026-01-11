@@ -149,7 +149,7 @@ class AVLOmap(ObliviousSearchTree):
         return {idx: _dec_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
     def _get_avl_data(self, key: Any, value: Any) -> Data:
-        """From the input key and value, create the data should be stored in the AVL tree oram."""
+        """From the input key and value, create the Data object that should be stored in the AVL tree ORAM."""
         # In the AVLData, only value needs to be filled.
         return Data(key=key, leaf=self._get_new_leaf(), value=AVLData(value=value))
 

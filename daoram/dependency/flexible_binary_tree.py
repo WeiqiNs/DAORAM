@@ -1,4 +1,4 @@
-""" This module implements a flexible binary tree structure for use in ORAM systems. """
+"""This module implements a flexible binary tree structure for use in ORAM systems."""
 import math
 import pickle
 from typing import Any, Dict, List, Union, Tuple

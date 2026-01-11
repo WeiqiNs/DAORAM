@@ -104,7 +104,7 @@ class AVLTree:
 
         # Update the input node height.
         self._update_height(in_node)
-        # update the new parent node height.
+        # Update the new parent node height.
         self._update_height(p_node)
 
         # Return the new parent node.
@@ -129,7 +129,7 @@ class AVLTree:
 
         # Update the input node height.
         self._update_height(in_node)
-        # update the new parent node height.
+        # Update the new parent node height.
         self._update_height(p_node)
 
         # Return the new parent node.

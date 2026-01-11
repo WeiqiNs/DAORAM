@@ -15,7 +15,7 @@ class Data:
     Create the data structure to hold a data record that should be put into a complete binary tree.
 
     It has three fields: key, leaf, and value, where key and value could be anything, but the leaf needs to be an int.
-    By default, (when used as a dummy), when initialize the fields to None.
+    By default (when used as a dummy), the fields are initialized to None.
     """
     key: Optional[Any] = None
     leaf: Optional[int] = None
@@ -99,7 +99,13 @@ class Helper:
 
     @staticmethod
     def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: Union[str, int, bytes]) -> int:
-        """Compute H(data) % map_size."""
+        """Compute hash of data modulo map_size.
+
+        :param prf: The PRF instance to use for hashing.
+        :param map_size: The modulus value.
+        :param data: The data to hash (can be str, int, or bytes).
+        :return: The hashed value modulo map_size.
+        """
         # Convert data to bytes depend on their types.
         if type(data) is int:
             byte_data = data.to_bytes(16, byteorder="big")
