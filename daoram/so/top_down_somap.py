@@ -1,7 +1,6 @@
 import math
 import pickle
 import random
-from urllib.parse import to_bytes
 
 from daoram.dependency import InteractServer, Aes, PRP, ServerStorage, Prf, Data, Helper, BinaryTree
 from typing import Any, List, Dict, Optional, Tuple
