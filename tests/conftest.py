@@ -2,6 +2,9 @@ import pytest
 
 from daoram.dependency import AesGcm, InteractLocalServer
 
+# Exclude soram tests by default
+collect_ignore = ["soram"]
+
 
 def pytest_addoption(parser):
     """Add custom command line options."""
@@ -10,7 +13,7 @@ def pytest_addoption(parser):
         action="store",
         default=1024,
         type=int,
-        help="Number of data points for ORAM tests (default: 1024)"
+        help="Number of data points for tests (default: 1024)"
     )
 
 
