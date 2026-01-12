@@ -5,6 +5,7 @@ import random
 from daoram.dependency import InteractServer, Aes, PRP, ServerStorage, Prf, Data, Helper, BinaryTree
 from typing import Any, List, Dict, Optional, Tuple
 from daoram.omap import BPlusOdsOmap
+from daoram.omap.bplus_subset_ods_omap import BPlusSubsetOdsOmap
 
 class TopDownSomap:
     """
@@ -79,7 +80,7 @@ class TopDownSomap:
         # Use ServerStorage type directly for O_W, O_R, Q_W, Q_R
         self._Ow: BPlusOdsOmap = None  # OMAP O_W
         self._Or: BPlusOdsOmap = None  # OMAP O_R
-        self._Ob: BPlusOdsOmap = None
+        self._Ob: BPlusSubsetOdsOmap = None  # OMAP O_B for uncached data
 
         # Underlying BinaryTree storage (created at init_server_storage)
         self._tree: Optional[BinaryTree] = None
@@ -285,6 +286,12 @@ class TopDownSomap:
                 filename=self._filename, bucket_size=self._bucket_size,
                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                     num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        # Use BPlusSubsetOdsOmap for O_B to return uncached data
+        self._Ob = BPlusSubsetOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+                data_size=self._data_size, client=self._client, name=self._Ob_name,
+                filename=self._filename, bucket_size=self._bucket_size,
+                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                    num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
 
         # PRP function 𝐸𝑠𝑘 on Z_{2n} to permute (𝑖,𝑣𝑖) to 𝐸𝑠𝑘(𝑖)
         # self._prp = Prp(key=os.urandom(16))  # Randomly generate PRP key
@@ -297,6 +304,8 @@ class TopDownSomap:
         extended_data_list = list(extended_data.items())
         keys_list = list(extended_data.keys())
         st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
+        # Initialize O_B as an empty subset OMAP so all keys are initially available
+        st3 = self._Ob._init_ods_storage([])
         # O_R stores (seed, timestamp) format where seed is [read_count, write_count]
         # Initialize with timestamp 0 for all entries
         or_data_list = [(key, (value, 0)) for key, value in extended_data_list[self._cache_size: 2 * self._cache_size]]
@@ -318,6 +327,7 @@ class TopDownSomap:
         Serverstorage: ServerStorage = {
             self._Ow_name: st1,
             self._Or_name: st2,
+            self._Ob_name: st3,
             self._Qw_name: self._Qw,
             self._Qr_name: self._Qr,
             'DB': self._main_storage,
@@ -339,12 +349,15 @@ class TopDownSomap:
         # The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
         value_old1 = self._Ow.search(key)
         value_old2 = self._Or.search(key)
+        uncached_key = self._Ob.find_available()
         value_old = None
         # Case a: key in cache Ow
         if value_old1 is not None:
             value_old = value_old1
-            # self.operate_on_list(label='DB', op='get', pos=self._prp.digest_mod_n(str(self._num_data+self._dummy_index).encode(), self._extended_size))
-            self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
+            # Piggyback: fetch an uncached DB element if available
+            # Skip if subset OMAP is full (find_available returns None)
+            if uncached_key is not None:
+                self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(uncached_key))
             # If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
@@ -353,9 +366,9 @@ class TopDownSomap:
             else:
                 # Key exists in O_W; update write count in-place
                 self._Ow.search(key, value=[value_old[0], value_old[1]+1])
-            self.operate_on_list(label=self._Qw_name, op='insert', data=(self._num_data + self._dummy_index, "Dummy"))
-            # execute d = d + 1 mod n
-            self._dummy_index = (self._dummy_index + 1) % self._num_data
+            if uncached_key is not None:
+                self.operate_on_list(label=self._Qw_name, op='insert', data=(uncached_key, "Key"))
+
 
             # Case b: key in cache Or
         elif value_old2 is not None:
@@ -378,6 +391,7 @@ class TopDownSomap:
             self.operate_on_list(self._Qw_name, 'insert', data=(key, "Key"))
             # execute𝑑 = 𝑑 + 1 mod n
             self._dummy_index = (self._dummy_index + 1) % self._num_data
+            # Do not insert dummy into subset OMAP
 
             # Case c: key not in cache
         else:
