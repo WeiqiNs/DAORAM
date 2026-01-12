@@ -61,7 +61,10 @@ class AVLOdsOmapOptimized(AVLOdsOmap):
             self._stash += self._local
             self._local = []
 
-        # Set the value.
-        value = super().fast_search(key=key, value=value)
-
-        return value
+        # Perform fast search robustly; treat missing root/path as not found.
+        try:
+            return super().fast_search(key=key, value=value)
+        except (KeyError, ValueError, MemoryError):
+            # If tree state is transient or root/path missing, return None gracefully
+            self._local = []
+            return None

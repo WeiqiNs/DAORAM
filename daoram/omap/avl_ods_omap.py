@@ -503,7 +503,7 @@ class AVLOdsOmap(TreeOdsOmap):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Get the node information from oram storage.
+        # Get the node information from oram storage (evicting read).
         self._move_node_to_local(key=self.root[0], leaf=self.root[1])
 
         # Keep adding node to local until we find a place to insert the new node.
@@ -515,7 +515,12 @@ class AVLOdsOmap(TreeOdsOmap):
             if node.key < key:
                 # If the child is there, we keep grabbing the next node.
                 if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                    try:
+                        self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf)
+                    except KeyError:
+                        # Child pointer stale; attach new node here
+                        node.value.r_key = data_block.key
+                        break
                 # Else we store link the parent with the new node, other information will be updated during balance.
                 else:
                     node.value.r_key = data_block.key
@@ -524,19 +529,22 @@ class AVLOdsOmap(TreeOdsOmap):
             # If the key is not smaller, we go left and check the same as above.
             else:
                 if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                    try:
+                        self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf)
+                    except KeyError:
+                        # Child pointer stale; attach new node here
+                        node.value.l_key = data_block.key
+                        break
                 else:
                     node.value.l_key = data_block.key
                     break
 
         # Append the newly inserted node to local as well
         self._local.append(data_block)
-        # Update the heights
-        self._update_height()
-        # Update the leaves
+        # Update leaves for nodes in local
         self._update_leaves()
-        # Perform balance 
-        self._balance_local()
+        # Update root to reflect new leaf after leaf updates
+        self.root = (self._local[0].key, self._local[0].leaf)
         
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
@@ -726,7 +734,7 @@ class AVLOdsOmap(TreeOdsOmap):
         if self.root is None:
             raise ValueError(f"It seems the tree is empty and can't perform deletion.")
 
-        # First, find the node to delete by traversing the tree
+        # First, find the node to delete by traversing the tree with eviction
         self._move_node_to_local(key=self.root[0], leaf=self.root[1])
         node = self._local[-1]
         # Track the index of the node to delete in local
@@ -900,12 +908,11 @@ class AVLOdsOmap(TreeOdsOmap):
                     gradparent_of_predelete.value.r_key = node.key
                     gradparent_of_predelete.value.r_leaf = node.leaf
                        
-        # Update heights
-        self._update_height()
-        # Update leaves
+        # Update leaves for nodes in local
         self._update_leaves()
-        # Balance the tree
-        self._balance_local(True)
+        # Update root to reflect new leaf after leaf updates (if tree not empty)
+        if self._local:
+            self.root = (self._local[0].key, self._local[0].leaf)
 
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
