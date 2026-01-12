@@ -15,7 +15,7 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from daoram.dependency import BinaryTree, Blake2Prf, Data, Encryptor, Helper, InteractServer
-from daoram.oram import
+from daoram.oram import TreeBaseOram, MulPathOram
 
 
 class GroupOmap:
