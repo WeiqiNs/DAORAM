@@ -1536,6 +1536,242 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         return search_value1, search_value2, deleted_value1
 
+    @staticmethod
+    def parallel_search_and_delete(omap1: 'BPlusOdsOmap', search_key1: Any, delete_key1: Any,
+                                    omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any) -> Tuple[Any, Any, Any]:
+        """
+        Perform search and delete on two OMAPs in parallel, all in h rounds.
+        
+        For each OMAP, we handle search and delete:
+        - If search_key == delete_key: single traversal handles both
+        - If different: traverse search path + do dummy for delete (simplified)
+        
+        This method performs 4 logical operations in h rounds by batching ORAM accesses.
+        
+        :param omap1: First OMAP (O_W)
+        :param search_key1: Key to search in omap1
+        :param delete_key1: Key to delete from omap1 (None for dummy deletion)
+        :param omap2: Second OMAP (O_R)
+        :param search_key2: Key to search in omap2
+        :param delete_key2: Key to delete from omap2 (None for dummy deletion)
+        :return: Tuple of (search_value1, search_value2, deleted_value_from_omap1)
+        """
+        if omap1._client is not omap2._client:
+            raise ValueError("Both OMAPs must share the same client for parallel access.")
+        
+        client = omap1._client
+        max_height = max(omap1._max_height, omap2._max_height)
+        
+        # For simplicity, we handle each OMAP independently
+        # Each OMAP does: search traversal + delete traversal (or dummy)
+        # We batch read 4 paths per round: (omap1_search, omap1_delete, omap2_search, omap2_delete)
+        
+        class TraversalState:
+            def __init__(self, omap, key, name):
+                self.omap = omap
+                self.key = key
+                self.name = name
+                self.local = []
+                self.traversing = (key is not None) and (omap.root is not None)
+                if self.traversing:
+                    self.node_key = omap.root[0]
+                    self.node_leaf = omap.root[1]
+                else:
+                    self.node_key = None
+                    self.node_leaf = None
+                self.pending_child_index = None
+        
+        # 4 traversal states
+        search1 = TraversalState(omap1, search_key1, "search1")
+        delete1 = TraversalState(omap1, delete_key1, "delete1")
+        search2 = TraversalState(omap2, search_key2, "search2")
+        delete2 = TraversalState(omap2, delete_key2, "delete2")
+        
+        states = [search1, delete1, search2, delete2]
+        
+        # h rounds of parallel traversal
+        for _ in range(max_height):
+            labels = []
+            leaves = []
+            state_infos = []  # (state, real_leaf, dummy_leaf, target_key)
+            
+            for state in states:
+                omap = state.omap
+                if state.traversing:
+                    dummy_leaf = omap._get_new_leaf()
+                    labels.append(omap._name)
+                    leaves.append([state.node_leaf, dummy_leaf])
+                    state_infos.append((state, state.node_leaf, dummy_leaf, state.node_key))
+                else:
+                    # Dummy round
+                    leaf_a = omap._get_new_leaf()
+                    leaf_b = omap._get_new_leaf()
+                    labels.append(omap._name)
+                    leaves.append([leaf_a, leaf_b])
+                    state_infos.append((state, leaf_a, leaf_b, None))
+            
+            # Batch read all 4 paths
+            all_paths = client.read_mul_query(label=labels, leaf=leaves)
+            
+            # Process each path
+            evicted_data = []
+            write_labels = []
+            write_leaves = []
+            
+            for i, (state, real_leaf, dummy_leaf, target_key) in enumerate(state_infos):
+                omap = state.omap
+                path = omap._decrypt_buckets(buckets=all_paths[i])
+                
+                if target_key is not None:
+                    # Find and extract target node
+                    found = False
+                    for bucket in path:
+                        for data in bucket:
+                            if data.key == target_key:
+                                # Check if already in local (could be from another traversal on same omap)
+                                already_in_local = any(d.key == target_key for d in state.local)
+                                if not already_in_local:
+                                    state.local.append(data)
+                                    found = True
+                            else:
+                                # Check if already in stash
+                                if not any(d.key == data.key for d in omap._stash):
+                                    omap._stash.append(data)
+                    
+                    if not found:
+                        # Check stash
+                        for j, data in enumerate(omap._stash):
+                            if data.key == target_key:
+                                already_in_local = any(d.key == target_key for d in state.local)
+                                if not already_in_local:
+                                    state.local.append(data)
+                                    del omap._stash[j]
+                                found = True
+                                break
+                        if not found:
+                            # Check if the key is in another state's local for the same omap
+                            for other_state in states:
+                                if other_state.omap is omap and other_state is not state:
+                                    for d in other_state.local:
+                                        if d.key == target_key:
+                                            state.local.append(d)
+                                            found = True
+                                            break
+                                if found:
+                                    break
+                        if not found:
+                            raise KeyError(f"Key {target_key} not found in {state.name}.")
+                else:
+                    # Dummy round
+                    for bucket in path:
+                        for data in bucket:
+                            if not any(d.key == data.key for d in omap._stash):
+                                omap._stash.append(data)
+                
+                # Evict and prepare write-back
+                evicted = omap._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
+                evicted_data.append(evicted)
+                write_labels.append(omap._name)
+                write_leaves.append([real_leaf, dummy_leaf])
+                
+                if len(omap._stash) > omap._stash_size:
+                    raise MemoryError("Stash overflow!")
+            
+            # Batch write all 4 paths
+            client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
+            
+            # Update traversal state for each operation
+            for state in states:
+                if state.traversing and state.local:
+                    node = state.local[-1]
+                    omap = state.omap
+                    
+                    # Assign new leaf
+                    node.leaf = omap._get_new_leaf()
+                    
+                    # Update root or parent's pointer
+                    if len(state.local) == 1:
+                        omap.root = (node.key, node.leaf)
+                    elif state.pending_child_index is not None:
+                        parent = state.local[-2]
+                        parent.value.values[state.pending_child_index] = (node.key, node.leaf)
+                    
+                    # Check if leaf
+                    if len(node.value.keys) == len(node.value.values):
+                        state.traversing = False
+                        state.pending_child_index = None
+                    else:
+                        # Find next child
+                        key = state.key
+                        child_index = None
+                        for index, each_key in enumerate(node.value.keys):
+                            if key == each_key:
+                                state.node_key, state.node_leaf = node.value.values[index + 1]
+                                child_index = index + 1
+                                break
+                            elif key < each_key:
+                                state.node_key, state.node_leaf = node.value.values[index]
+                                child_index = index
+                                break
+                            elif index + 1 == len(node.value.keys):
+                                state.node_key, state.node_leaf = node.value.values[index + 1]
+                                child_index = index + 1
+                                break
+                        state.pending_child_index = child_index
+        
+        # Extract results
+        search_value1 = None
+        search_value2 = None
+        deleted_value1 = None
+        
+        # Process search1 result
+        if search_key1 is not None and omap1.root is not None and search1.local:
+            leaf = search1.local[-1]
+            for index, each_key in enumerate(leaf.value.keys):
+                if search_key1 == each_key:
+                    search_value1 = leaf.value.values[index]
+                    break
+            omap1._stash += search1.local
+        
+        # Process delete1: remove key from leaf
+        if delete1.local:
+            if delete_key1 is not None:
+                leaf = delete1.local[-1]
+                for index, each_key in enumerate(leaf.value.keys):
+                    if delete_key1 == each_key:
+                        deleted_value1 = leaf.value.values[index]
+                        leaf.value.keys.pop(index)
+                        leaf.value.values.pop(index)
+                        break
+            # Only add to stash if not already added (could share with search1)
+            for d in delete1.local:
+                if not any(s.key == d.key for s in omap1._stash):
+                    omap1._stash.append(d)
+        
+        # Process search2 result
+        if search_key2 is not None and omap2.root is not None and search2.local:
+            leaf = search2.local[-1]
+            for index, each_key in enumerate(leaf.value.keys):
+                if search_key2 == each_key:
+                    search_value2 = leaf.value.values[index]
+                    break
+            omap2._stash += search2.local
+        
+        # Process delete2: remove key from leaf
+        if delete2.local:
+            if delete_key2 is not None:
+                leaf = delete2.local[-1]
+                for index, each_key in enumerate(leaf.value.keys):
+                    if delete_key2 == each_key:
+                        leaf.value.keys.pop(index)
+                        leaf.value.values.pop(index)
+                        break
+            for d in delete2.local:
+                if not any(s.key == d.key for s in omap2._stash):
+                    omap2._stash.append(d)
+        
+        return search_value1, search_value2, deleted_value1
+
     def fast_search(self, key: Any, value: Any = None) -> Any:
         """
         Given a search key, return its corresponding value.
