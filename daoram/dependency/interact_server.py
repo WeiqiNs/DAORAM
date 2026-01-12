@@ -1,27 +1,112 @@
+"""Client-server interaction layer for local and remote ORAM storage."""
+
+import pickle
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Tuple, Union
 
-from daoram.dependency.flexible_binary_tree import FlexibleBinaryTree
-from daoram.dependency.binary_tree import BinaryTree, Buckets
-from daoram.dependency.helper import Block, Query
-from daoram.dependency.sockets import Socket
+from daoram.dependency.binary_tree import BinaryTree
+from daoram.dependency.sockets import BaseSocket
+from daoram.dependency.types import PathData, BucketKey, BucketData, BlockKey, BlockData, ExecuteResult
 
 # Set a default response for the server.
 SERVER_DEFAULT_RESPONSE = "Done!"
 # Set a default port for the server and client to connect to.
 PORT = 10000
 # Define the type of storage the server should hold.
-ServerStorage = Dict[str, Union[BinaryTree, FlexibleBinaryTree, list]]
+ServerStorage = Dict[str, Union[BinaryTree, List]]
 
 
 class InteractServer(ABC):
-    # All class inherits this list.
-    read_queries: List[Query] = []
-    write_queries: List[Query] = []
+    """Abstract class defining the interface for interacting with storage server."""
 
-    """This abstract class defines the interface for interacting with the server."""
+    def __init__(self):
+        """Initialize the query dictionaries for batching."""
+        # Read queries: accumulate keys/indices to read.
+        self._read_paths: Dict[str, List[int]] = {}
+        self._read_buckets: Dict[str, List[BucketKey]] = {}
+        self._read_blocks: Dict[str, List[BlockKey]] = {}
+        self._read_lists: Dict[str, List[int]] = {}
+
+        # Write queries: accumulate data to write (later overwrites earlier).
+        self._write_paths: Dict[str, PathData] = {}
+        self._write_buckets: Dict[str, BucketData] = {}
+        self._write_blocks: Dict[str, BlockData] = {}
+        self._write_lists: Dict[str, Dict[int, Any]] = {}
+
+        # Bandwidth counters (serialized bytes).
+        self._bytes_read: int = 0
+        self._bytes_written: int = 0
+
+    def clear_queries(self) -> None:
+        """Clear all pending queries."""
+        self._read_paths.clear()
+        self._read_buckets.clear()
+        self._read_blocks.clear()
+        self._read_lists.clear()
+        self._write_paths.clear()
+        self._write_buckets.clear()
+        self._write_blocks.clear()
+        self._write_lists.clear()
+
+    def get_bandwidth(self) -> Tuple[int, int]:
+        """Return (bytes_read, bytes_written)."""
+        return self._bytes_read, self._bytes_written
+
+    def reset_bandwidth(self) -> None:
+        """Reset bandwidth counters to zero."""
+        self._bytes_read = 0
+        self._bytes_written = 0
+
+    def add_read_path(self, label: str, leaves: List[int]) -> None:
+        """Add path read query. Multiple calls with same label accumulate leaves."""
+        if label not in self._read_paths:
+            self._read_paths[label] = []
+        self._read_paths[label].extend(leaves)
+
+    def add_read_bucket(self, label: str, keys: List[BucketKey]) -> None:
+        """Add bucket read query. Multiple calls with same label accumulate keys."""
+        if label not in self._read_buckets:
+            self._read_buckets[label] = []
+        self._read_buckets[label].extend(keys)
+
+    def add_read_block(self, label: str, keys: List[BlockKey]) -> None:
+        """Add block read query. Multiple calls with same label accumulate keys."""
+        if label not in self._read_blocks:
+            self._read_blocks[label] = []
+        self._read_blocks[label].extend(keys)
+
+    def add_read_list(self, label: str, indices: List[int]) -> None:
+        """Add list read query. Multiple calls with same label accumulate indices."""
+        if label not in self._read_lists:
+            self._read_lists[label] = []
+        self._read_lists[label].extend(indices)
+
+    def add_write_path(self, label: str, data: PathData) -> None:
+        """Add path write query. Multiple calls with same label merge data."""
+        if label not in self._write_paths:
+            self._write_paths[label] = {}
+        self._write_paths[label].update(data)
+
+    def add_write_bucket(self, label: str, data: BucketData) -> None:
+        """Add bucket write query. Multiple calls with same label merge data."""
+        if label not in self._write_buckets:
+            self._write_buckets[label] = {}
+        self._write_buckets[label].update(data)
+
+    def add_write_block(self, label: str, data: BlockData) -> None:
+        """Add block write query. Multiple calls with same label merge data."""
+        if label not in self._write_blocks:
+            self._write_blocks[label] = {}
+        self._write_blocks[label].update(data)
+
+    def add_write_list(self, label: str, data: Dict[int, Any]) -> None:
+        """Add list write query. Multiple calls with same label merge data."""
+        if label not in self._write_lists:
+            self._write_lists[label] = {}
+        self._write_lists[label].update(data)
+
     @abstractmethod
-    def init_connection(self) -> None:
+    def init_connection(self, client: BaseSocket) -> None:
         """Initialize the connection to the server."""
         raise NotImplementedError
 
@@ -31,488 +116,225 @@ class InteractServer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def init(self, storage: ServerStorage) -> None:
+    def init_storage(self, storage: ServerStorage) -> None:
+        """Initialize storages from a dictionary."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def execute(self) -> ExecuteResult:
         """
-        Issues an init query; sending some storage over to the server.
+        Execute all pending queries (writes first, then reads).
 
-        Note that storage is either one BinaryTree or a list of BinaryTrees, in the case of position map oram storages.
-        :param storage: The storage client wants server to hold.
-        :return: No return, but should check whether the query is successfully issued.
+        :return: ExecuteResult with success=True and results on success, or success=False and error message on failure.
         """
         raise NotImplementedError
 
-    @abstractmethod
-    def list_insert(self, label: str, index:int = 0, value:Any = None) -> None :
-        raise NotImplementedError
-
-    @abstractmethod
-    def list_pop(self, label: str, index:int = -1) -> Any :
-       raise NotImplementedError
-    
-    @abstractmethod
-    def list_get(self, label: str, index:int) -> Any :
-        raise NotImplementedError
-    
-    @abstractmethod
-    def list_update(self, label: str, index:int, value:Any) -> None :
-        raise NotImplementedError
-
-    def list_all(self, label: str) -> List[Any] :
-        raise NotImplementedError
-    
-    def scale_up(self, label: str) -> bool:
-        raise NotImplementedError
-    
-    def scale_down(self, label: str) -> bool:
-        raise NotImplementedError   
-    # @abstractmethod
-    # def add_query(self, query: Query) -> None:
-    #     raise NotImplementedError
-
-    # @abstractmethod
-    # def merge_and_sort_query(self) -> None:
-    #     raise NotImplementedError
-
-    # @abstractmethod
-    # def execute_query(self) -> None:
-    #     raise NotImplementedError
-    
-class InteractRemoteServer(InteractServer):
-    def __init__(self, ip: str = "localhost", port: int = PORT):
-        """Create an instance to talk to the remote server.
-
-        :param ip: The IP address of the remote server.
-        :param port: The port the remote server is listening on.
-        """
-        # Save the connection information.
-        super().__init__()
-        self.__ip = ip
-        self.__port = port
-        self.__client = None
-        
-        
-
-    def update_ip(self, ip: str) -> None:
-        """Updates the ip address of the server."""
-        self.__ip = ip
-
-    def update_port(self, port: int) -> None:
-        """Updates the port of the server."""
-        self.__port = port
-
-    def __check_client(self) -> None:
-        """Check if the client is connected to the server."""
-        if self.__client is None:
-            raise ValueError("Client has not been initialized; call init_connection() first.")
-
-    def __check_response(self) -> None:
-        """Check whether the server successfully executes the request."""
-        # Get response from server.
-        response = self.__client.recv()
-        # Check if it is the default response.
-        if response != SERVER_DEFAULT_RESPONSE:
-            raise ValueError("Server did not give an expected response, the operation may have failed.")
-    
-    def __check_scale(self) -> None:
-        """Check whether the server successfully scales up or down."""
-        # Get response from server.
-        response = self.__client.recv()
-        # Check if the response is False.
-        if response is False:
-            return False
-        return True
-
-    def init_connection(self) -> None:
-        """Initialize the connection to the server."""
-        # To make sure the socket won't close, we return it to the place where this is called.
-        self.__client = Socket(ip=self.__ip, port=self.__port, is_server=False)
-
-    def close_connection(self) -> None:
-        """Close the connection to the server."""
-        self.__client.close()
-
-    def init(self, storage: ServerStorage) -> None:
-        """Issues an init query; sending some storage over to the server."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "i", "storage": storage}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
-
-    def read_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]]) -> Buckets:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "r", "label": label, "leaf": leaf}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Get the server response.
-        response = self.__client.recv()
-
-        return response
-
-    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = [{"type": "r", "label": label[index], "leaf": each_leaf} for index, each_leaf in enumerate(leaf)]
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Get the server response.
-        response = self.__client.recv()
-
-        return response
-
-    def write_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]], data: Buckets) -> None:
-        """Issues a "write" query; telling the server to write one/multiple paths to some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "w", "label": label, "leaf": leaf, "data": data}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
-
-    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = [
-            {"type": "w", "label": label[index], "leaf": each_leaf, "data": data[index]}
-            for index, each_leaf in enumerate(leaf)
-        ]
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
-
-    def read_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int) -> Block:
-        """Issues a read block query; telling the server to read one block from some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "rb", "label": label, "leaf": leaf, "bucket_id": bucket_id, "block_id": block_id}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Get the server response.
-        return self.__client.recv()
-
-    def write_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a "write" block query; telling the server to write one block to some storage."""
-        # Check for connection.
-        self.__check_client()
-
-        # Create the init query.
-        query = {"type": "wb", "label": label, "leaf": leaf, "bucket_id": bucket_id, "block_id": block_id, "data": data}
-
-        # Send the query to server.
-        self.__client.send(query)
-
-        # Check for response.
-        self.__check_response()
-
-    def list_insert(self, label: str, index:int = 0, value: Any = None) -> None :
-        """Issues a list insert query; telling the server to insert a value to some list."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the insert query.
-        query = {"type": "li", "label": label, "index": index, "value": value}
-
-        # Send the query to server.
-        self.__client.send(query)
-        self.__check_response()
-
-    def list_pop(self, label: str, index:int = -1) -> Any :
-        """Issues a list pop query; telling the server to pop a value from some list."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the pop query.
-        query = {"type": "lp", "label": label, "index": index}
-
-        # Send the query to server.
-        self.__client.send(query)
-        return self.__client.recv()
-    
-    def list_get(self, label: str, index:int) -> Any :
-        """Issues a list get query; telling the server to get a value from some list."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the get query.
-        query = {"type": "lg", "label": label, "index": index}
-        self.__client.send(query)
-        return self.__client.recv()
-
-    def list_update(self, label: str, index:int, value: Any) -> None :
-        """Issues a list upgrade query; telling the server to upgrade a value from some list."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the upgrade query.
-        query = {"type": "lu", "label": label, "index": index, "value": value}
-
-        # Send the query to server.
-        self.__client.send(query)
-        self.__check_response()
-
-    def list_all(self, label: str) -> List[Any] :
-        """Issues a list all query; telling the server to return all values from some list."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the all query.
-        query = {"type": "la", "label": label}
-
-        # Send the query to server.
-        self.__client.send(query)
-        return self.__client.recv()
-
-    def scale_up(self, label: str) -> bool:
-        """Issues a scale up query; telling the server to scale up some storage."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the scale up query.
-        query = {"type": "su", "label": label}
-
-        # Send the query to server.
-        self.__client.send(query)
-        return self.__check_scale()
-
-    def scale_down(self, label: str) -> bool:
-        """Issues a scale down query; telling the server to scale down some storage."""
-        # Check if the requested storage exists.
-        self.__check_client()
-
-        # Create the scale down query.
-        query = {"type": "sd", "label": label}
-
-        # Send the query to server.
-        self.__client.send(query)
-        return self.__check_scale()
 
 class InteractLocalServer(InteractServer):
+    """Local server implementation - storage is in the same process."""
+
     def __init__(self):
         """Create an instance for the local server with storages."""
-        self.__storage: ServerStorage = {}
+        super().__init__()
+        self._storage: ServerStorage = {}
 
-    def init_connection(self) -> None:
-        """Since the server is local, pass."""
+    def init_connection(self, client: BaseSocket = None) -> None:
+        """Since the server is local, no connection needed."""
         pass
 
     def close_connection(self) -> None:
-        """Since the server is local, pass."""
+        """Since the server is local, no connection to close."""
         pass
 
-    def init(self, storage: ServerStorage) -> None:
-        """Issues an init query; sending some storage over to the server."""
-        # Save the storage.
-        self.__storage.update(storage)
+    def init_storage(self, storage: ServerStorage) -> None:
+        """Register storages from a dictionary."""
+        self._storage.update(storage)
 
-    def read_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]]) -> Buckets:
-        """Issues a read query; telling the server to read one/multiple paths from some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
+    def _get_tree(self, label: str) -> BinaryTree:
+        """Get tree storage by label."""
+        if label not in self._storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
+        return self._storage[label]
 
-        # Depends on the label, read the storage.
-        return self.__storage[label].read_path(leaf=leaf)
-
-    def write_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]], data: Buckets) -> None:
-        """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
-        # Skip it when writing a dummy 
-        if data is None:
-            return
-        # Check if the requested storage exists.
-        if label not in self.__storage:
+    def _get_list(self, label: str) -> List:
+        """Get list storage by label."""
+        if label not in self._storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
+        return self._storage[label]
 
-        # Depends on the label, write the storage.
-        self.__storage[label].write_path(leaf=leaf, data=data)
+    def execute(self) -> ExecuteResult:
+        """Execute all pending queries (writes first, then reads)."""
+        try:
+            results = {}
 
-    def read_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int) -> Block:
-        """Issues a read block query; telling the server to read one block from some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            # Track bytes written (queries + data sent to server).
+            request = (
+                self._read_paths, self._read_buckets, self._read_blocks, self._read_lists,
+                self._write_paths, self._write_buckets, self._write_blocks, self._write_lists,
+            )
+            self._bytes_written += len(pickle.dumps(request))
 
-        # Depends on the label, read the storage.
-        return self.__storage[label].read_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id)
+            # Execute all writes.
+            for label, data in self._write_paths.items():
+                self._get_tree(label).write_path(data)
 
-    def write_block_query(self, label: str, leaf: Union[int, Tuple[int, int]], bucket_id: int, block_id: int, data: Block) -> None:
-        """Issues a "write" block query; telling the server to write one block to some storage."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            for label, data in self._write_buckets.items():
+                self._get_tree(label).write_bucket(data)
 
-        # Depends on the label, write the storage.
-        self.__storage[label].write_block(leaf=leaf, block_id=block_id, bucket_id=bucket_id, data=data)
+            for label, data in self._write_blocks.items():
+                self._get_tree(label).write_block(data)
 
-    def list_insert(self, label: str, index:int = 0, value: Any = None) -> None :
-        """Issues a list insert query; telling the server to insert a value to some list."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            for label, data in self._write_lists.items():
+                lst = self._get_list(label)
+                for idx, val in data.items():
+                    if idx > -1:
+                        lst[idx] = val
+                    elif idx == -1:
+                        # Insert at the front of the list.
+                        lst.insert(0, val)
+                    elif idx == -2:
+                        # Pop the last element.
+                        lst.pop()
+                    else:
+                        raise ValueError(f"Invalid list index: {idx}")
 
-        # Depends on the label, write the storage.
-        self.__storage[label].insert(index, value)
+            # Execute all reads (deduplicate keys).
+            for label, leaves in self._read_paths.items():
+                results[label] = self._get_tree(label).read_path(list(set(leaves)))
 
-    def list_pop(self, label: str, index:int = -1) -> Any :
-        """Issues a list pop query; telling the server to pop a value from some list."""
-        # Check if the requested storage exists.
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            for label, keys in self._read_buckets.items():
+                results[label] = self._get_tree(label).read_bucket(list(set(keys)))
 
-        # Depends on the label, write the storage.
-        return self.__storage[label].pop(index)
+            for label, keys in self._read_blocks.items():
+                results[label] = self._get_tree(label).read_block(list(set(keys)))
 
-    def list_get(self, label:str, index:int) -> Any :
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            for label, indices in self._read_lists.items():
+                lst = self._get_list(label)
+                if indices is None:
+                    results[label] = lst
+                else:
+                    results[label] = {i: lst[i] for i in set(indices)}
 
-        # Depends on the label, write the storage.
-        return self.__storage[label][index]
-    
-    def list_update(self, label:str, index:int, value:Any) -> None :
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+            # Track bytes read (data received from server).
+            result = ExecuteResult(success=True, results=results)
+            self._bytes_read += len(pickle.dumps(result))
+            return result
 
-        # Depends on the label, write the storage.
-        self.__storage[label][index] = value
-    
-    def list_all(self, label:str) -> List[Any] :
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
+        except Exception as e:
+            return ExecuteResult(success=False, error=str(e))
 
-        # Depends on the label, write the storage.
-        return self.__storage[label]
-    
-    def scale_up(self, label: str) -> bool:
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
-        return self.__storage[label].scale_up()
-    
-    def scale_down(self, label: str) -> bool:
-        if label not in self.__storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
-        return self.__storage[label].scale_down()
-    
-class RemoteServer(InteractLocalServer):
-    def __init__(self, ip: str = "localhost", port: int = PORT):
-        """Creates a remote server instance that will answer client's queries.
+        finally:
+            self.clear_queries()
 
-        :param ip: The ip address of the remote server.
-        :param port: The port the remote server is listening on.
-        """
-        # Initialize the super class to create the storages.
+
+class InteractRemoteServer(InteractServer):
+    """Remote client that sends queries to a remote server."""
+
+    def __init__(self):
+        """Create an instance to talk to the remote server."""
         super().__init__()
-        # Create the server instance and have it running.
-        self.__server = None
-        self.__port = port
-        self.__ip = ip
+        self._client: BaseSocket | None = None
 
-    def update_ip(self, ip: str) -> None:
-        """Updates the ip address of the server."""
-        self.__ip = ip
+    def _check_client(self) -> None:
+        """Check if the client is connected to the server."""
+        if self._client is None:
+            raise ValueError("Client has not been initialized; call init_connection() first.")
 
-    def update_port(self, port: int) -> None:
-        """Updates the port of the server."""
-        self.__port = port
+    def init_connection(self, client: BaseSocket) -> None:
+        """Initialize the connection to the server.
 
-    def __init_connection(self) -> None:
-        """Create the server instance and have it running."""
-        self.__server = Socket(ip=self.__ip, port=self.__port, is_server=True)
+        :param client: A connected socket instance (e.g., Socket or ZMQSocket).
+        """
+        self._client = client
 
-    def __close_connection(self) -> None:
-        """Shuts off the server."""
-        self.__server.close()
+    def close_connection(self) -> None:
+        """Close the connection to the server."""
+        self._client.close()
 
-    def __process_query(self, query: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
-        """Process client's queries based on their types."""
-        # print(f"Received query: {query}")
-        if query["type"] == "i":
-            self.init(storage=query["storage"])
-        elif query["type"] == "r":
-            return self.read_query(label=query["label"], leaf=query["leaf"])
-        elif query["type"] == "rm":
-            return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
-        elif query["type"] == "w":
-            self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
-        elif query["type"] == "rw":
-            for each_query in query:
-                self.write_query(label=each_query["label"], leaf=each_query["leaf"], data=each_query["data"])
-        elif query["type"] == "rb":
-            return self.read_block_query(
-                label=query["label"],
-                leaf=query["leaf"],
-                block_id=query["block_id"],
-                bucket_id=query["bucket_id"],
-            )
-        elif query["type"] == "wb":
-            self.write_block_query(
-                label=query["label"],
-                leaf=query["leaf"],
-                bucket_id=query["bucket_id"],
-                block_id=query["block_id"],
-                data=query["data"]
-            )
-        elif query["type"] == "su":
-                return self.scale_up(label=query["label"])
-        elif query["type"] == "sd":
-                return self.scale_down(label=query["label"])
-        elif query["type"] == "li":
-                self.list_insert(label=query["label"], index=query["index"], value=query["value"])
-        elif query["type"] == "lp":
-                return self.list_pop(label=query["label"], index=query["index"])
-        elif query["type"] == "lg":
-                return self.list_get(label=query["label"], index=query["index"])
-        elif query["type"] == "lu":
-                self.list_update(label=query["label"], index=query["index"], value=query["value"])
-        elif query["type"] == "la":
-                return self.list_all(label=query["label"])
+    def init_storage(self, storage: ServerStorage) -> None:
+        """Initialize storages on the remote server."""
+        self._check_client()
+        # Send storage init request.
+        self._client.send(("init", storage))
+        response = self._client.recv()
+        if response != SERVER_DEFAULT_RESPONSE:
+            raise ValueError("Server failed to initialize storage.")
+
+    def execute(self) -> ExecuteResult:
+        """Execute all pending queries on the remote server."""
+        self._check_client()
+
+        # Package all queries into a single request.
+        request = {
+            "read_paths": self._read_paths,
+            "read_buckets": self._read_buckets,
+            "read_blocks": self._read_blocks,
+            "read_lists": self._read_lists,
+            "write_paths": self._write_paths,
+            "write_buckets": self._write_buckets,
+            "write_blocks": self._write_blocks,
+            "write_lists": self._write_lists,
+        }
+
+        # Track bytes written (request sent to server).
+        self._bytes_written += len(pickle.dumps(request))
+
+        # Send request and receive response.
+        self._client.send(("execute", request))
+        response = self._client.recv()
+
+        # Track bytes read (response from server).
+        self._bytes_read += len(pickle.dumps(response))
+        self.clear_queries()
+        return response
+
+
+class RemoteServer(InteractLocalServer):
+    """Server that listens for remote client requests."""
+
+    def __init__(self):
+        """Creates a remote server instance that will answer client's queries."""
+        super().__init__()
+        self._server: BaseSocket | None = None
+
+    def _process_request(self, request: Tuple[str, Any]) -> Any:
+        """Process client request."""
+        cmd, data = request
+
+        if cmd == "init":
+            # Initialize storage.
+            self.init_storage(data)
+            return SERVER_DEFAULT_RESPONSE
+
+        elif cmd == "execute":
+            # Load queries from request into our query dicts.
+            self._read_paths = data.get("read_paths", {})
+            self._read_buckets = data.get("read_buckets", {})
+            self._read_blocks = data.get("read_blocks", {})
+            self._read_lists = data.get("read_lists", {})
+            self._write_paths = data.get("write_paths", {})
+            self._write_buckets = data.get("write_buckets", {})
+            self._write_blocks = data.get("write_blocks", {})
+            self._write_lists = data.get("write_lists", {})
+
+            # Execute and return results.
+            return self.execute()
+
         else:
-            raise ValueError("Invalid query type was given.")
-        return SERVER_DEFAULT_RESPONSE
-    def run(self) -> None:
-        """Run the server to listen to client queries."""
-        # Initialize the socket and hearing to port.
-        self.__init_connection()
+            raise ValueError(f"Unknown command: {cmd}")
 
-        # Keep receiving queries.
+    def run(self, server: BaseSocket) -> None:
+        """Run the server to listen to client queries.
+
+        :param server: A bound socket instance (e.g., Socket or ZMQSocket with is_server=True).
+        """
+        self._server = server
+
         while True:
-            # Receive a query from the client.
-            query = self.__server.recv()
-            # If the query has content, we process it.
-            if query:
-                self.__server.send(self.__process_query(query=query))
+            request = self._server.recv()
+            if request:
+                self._server.send(self._process_request(request))
             else:
                 break
 
-        # Close the connection.
-        self.__close_connection()
+        self._server.close()

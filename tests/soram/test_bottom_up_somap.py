@@ -9,8 +9,9 @@ import glob
 import os
 import random
 import sys
-import pytest
 import time
+
+import pytest
 
 # Add the project root to the path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,9 +23,10 @@ from daoram.so.bottom_to_up_somap import BottomUpSomap
 # Test Configuration
 TEST_CONFIG = {
     "small": {"num_data": 50, "cache_size": 5, "data_size": 16},
-    "medium": {"num_data": pow(2,8), "cache_size": 10, "data_size": 20},
-    "large": {"num_data": pow(2,10), "cache_size": 20, "data_size": 32}
+    "medium": {"num_data": pow(2, 8), "cache_size": 10, "data_size": 20},
+    "large": {"num_data": pow(2, 10), "cache_size": 20, "data_size": 32}
 }
+
 
 # Helper function to remove files generated during testing
 def remove_test_files():
@@ -35,17 +37,17 @@ def remove_test_files():
         except OSError:
             pass  # File might not exist
 
+
 class TestBottomUpSomap:
     """Comprehensive test class for BottomUpSomap functionality"""
-    
+
     def setup_method(self):
         """Clean up before each test"""
         remove_test_files()
-    
+
     def teardown_method(self):
         """Clean up after each test"""
         remove_test_files()
-
 
     def test_access_method_operations(self):
         """Test the unified access method for all operations"""
@@ -179,7 +181,7 @@ class TestBottomUpSomap:
         somap.setup()
 
         initial_timestamp = somap._timestamp
-        
+
         # Perform operations and verify timestamp increments
         operations = 10
         for i in range(operations):
@@ -260,7 +262,7 @@ class TestBottomUpSomap:
 
         # Basic performance assertions (these are just sanity checks)
         assert insert_time < 10.0  # Should complete in reasonable time
-        assert read_time < 10.0   # Should complete in reasonable time
+        assert read_time < 10.0  # Should complete in reasonable time
 
     def test_error_handling_and_robustness(self):
         """Test error handling and robustness"""
@@ -299,18 +301,18 @@ class TestBottomUpSomap:
         somap.setup()
 
         key = 42
-        
+
         # Insert
         somap.access(key=key, op="insert", value="first_value")
         assert somap.access(key=key, op="read") == "first_value"
-        
+
         # Update multiple times
         somap.access(key=key, op="update", value="second_value")
         assert somap.access(key=key, op="read") == "second_value"
-        
+
         somap.access(key=key, op="update", value="third_value")
         assert somap.access(key=key, op="read") == "third_value"
-        
+
         # Final update
         somap.access(key=key, op="update", value="final_value")
         assert somap.access(key=key, op="read") == "final_value"
@@ -329,7 +331,6 @@ class TestBottomUpSomap:
         for i in range(100):
             data_map[i] = i
         somap.setup(data_map=data_map)
-  
 
         # Initialize with some data
         for i in range(20):
@@ -338,11 +339,11 @@ class TestBottomUpSomap:
         # Perform random operations
         operations = 100
         test_data = {i: f"initial_{i}" for i in range(20)}
-        
+
         for _ in range(operations):
             key = random.randint(0, 19)
             operation = random.choice(["read", "write"])
-            
+
             if operation == "read":
                 result = somap.access(key=key, op="read")
                 assert result == test_data[key]
@@ -377,10 +378,11 @@ class TestBottomUpSomap:
             result = somap.access(key=i, op="read")
             assert result == f"large_scale_value_{i}"
 
+
 def test_standalone_functionality():
     """Test standalone functionality without class structure"""
     remove_test_files()
-    
+
     try:
         somap = BottomUpSomap(
             num_data=50,
@@ -395,9 +397,10 @@ def test_standalone_functionality():
         somap.access(key=0, op="insert", value="standalone_test")
         result = somap.access(key=0, op="read")
         assert result == "standalone_test"
-        
+
     finally:
         remove_test_files()
+
 
 if __name__ == "__main__":
     # Run the tests if executed directly

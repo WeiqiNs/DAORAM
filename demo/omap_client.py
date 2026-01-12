@@ -1,133 +1,80 @@
-"""This file demonstrates how to set up a client for each of the omap we include in this library.
+"""OMAP Client Demo.
 
-Each function shows how the client should initialize the server and how to perform operations.
+Usage:
+    python omap_client.py <type> [--num-data N] [--ip IP] [--port PORT]
+
+Examples:
+    python omap_client.py avl
+    python omap_client.py daoram-bplus --num-data 256
 """
 
-from daoram.dependency import InteractRemoteServer
-from daoram.omap import AVLOdsOmap, BPlusOdsOmap, OramTreeOdsOmap
+import argparse
+import time
+
+from daoram.dependency import InteractRemoteServer, ZMQSocket
+from daoram.omap import AVLOmap, BPlusOmap, OramOstOmap
 from daoram.oram import DAOram
 
-
-def avl_ods_omap_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
-
-    # Create the omap instance.
-    omap = AVLOdsOmap(num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
-
-    # Initialize the client to make a connection.
-    omap.client.init_connection()
-
-    # Set the storage to the server.
-    omap.init_server_storage()
-
-    # Issue some insert queries.
-    for i in range(num_data):
-        omap.insert(key=i, value=i)
-
-    # Issue some search queries.
-    for i in range(num_data):
-        print(f"Read key {i} have value {omap.search(key=i)}")
-
-    # Finally, close the connection.
-    omap.client.close_connection()
+# Available OMAP types.
+OMAP_TYPES = ["avl", "bplus", "daoram-avl", "daoram-bplus"]
 
 
-def bplus_ods_omap_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
-
-    # Create the omap instance.
-    omap = BPlusOdsOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=InteractRemoteServer())
-
-    # Initialize the client to make a connection.
-    omap.client.init_connection()
-
-    # Set the storage to the server.
-    omap.init_server_storage()
-
-    # Issue some insert queries.
-    for i in range(num_data):
-        omap.insert(key=i, value=i)
-
-    # Issue some search queries.
-    for i in range(num_data):
-        print(f"Read key {i} have value {omap.search(key=i)}")
-
-    # Finally, close the connection.
-    omap.client.close_connection()
+def create_omap(omap_type: str, num_data: int, client: InteractRemoteServer):
+    """Create OMAP instance based on type."""
+    if omap_type == "avl":
+        return AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
+    elif omap_type == "bplus":
+        return BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
+    elif omap_type == "daoram-avl":
+        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
+        oram = DAOram(num_data=num_data, data_size=10, client=client)
+        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+    elif omap_type == "daoram-bplus":
+        ods = BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
+        oram = DAOram(num_data=num_data, data_size=10, client=client)
+        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
 
 
-def daoram_avl_omap_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
-
-    # Create a client object for shared usage.
+def run_demo(omap_type: str, num_data: int, ip: str, port: int):
+    """Run OMAP demo: insert all values, then search and verify."""
+    # Connect to server.
     client = InteractRemoteServer()
+    client.init_connection(client=ZMQSocket(ip=ip, port=port, is_server=False))
 
-    # Create the ods object.
-    ods = AVLOdsOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-
-    # Create the oram object.
-    oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-    # Create the omap object.
-    omap = OramTreeOdsOmap(num_data=num_data, ods=ods, oram=oram)
-
-    # Initialize the client to make a connection.
-    client.init_connection()
-
-    # Set the storage to the server.
+    # Create and initialize OMAP.
+    omap = create_omap(omap_type, num_data, client)
     omap.init_server_storage()
+    print(f"Initialized {omap_type} OMAP with {num_data} entries.")
 
-    # Issue some insert queries.
+    # Insert phase.
+    start = time.time()
     for i in range(num_data):
         omap.insert(key=i, value=i)
+    insert_time = time.time() - start
 
-    # Issue some search queries.
-    for i in range(num_data):
-        print(f"Read key {i} have value {omap.search(key=i)}")
+    # Search phase.
+    start = time.time()
+    errors = sum(1 for i in range(num_data) if omap.search(key=i) != i)
+    search_time = time.time() - start
 
-    # Finally, close the connection.
+    # Summary.
+    print(f"Insert: {insert_time:.2f}s ({num_data/insert_time:.0f} ops/s)")
+    print(f"Search: {search_time:.2f}s ({num_data/search_time:.0f} ops/s)")
+    print(f"Errors: {errors}")
+
     client.close_connection()
 
 
-def daoram_bplus_omap_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
+def main():
+    parser = argparse.ArgumentParser(description="OMAP Client Demo")
+    parser.add_argument("type", choices=OMAP_TYPES, help="OMAP type")
+    parser.add_argument("--num-data", type=int, default=512, help="Number of entries (default: 512)")
+    parser.add_argument("--ip", default="localhost", help="Server IP (default: localhost)")
+    parser.add_argument("--port", type=int, default=5555, help="Server port (default: 5555)")
+    args = parser.parse_args()
 
-    # Create a client object for shared usage.
-    client = InteractRemoteServer()
-
-    # Create the ods object.
-    ods = BPlusOdsOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
-
-    # Create the oram object.
-    oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-    # Create the omap object.
-    omap = OramTreeOdsOmap(num_data=num_data, ods=ods, oram=oram)
-
-    # Initialize the client to make a connection.
-    client.init_connection()
-
-    # Set the storage to the server.
-    omap.init_server_storage()
-
-    # Issue some insert queries.
-    for i in range(num_data):
-        omap.insert(key=i, value=i)
-
-    # Issue some search queries.
-    for i in range(num_data):
-        print(f"Read key {i} have value {omap.search(key=i)}")
-
-    # Finally, close the connection.
-    client.close_connection()
+    run_demo(args.type, args.num_data, args.ip, args.port)
 
 
-if __name__ == '__main__':
-    # avl_ods_omap_client()
-    # bplus_ods_omap_client()
-    # daoram_avl_omap_client()
-    daoram_bplus_omap_client()
+if __name__ == "__main__":
+    main()

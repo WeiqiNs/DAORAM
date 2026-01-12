@@ -1,15 +1,12 @@
 """
-This module defines the path oram class.
+This module defines the multi-path oram class.
 
-Path oram has two public methods:
-    - init_storage_on_pos_map: this should be called first after the class object is created. This method constructs the
-        storage the server should hold for the client.
-    - operate_on_key: after the server gets the created storage, the client can use this function to obliviously access
-        data points stored in the storage.
+MulPathOram extends PathOram to support batch operations where multiple paths are read and written at once,
+improving efficiency for operations that need to access multiple keys.
 """
-from typing import List
+from typing import Any, Dict, List
 
-from daoram.dependency import BinaryTree, InteractServer, Data, Buckets
+from daoram.dependency import Encryptor, InteractServer, PathData, UNSET
 from daoram.oram.path_oram import PathOram
 
 
@@ -18,15 +15,14 @@ class MulPathOram(PathOram):
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
-                 name: str = "mp",
+                 name: str = "mul_path_oram",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 aes_key: bytes = None,
-                 num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 encryptor: Encryptor = None,
+                 stash_scale_multiplier: int = 1):
         """
-        Defines the path oram, including its attributes and methods.
+        Defines the multi-path oram for batch operations.
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
@@ -35,115 +31,244 @@ class MulPathOram(PathOram):
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
-        :param aes_key: The key to use for the AES instance.
-        :param num_key_bytes: The number of bytes the aes key should have.
-        :param use_encryption: A boolean indicating whether to use encryption.
+        :param stash_scale_multiplier: Multiplier for the stash size (default 1).
+        :param encryptor: The encryptor to use for encryption.
         """
-        # Initialize the parent BaseOram class.
+        # Initialize the parent PathOram class.
         super().__init__(
             name=name,
             client=client,
-            aes_key=aes_key,
             num_data=num_data,
             filename=filename,
+            encryptor=encryptor,
             data_size=data_size,
             bucket_size=bucket_size,
-            stash_scale=stash_scale,
-            num_key_bytes=num_key_bytes,
-            use_encryption=use_encryption
+            stash_scale=stash_scale * stash_scale_multiplier
         )
 
-        # In path oram, we initialize the position map.
-        self._init_pos_map()
+        # Store temporary leaves for batch operations without immediate eviction.
+        self._tmp_leaves: List[int] = []
 
-    @property
-    def stash(self) -> list:
-        """Return the stash."""
-        return self._stash
-
-    @stash.setter
-    def stash(self, value: list):
-        """Update the stash with input."""
-        self._stash = value
-
-    def init_server_storage(self, data: List[Data] = None) -> None:
+    def init_server_storage(self, data_map: dict = None, path_map: dict = None) -> None:
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data: A BinaryTree object.
+        :param data_map: A dictionary storing {key: data}.
+        :param path_map: Optional dictionary mapping {key: leaf}. If provided, overrides
+                         the random position map values for these keys.
         """
-        # Create the binary tree object.
-        tree = BinaryTree(
-            filename=self._filename,
-            num_data=self._num_data,
-            data_size=self._max_block_size,
-            bucket_size=self._bucket_size,
-            enc_key_size=self._num_key_bytes if self._use_encryption else None,
+        # Override position map with provided paths if given
+        if path_map:
+            for key, leaf in path_map.items():
+                self._pos_map[key] = leaf
+
+        # Call parent implementation
+        super().init_server_storage(data_map=data_map)
+
+    def _retrieve_mul_data_blocks(
+            self,
+            path: PathData,
+            key_leaf_map: Dict[int, int],
+            values: Dict[int, Any] = None,
+    ) -> Dict[int, Any]:
+        """
+        Retrieve multiple data blocks from the path. If values provided, write them.
+
+        :param path: PathData dict mapping storage index to bucket.
+        :param key_leaf_map: Dict mapping key to its new leaf.
+        :param values: If provided, dict mapping key to value to write.
+        :return: Dict mapping key to its current value.
+        """
+        # Track which keys we've found and their values.
+        found_keys = set()
+        read_values: Dict[int, Any] = {}
+
+        # Store the current stash length for searching stash later.
+        to_index = len(self._stash)
+
+        # Decrypt the path if needed.
+        path = self._decrypt_path_data(path=path)
+
+        # Read all buckets in the path and add real data to stash.
+        for bucket in path.values():
+            for data in bucket:
+                # If dummy data, skip it.
+                if data.key is None:
+                    continue
+
+                # Check if this is one of the keys we're looking for.
+                if data.key in key_leaf_map:
+                    # Read the current value.
+                    read_values[data.key] = data.value
+                    # Write if value is provided.
+                    if values and data.key in values:
+                        data.value = values[data.key]
+                    # Update the leaf.
+                    data.leaf = key_leaf_map[data.key]
+                    found_keys.add(data.key)
+
+                # Add all real data to the stash.
+                self._stash.append(data)
+
+        # Check if the stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # Check stash for any keys not found in path.
+        for key, new_leaf in key_leaf_map.items():
+            if key not in found_keys:
+                # Search in the existing stash (before we added new data).
+                value_to_write = values.get(key, UNSET) if values else UNSET
+                read_values[key] = self._retrieve_data_stash(
+                    key=key, to_index=to_index, new_leaf=new_leaf, value=value_to_write
+                )
+
+        return read_values
+
+    def operate_on_keys(
+            self,
+            key_value_map: Dict[int, Any],
+            key_path_map: Dict[int, int] = None,
+            new_path_map: Dict[int, int] = None,
+    ) -> Dict[int, Any]:
+        """
+        Perform batch operations on multiple keys. Reads all paths at once,
+        performs operations, and evicts all paths at once.
+
+        :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
+        :param key_path_map: Optional dict mapping key to old path (where to read from).
+            If None, paths are retrieved from the position map.
+        :param new_path_map: Optional dict mapping key to new path (where to write to).
+            If None, new paths are generated randomly.
+        :return: Dict mapping key to its value (before write if writing).
+        """
+        key_list = list(key_value_map.keys())
+        values = {k: v for k, v in key_value_map.items() if v is not UNSET}
+
+        if not key_list:
+            return {}
+
+        # Look up current leaves and determine new leaves for all keys.
+        old_leaves: List[int] = []
+        key_leaf_map: Dict[int, int] = {}
+
+        for key in key_list:
+            # Find which path the data lies on.
+            if key_path_map is not None:
+                old_leaf = key_path_map[key]
+            else:
+                old_leaf = self._look_up_pos_map(key=key)
+            old_leaves.append(old_leaf)
+
+            # Determine new leaf: use provided map or generate randomly.
+            if new_path_map is not None and key in new_path_map:
+                new_leaf = new_path_map[key]
+            else:
+                new_leaf = self._get_new_leaf()
+            self._pos_map[key] = new_leaf
+            key_leaf_map[key] = new_leaf
+
+        # Read all paths at once.
+        self._client.add_read_path(label=self._name, leaves=old_leaves)
+        result = self._client.execute()
+        path_data = result.results[self._name]
+
+        # Retrieve values from paths and optionally write to them.
+        read_values = self._retrieve_mul_data_blocks(
+            path=path_data, key_leaf_map=key_leaf_map, values=values
         )
 
-        # Fill the data to the correct place.
-        for each_data in data:
-            tree.fill_data_to_storage_leaf(data=each_data)
+        # Evict stash to all paths at once.
+        evicted_path = self._evict_stash(leaves=old_leaves)
 
-        # Encrypt the tree storage if needed.
-        if self._use_encryption:
-            tree.storage.encrypt(aes=self._cipher)
+        # Write all paths back.
+        self._client.add_write_path(label=self._name, data=evicted_path)
+        self._client.execute()
 
-        # Initialize the storage and send it to the server.
-        self.client.init(storage={self._name: tree})
+        return read_values
 
-    def process_path_to_stash(self, path: Buckets):
-        """Decrypt path and add real data to stash."""
-        # Read all buckets in the decrypted path and add real data to stash.
-        for bucket in self._decrypt_buckets(buckets=path):
-            for data in bucket:
-                # We add all real data to stash and sample a new leaf.
-                if data.key is not None:
-                    data.leaf = self._get_new_leaf()
-                    self._stash.append(data)
-
-    def retrieve_path(self, leaves: List[int]) -> None:
+    def operate_on_keys_without_eviction(
+            self,
+            key_value_map: Dict[int, Any],
+            key_path_map: Dict[int, int] = None,
+            new_path_map: Dict[int, int] = None,
+    ) -> Dict[int, Any]:
         """
-        Retrieve the provided path(s).
+        Perform batch operations on multiple keys without eviction.
+        Call eviction_for_mul_keys() later to complete the operation.
 
-        :param leaves: A list of integers representing path numbers.
+        :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
+        :param key_path_map: Optional dict mapping key to old path (where to read from).
+            If None, paths are retrieved from the position map.
+        :param new_path_map: Optional dict mapping key to new path (where to write to).
+            If None, new paths are generated randomly.
+        :return: Dict mapping key to its value (before write if writing).
         """
-        # Check that input path are within the correct range.
-        for leaf in leaves:
-            if leaf >= self._leaf_range:
-                raise ValueError(f"The input path number {leaf} is not within the correct range.")
+        key_list = list(key_value_map.keys())
+        values = {k: v for k, v in key_value_map.items() if v is not UNSET}
 
-        # We read the path from the server.
-        self.process_path_to_stash(path=self.client.read_query(label=self._name, leaf=leaves))
+        if not key_list:
+            return {}
 
-    def prepare_evict_path(self, leaves: List[int]) -> Buckets:
-        # Create a temporary stash.
-        temp_stash = []
+        # Look up current leaves and determine new leaves for all keys.
+        old_leaves: List[int] = []
+        key_leaf_map: Dict[int, int] = {}
 
-        # Create a dictionary contains locations for where all leaves' paths touch.
-        path_dict = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
+        for key in key_list:
+            # Find which path the data lies on.
+            if key_path_map is not None:
+                old_leaf = key_path_map[key]
+            else:
+                old_leaf = self._look_up_pos_map(key=key)
+            old_leaves.append(old_leaf)
 
-        # Now we evict the stash by going through all real data in it.
-        for data in self._stash:
-            # Attempt to insert actual data to the path.
-            inserted = BinaryTree.fill_data_to_mul_path(
-                data=data, path=path_dict, leaves=leaves, level=self._level, bucket_size=self._bucket_size
-            )
-            # If we were not able to insert data, overflow happened, put the block to the temp stash.
-            if not inserted:
-                temp_stash.append(data)
+            # Determine new leaf: use provided map or generate randomly.
+            if new_path_map is not None and key in new_path_map:
+                new_leaf = new_path_map[key]
+            else:
+                new_leaf = self._get_new_leaf()
+            self._pos_map[key] = new_leaf
+            key_leaf_map[key] = new_leaf
 
-        # Update the stash.
-        self._stash = temp_stash
+        # Read all paths at once.
+        self._client.add_read_path(label=self._name, leaves=old_leaves)
+        result = self._client.execute()
+        path_data = result.results[self._name]
 
-        # After we are done with all real data, convert the dict to list of lists.
-        return self._encrypt_buckets([path_dict[key] for key in path_dict.keys()])
+        # Retrieve values from paths and optionally write to them.
+        read_values = self._retrieve_mul_data_blocks(
+            path=path_data, key_leaf_map=key_leaf_map, values=values
+        )
 
-    def evict_path(self, leaves: List[int]) -> None:
+        # Store leaves for later eviction.
+        self._tmp_leaves = old_leaves
+
+        return read_values
+
+    def eviction_for_mul_keys(self, updates: Dict[int, Any] = None, execute: bool = True) -> None:
         """
-        Evict the stash to the input paths.
+        Complete the batch operation by updating stash and evicting.
 
-        :param leaves: A list of integers representing path numbers.
+        :param updates: Optional dict mapping key to new value to update in stash.
+        :param execute: If True, execute immediately. If False, queue write for batching.
         """
-        # Encrypt and write the path back.
-        self.client.write_query(label=self._name, leaf=leaves, data=self.prepare_evict_path(leaves=leaves))
+        # Apply any updates to stash.
+        if updates:
+            for key, value in updates.items():
+                for data in self._stash:
+                    if data.key == key:
+                        data.value = value
+                        break
+
+        # Evict stash to all paths.
+        evicted_path = self._evict_stash(leaves=self._tmp_leaves)
+
+        # Add write to client queue.
+        self._client.add_write_path(label=self._name, data=evicted_path)
+
+        # Execute if requested.
+        if execute:
+            self._client.execute()
+
+        # Clear temporary leaves.
+        self._tmp_leaves = []
