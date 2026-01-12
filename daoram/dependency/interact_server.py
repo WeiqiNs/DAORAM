@@ -344,6 +344,34 @@ class InteractLocalServer(InteractServer):
         # Depends on the label, read the storage.
         return self.__storage[label].read_path(leaf=leaf)
 
+    def read_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]]) -> List[Buckets]:
+        """Issues a batch read query; reading multiple paths in one call.
+        
+        :param label: List of storage labels to read from.
+        :param leaf: List of leaf indices corresponding to each label.
+        :return: List of Buckets, one for each path read.
+        """
+        results = []
+        for i, each_label in enumerate(label):
+            if each_label not in self.__storage:
+                raise KeyError(f"Label {each_label} is not hosted in the server storage.")
+            results.append(self.__storage[each_label].read_path(leaf=leaf[i]))
+        return results
+
+    def write_mul_query(self, label: List[str], leaf: Union[List[int], List[List[int]]], data: List[Buckets]) -> None:
+        """Issues a batch write query; writing multiple paths in one call.
+        
+        :param label: List of storage labels to write to.
+        :param leaf: List of leaf indices corresponding to each label.
+        :param data: List of Buckets data to write.
+        """
+        for i, each_label in enumerate(label):
+            if data[i] is None:
+                continue
+            if each_label not in self.__storage:
+                raise KeyError(f"Label {each_label} is not hosted in the server storage.")
+            self.__storage[each_label].write_path(leaf=leaf[i], data=data[i])
+
     def write_query(self, label: str, leaf: Union[int, List[int], Tuple[int, int], List[Tuple[int,int]]], data: Buckets) -> None:
         """Issues a "write" query; telling the server to write one/multiple paths from some storage."""
         # Skip it when writing a dummy 

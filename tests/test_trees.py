@@ -1,6 +1,7 @@
 import random
 
 from daoram.dependency import AVLTree, BinaryTree, BPlusTree, BPlusTreeNode, Data
+from daoram.dependency.bplus_tree_subset import SubsetBPlusTree
 
 
 class TestBinaryTree:
@@ -356,3 +357,144 @@ class TestBPlusTree:
         assert data_list[1].key == 3
         assert data_list[1].value.keys == [14, 16, 18]
         assert len(data_list[1].value.values) == 4
+
+
+class TestSubsetBPlusTree:
+    def test_init(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        assert tree.find_available() == 0
+
+    def test_insert_single(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        tree.insert(2)
+        assert tree.contains(2) is True
+        assert tree.contains(3) is False
+        assert tree.find_available() == 0
+
+    def test_insert_multiple(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        values = [1, 3, 5, 7, 9]
+        for v in values:
+            tree.insert(v)
+        
+        # All inserted values should be findable
+        for v in values:
+            assert tree.contains(v) is True
+        
+        # All non-inserted values should not be in the tree
+        for v in range(10):
+            if v not in values:
+                assert tree.contains(v) is False
+
+    def test_find_available_with_empty_tree(self):
+        tree = SubsetBPlusTree(order=3, n=5)
+        available = tree.find_available()
+        assert available in range(5)
+
+    def test_find_available_with_insertions(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        tree.insert(0)
+        tree.insert(1)
+        tree.insert(2)
+        available = tree.find_available()
+        assert available in [3, 4, 5, 6, 7, 8, 9]
+        assert tree.contains(available) is False
+
+    def test_find_available_full_tree(self):
+        tree = SubsetBPlusTree(order=3, n=5)
+        for i in range(5):
+            tree.insert(i)
+        available = tree.find_available()
+        assert available is None
+
+    def test_delete(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        tree.insert(2)
+        assert tree.contains(2) is True
+        tree.delete(2)
+        assert tree.contains(2) is False
+
+    def test_delete_and_find_available(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        values = [1, 3, 5, 7, 9]
+        for v in values:
+            tree.insert(v)
+        
+        # Initially should find 0 (smallest unavailable)
+        assert tree.find_available() == 0
+        
+        # Delete a value and check
+        tree.delete(3)
+        available = tree.find_available()
+        assert available == 0  # 0 is still the smallest unavailable
+        assert tree.contains(3) is False
+
+    def test_delete_leaves_available_elements(self):
+        tree = SubsetBPlusTree(order=3, n=10)
+        for i in range(10):
+            tree.insert(i)
+        
+        # Tree is full
+        assert tree.find_available() is None
+        
+        # Delete some elements
+        tree.delete(5)
+        tree.delete(10)  # Should not cause error (doesn't exist)
+        tree.delete(7)
+        
+        # Should find deleted elements are now available
+        available = tree.find_available()
+        assert available == 5
+
+    def test_large_tree_with_splits(self):
+        tree = SubsetBPlusTree(order=3, n=20)
+        values = list(range(20))
+        random.shuffle(values)
+        
+        for v in values:
+            tree.insert(v)
+        
+        # All values inserted
+        assert tree.find_available() is None
+        
+        # Delete some and check availability
+        tree.delete(5)
+        tree.delete(10)
+        tree.delete(15)
+        
+        available = tree.find_available()
+        assert available == 5
+
+    def test_random_operations(self):
+        tree = SubsetBPlusTree(order=4, n=50)
+        inserted = set()
+        
+        # Random insertions
+        for _ in range(30):
+            val = random.randint(0, 49)
+            tree.insert(val)
+            inserted.add(val)
+        
+        # Verify all inserted values are in tree
+        for val in inserted:
+            assert tree.contains(val) is True
+        
+        # Verify uninserted values are not in tree
+        for val in range(50):
+            if val not in inserted:
+                assert tree.contains(val) is False
+        
+        # Find available should return something not in inserted
+        available = tree.find_available()
+        assert available not in inserted or available is None
+
+    def test_availability_tracking_with_internal_nodes(self):
+        tree = SubsetBPlusTree(order=3, n=30)
+        
+        # Insert many values to create internal nodes
+        for i in range(0, 30, 2):
+            tree.insert(i)
+        
+        # Tree should track that odd values are available
+        available = tree.find_available()
+        assert available % 2 == 1 or available is None

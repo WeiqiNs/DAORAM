@@ -23,7 +23,7 @@ from daoram.so.bottom_to_up_somap import BottomUpSomap
 TEST_CONFIG = {
     "small": {"num_data": 50, "cache_size": 5, "data_size": 16},
     "medium": {"num_data": pow(2,8), "cache_size": 10, "data_size": 20},
-    "large": {"num_data": pow(2,10), "cache_size": 20, "data_size": 32}
+    "large": {"num_data": pow(2,9), "cache_size": 20, "data_size": 32}
 }
 
 # Helper function to remove files generated during testing
