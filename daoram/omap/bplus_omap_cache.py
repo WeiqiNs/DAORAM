@@ -159,13 +159,21 @@ class BPlusOmapCached(BPlusOmap):
         self._flush_local_to_stash()
         return super().fast_search(key=key, value=value)
 
-    def _find_path_for_delete_cached(self, key: Any) -> tuple[Dict[int, Data], List[int]]:
+    def _find_path_with_siblings_cached(self, key: Any) -> tuple[Dict[int, Data], List[int], Dict[int, Data], Dict[int, int]]:
         """
-        Find the path from root to leaf for the given key, returning nodes by level.
-        Uses caching: flushes at start, checks stash before fetching.
+        Find path from root to leaf, fetching one sibling at each non-root level.
+        Completes in h rounds by pre-fetching siblings for potential borrow/merge.
+
+        At each level (except root), fetches:
+        - The target child on the path
+        - One sibling (left if available, else right) for underflow handling
 
         :param key: Search key of interest.
-        :return: Tuple of (path_nodes dict keyed by level, child_indices list).
+        :return: Tuple of (path_nodes, child_indices, siblings, sibling_indices).
+            - path_nodes: Dict[level, node] - nodes on the path from root to leaf
+            - child_indices: List[int] - child index taken at each internal level
+            - siblings: Dict[level, node] - pre-fetched sibling at each non-root level
+            - sibling_indices: Dict[level, int] - index of sibling in parent's values
         """
         # Flush any cached local nodes to stash first
         self._flush_local_to_stash()
@@ -173,6 +181,8 @@ class BPlusOmapCached(BPlusOmap):
         # Path nodes stored by level: {0: root, 1: child, 2: grandchild, ...}
         path_nodes: Dict[int, Data] = {}
         child_indices: List[int] = []
+        siblings: Dict[int, Data] = {}
+        sibling_indices: Dict[int, int] = {}
         level = 0
 
         # Get the root node (checks stash first via overridden _move_node_to_local)
@@ -184,7 +194,7 @@ class BPlusOmapCached(BPlusOmap):
         self.root = (node.key, node.leaf)
         path_nodes[level] = node
 
-        # Traverse down to leaf
+        # Traverse down to leaf, fetching target + sibling at each level
         while not (len(node.value.keys) == len(node.value.values)):
             # Sample a new leaf for the child
             new_leaf = self._get_new_leaf()
@@ -202,62 +212,63 @@ class BPlusOmapCached(BPlusOmap):
             # Record the child index
             child_indices.append(child_index)
 
-            # Move the next node to local (checks stash first)
+            # Move the target child to local (checks stash first)
             child_key, child_leaf = node.value.values[child_index]
             self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
             child_node = self._local.remove(self._local.root_key)
 
             # Update the parent's pointer to child with new leaf
             node.value.values[child_index] = (child_key, new_leaf)
-
-            # Update child's leaf and store in path
             child_node.leaf = new_leaf
+
+            # Fetch sibling: prefer left, fallback to right
+            sibling_index = None
+            if child_index > 0:
+                sibling_index = child_index - 1
+            elif child_index < len(node.value.values) - 1:
+                sibling_index = child_index + 1
+
+            if sibling_index is not None:
+                sib_key, sib_leaf = node.value.values[sibling_index]
+                sib_new_leaf = self._get_new_leaf()
+                self._move_node_to_local(key=sib_key, leaf=sib_leaf, parent_key=None, child_index=None)
+                sibling_node = self._local.remove(self._local.root_key)
+                sibling_node.leaf = sib_new_leaf
+                node.value.values[sibling_index] = (sib_key, sib_new_leaf)
+
+                # Store sibling at the child's level
+                siblings[level + 1] = sibling_node
+                sibling_indices[level + 1] = sibling_index
+
+            # Store child in path and move down
             level += 1
             path_nodes[level] = child_node
             node = child_node
 
-        return path_nodes, child_indices
-
-    def _fetch_sibling_for_delete_cached(self, parent: Data, sibling_index: int) -> Data:
-        """
-        Fetch a sibling node from storage for delete operation.
-        Uses caching: checks stash before fetching.
-
-        :param parent: The parent node containing the sibling.
-        :param sibling_index: Index of the sibling in parent's values.
-        :return: The sibling node.
-        """
-        sibling_key, sibling_leaf = parent.value.values[sibling_index]
-        new_leaf = self._get_new_leaf()
-
-        # Move sibling to local (checks stash first) then pop it out
-        self._move_node_to_local(key=sibling_key, leaf=sibling_leaf, parent_key=None, child_index=None)
-        sibling = self._local.remove(self._local.root_key)
-
-        # Update the sibling's leaf
-        sibling.leaf = new_leaf
-
-        # Update parent's pointer to sibling
-        parent.value.values[sibling_index] = (sibling_key, new_leaf)
-
-        return sibling
+        return path_nodes, child_indices, siblings, sibling_indices
 
     def delete(self, key: Any) -> Any:
-        """Delete with caching: flush at start, keep in local at end."""
+        """
+        Delete with h-round optimization: pre-fetches siblings during traversal.
+
+        At each level (except root), fetches both target node and one sibling,
+        completing the entire operation in h rounds regardless of underflow handling.
+        """
+        # Total accesses for h-level tree: 1 (root) + 2*(h-1) = 2h - 1
+        # Pad to 2 * max_height - 1 for obliviousness
+        max_accesses = 2 * self._max_height - 1
+
         if key is None or self.root is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_operation(num_round=max_accesses)
             return None
 
         # Compute the minimum number of keys each node should have
         min_keys = (self._order - 1) // 2
 
-        # Find path from root to leaf, stored by level (with caching)
-        path_nodes, child_indices = self._find_path_for_delete_cached(key=key)
+        # Find path from root to leaf with pre-fetched siblings (h rounds)
+        path_nodes, child_indices, siblings, sibling_indices = self._find_path_with_siblings_cached(key=key)
         leaf_level = len(path_nodes) - 1
         leaf = path_nodes[leaf_level]
-
-        # Separately track fetched siblings (not on the original path)
-        fetched_siblings: List[Data] = []
 
         # Find and delete key from leaf
         key_index = None
@@ -268,12 +279,14 @@ class BPlusOmapCached(BPlusOmap):
                 deleted_value = leaf.value.values[i]
                 break
 
-        # Key not found
+        # Key not found - flush everything and return
         if key_index is None:
-            # Flush all path nodes to stash
             for node in path_nodes.values():
                 self._stash.append(node)
-            self._perform_dummy_operation(num_round=3 * self._max_height - len(path_nodes))
+            for sib in siblings.values():
+                self._stash.append(sib)
+            total_nodes = len(path_nodes) + len(siblings)
+            self._perform_dummy_operation(num_round=max_accesses - total_nodes)
             return None
 
         # Delete key and value from leaf
@@ -286,10 +299,10 @@ class BPlusOmapCached(BPlusOmap):
                 self.root = None
             else:
                 self._stash.append(leaf)
-            self._perform_dummy_operation(num_round=3 * self._max_height - 1)
+            self._perform_dummy_operation(num_round=max_accesses - 1)
             return deleted_value
 
-        # Handle underflow from bottom to top
+        # Handle underflow from bottom to top using pre-fetched siblings
         node_level = leaf_level
         node = leaf
 
@@ -301,58 +314,54 @@ class BPlusOmapCached(BPlusOmap):
             if len(node.value.keys) >= min_keys:
                 break
 
-            # Get sibling info
-            has_left = child_index > 0
-            has_right = child_index < len(parent.value.values) - 1
+            # Get pre-fetched sibling for this level (child's level = level + 1)
+            child_level = level + 1
+            if child_level not in siblings:
+                # No sibling was fetched (shouldn't happen in valid B+ tree)
+                break
 
-            left_sib = None
-            right_sib = None
+            sibling = siblings[child_level]
+            sib_index = sibling_indices[child_level]
+            is_left_sibling = sib_index < child_index
 
-            # Try borrow from left sibling
-            if has_left:
-                left_sib = self._fetch_sibling_for_delete_cached(parent, child_index - 1)
-                fetched_siblings.append(left_sib)
-                if len(left_sib.value.keys) > min_keys:
-                    if len(node.value.keys) == len(node.value.values):
+            # Try to borrow from the pre-fetched sibling
+            if len(sibling.value.keys) > min_keys:
+                is_leaf = len(node.value.keys) == len(node.value.values)
+                if is_left_sibling:
+                    if is_leaf:
                         # Borrow from left for leaf
-                        node.value.keys.insert(0, left_sib.value.keys.pop())
-                        node.value.values.insert(0, left_sib.value.values.pop())
+                        node.value.keys.insert(0, sibling.value.keys.pop())
+                        node.value.values.insert(0, sibling.value.values.pop())
                         parent.value.keys[child_index - 1] = node.value.keys[0]
                     else:
                         # Borrow from left for internal node
                         node.value.keys.insert(0, parent.value.keys[child_index - 1])
-                        node.value.values.insert(0, left_sib.value.values.pop())
-                        parent.value.keys[child_index - 1] = left_sib.value.keys.pop()
-                    break
-
-            # Try borrow from right sibling
-            if has_right:
-                right_sib = self._fetch_sibling_for_delete_cached(parent, child_index + 1)
-                fetched_siblings.append(right_sib)
-                if len(right_sib.value.keys) > min_keys:
-                    if len(node.value.keys) == len(node.value.values):
+                        node.value.values.insert(0, sibling.value.values.pop())
+                        parent.value.keys[child_index - 1] = sibling.value.keys.pop()
+                else:
+                    if is_leaf:
                         # Borrow from right for leaf
-                        node.value.keys.append(right_sib.value.keys.pop(0))
-                        node.value.values.append(right_sib.value.values.pop(0))
-                        parent.value.keys[child_index] = right_sib.value.keys[0]
+                        node.value.keys.append(sibling.value.keys.pop(0))
+                        node.value.values.append(sibling.value.values.pop(0))
+                        parent.value.keys[child_index] = sibling.value.keys[0]
                     else:
                         # Borrow from right for internal node
                         node.value.keys.append(parent.value.keys[child_index])
-                        node.value.values.append(right_sib.value.values.pop(0))
-                        parent.value.keys[child_index] = right_sib.value.keys.pop(0)
-                    break
+                        node.value.values.append(sibling.value.values.pop(0))
+                        parent.value.keys[child_index] = sibling.value.keys.pop(0)
+                break
 
-            # Cannot borrow, must merge. Prefer left sibling
-            if has_left and left_sib is not None:
-                if len(node.value.keys) == len(node.value.values):
-                    # Merge leaf into left sibling
-                    left_sib.value.keys.extend(node.value.keys)
-                    left_sib.value.values.extend(node.value.values)
+            # Cannot borrow, must merge with the pre-fetched sibling
+            is_leaf = len(node.value.keys) == len(node.value.values)
+            if is_left_sibling:
+                # Merge node into left sibling
+                if is_leaf:
+                    sibling.value.keys.extend(node.value.keys)
+                    sibling.value.values.extend(node.value.values)
                 else:
-                    # Merge internal node into left sibling
-                    left_sib.value.keys.append(parent.value.keys[child_index - 1])
-                    left_sib.value.keys.extend(node.value.keys)
-                    left_sib.value.values.extend(node.value.values)
+                    sibling.value.keys.append(parent.value.keys[child_index - 1])
+                    sibling.value.keys.extend(node.value.keys)
+                    sibling.value.values.extend(node.value.values)
 
                 # Remove key and child pointer from parent
                 parent.value.keys.pop(child_index - 1)
@@ -360,24 +369,22 @@ class BPlusOmapCached(BPlusOmap):
 
                 # Mark merged node as removed (don't add to stash later)
                 del path_nodes[node_level]
-
-            elif has_right and right_sib is not None:
-                if len(node.value.keys) == len(node.value.values):
-                    # Merge right sibling into node
-                    node.value.keys.extend(right_sib.value.keys)
-                    node.value.values.extend(right_sib.value.values)
+            else:
+                # Merge right sibling into node
+                if is_leaf:
+                    node.value.keys.extend(sibling.value.keys)
+                    node.value.values.extend(sibling.value.values)
                 else:
-                    # Merge right sibling into node (internal)
                     node.value.keys.append(parent.value.keys[child_index])
-                    node.value.keys.extend(right_sib.value.keys)
-                    node.value.values.extend(right_sib.value.values)
+                    node.value.keys.extend(sibling.value.keys)
+                    node.value.values.extend(sibling.value.values)
 
                 # Remove key and child pointer from parent
                 parent.value.keys.pop(child_index)
                 parent.value.values.pop(child_index + 1)
 
-                # Remove merged sibling from fetched_siblings (don't add to stash)
-                fetched_siblings.remove(right_sib)
+                # Remove merged sibling from siblings dict (don't add to stash)
+                del siblings[child_level]
 
             # Move up to parent for next iteration
             node_level = level
@@ -400,16 +407,16 @@ class BPlusOmapCached(BPlusOmap):
             root_node = path_nodes[0]
             self.root = (root_node.key, root_node.leaf)
 
-        # Flush all remaining path nodes and fetched siblings to stash
+        # Flush all remaining path nodes and siblings to stash
         total_nodes = 0
         for node in path_nodes.values():
             self._stash.append(node)
             total_nodes += 1
-        for sib in fetched_siblings:
+        for sib in siblings.values():
             self._stash.append(sib)
             total_nodes += 1
 
-        # Perform dummy operations
-        self._perform_dummy_operation(num_round=3 * self._max_height - total_nodes)
+        # Perform dummy operations to pad to max_accesses
+        self._perform_dummy_operation(num_round=max_accesses - total_nodes)
 
         return deleted_value
