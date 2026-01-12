@@ -187,7 +187,16 @@ class InteractLocalServer(InteractServer):
             for label, data in self._write_lists.items():
                 lst = self._get_list(label)
                 for idx, val in data.items():
-                    lst[idx] = val
+                    if idx > -1:
+                        lst[idx] = val
+                    elif idx == -1:
+                        # Insert at the front of the list.
+                        lst.insert(0, val)
+                    elif idx == -2:
+                        # Pop the last element.
+                        lst.pop()
+                    else:
+                        raise ValueError(f"Invalid list index: {idx}")
 
             # Execute all reads (deduplicate keys).
             for label, leaves in self._read_paths.items():
@@ -201,7 +210,10 @@ class InteractLocalServer(InteractServer):
 
             for label, indices in self._read_lists.items():
                 lst = self._get_list(label)
-                results[label] = {i: lst[i] for i in set(indices)}
+                if indices is None:
+                    results[label] = lst
+                else:
+                    results[label] = {i: lst[i] for i in set(indices)}
 
             # Track bytes read (data received from server).
             result = ExecuteResult(success=True, results=results)

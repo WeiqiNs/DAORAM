@@ -117,19 +117,27 @@ class Soram():
         if op == 'insert':
             # Encrypt data before sending to server
             encrypted_data = self._encrypt_data(data)
-            self._client.list_insert(label=label, value=encrypted_data)
+            # -1 represents insert at the front of the list
+            self._client.add_write_list(label=label, data={-1:encrypted_data})
+            self._client.execute()
         elif op == 'pop':
             # Get encrypted data from server and decrypt it
-            encrypted_data = self._client.list_pop(label=label)
+            # -2 represents pop from the back of the list
+            self._client.add_write_list(label=label, data={-2:None})
+            result = self._client.execute()
+            encrypted_data = result.results[label]
             return self._decrypt_data(encrypted_data)
         elif op == 'get':
             # Get encrypted data from server and decrypt it
-            encrypted_data = self._client.list_get(label=label, index=pos)
+            self._client.add_read_list(label=label, indices=[pos])
+            result = self._client.execute()
+            encrypted_data = result.results[label]
             return self._decrypt_data(encrypted_data)
         elif op == 'update':
             # Encrypt data before sending to server
             encrypted_data = self._encrypt_data(data)
-            self._client.list_update(label=label, index=pos, value=encrypted_data)
+            self._client.add_write_list(label=label, data={pos:encrypted_data})
+            self._client.execute()
         else:
             print(f"error: unkonw operation'{op}'")
         return None
