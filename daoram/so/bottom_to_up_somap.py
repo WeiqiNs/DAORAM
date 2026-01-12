@@ -142,9 +142,10 @@ class BottomUpSomap:
         )
         
         # Initialize OMAP caches and queues
+        # O_W and O_R each store at most cache_size + 1 entries due to timestamp deletion.
         self._Ow = BPlusOdsOmap(
             order=5,
-            num_data=self._cache_size,
+            num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -159,7 +160,7 @@ class BottomUpSomap:
         
         self._Or = BPlusOdsOmap(
             order=5,
-            num_data=self._cache_size,
+            num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -198,9 +199,11 @@ class BottomUpSomap:
         """
         old_value = None
 
-        # Retrieve key-value pair
-        value_ow = self._Ow.search(key)
-        value_or = self._Or.search(key)
+        # Retrieve key-value pair from both caches in parallel (h rounds instead of 2h)
+        value_ow, value_or = BPlusOdsOmap.parallel_search(
+            omap1=self._Ow, key1=key,
+            omap2=self._Or, key2=key
+        )
 
         # Case a: Key is in write cache O_W
         if value_ow is not None:
@@ -287,7 +290,8 @@ class BottomUpSomap:
                     else:
                         self._Or.search(key, (value, self._timestamp))
 
-                    self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
+                    # Use "Key" marker so that O_R delete logic can identify real keys
+                    self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Key"))
                     self._Qr_len += 1
         
                 else:
@@ -295,6 +299,7 @@ class BottomUpSomap:
                     self._Ds.operate_on_key(op="r", key = None)
                     self._Or.insert(None)
                     self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
+                    self._Qr_len += 1
 
             # Adjust O_R cache
             match_Qr = None
@@ -303,9 +308,11 @@ class BottomUpSomap:
                 if self._Qr_len == 0:
                     break
 
-                # expired
-                item = self.operate_on_list(label=self._Qr_name, op="get", pos=0)
+                # Check the oldest element (at the end of list, since insert is at pos=0)
+                # expired check: oldest element is at position Qr_len-1
+                item = self.operate_on_list(label=self._Qr_name, op="get", pos=self._Qr_len - 1)
                 if self._timestamp - item[1] > self._cache_size:
+                    # Pop from the end (oldest element) - list_pop default index=-1 pops from end
                     match_Qr = self.operate_on_list(label=self._Qr_name, op="pop")
                     self._Qr_len -= 1
 
@@ -315,7 +322,7 @@ class BottomUpSomap:
                     else:
                         match_Or = self._Or.search(match_Qr[0])
                         if match_Qr[1] == match_Or[1]:
-                            self._Or.delete(match_Or[0])
+                            self._Or.delete(match_Qr[0])
                         else:
                             self._Or.delete(None)
                 else:

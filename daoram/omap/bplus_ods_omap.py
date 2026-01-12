@@ -62,7 +62,9 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._block_id: int = 0
 
         # Compute the maximum height of the B+ tree.
-        self._max_height: int = math.ceil(math.log(num_data, math.ceil(order / 2)))
+        # Add +1 because root node has minimum 2 children (not ceil(order/2)),
+        # so worst-case tree height is 1 level higher than the ideal formula.
+        self._max_height: int = math.ceil(math.log(num_data, math.ceil(order / 2))) + 1
 
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -75,7 +77,9 @@ class BPlusOdsOmap(TreeOdsOmap):
         )
 
         # Update the height accordingly.
-        self._max_height = math.ceil(math.log(tree_size, math.ceil(self._order / 2)))
+        # Add +1 because root node has minimum 2 children (not ceil(order/2)),
+        # so worst-case tree height is 1 level higher than the ideal formula.
+        self._max_height = math.ceil(math.log(tree_size, math.ceil(self._order / 2))) + 1
 
     @cached_property
     def _max_block_size(self) -> int:
@@ -435,6 +439,400 @@ class BPlusOdsOmap(TreeOdsOmap):
             node = self._local[-1]
             node.leaf = new_leaf
 
+    def _evict_stash_mul_path(self, leaves: List[int]) -> Buckets:
+        """
+        Evict data blocks in the stash to multiple paths simultaneously.
+        
+        For each item in stash, find the deepest position it can reach across ALL paths.
+        This solves the shared bucket problem by considering all paths together.
+        
+        :param leaves: List of leaf labels for the paths we are evicting data to.
+        :return: The encrypted buckets for all paths combined.
+        """
+        # Create a dictionary for the multi-path structure
+        path_dict = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
+        
+        # Create a temporary stash
+        temp_stash = []
+        
+        # Now we evict the stash by going through all real data in it
+        for data in self._stash:
+            # Attempt to insert actual data to the multi-path
+            inserted = BinaryTree.fill_data_to_mul_path(
+                data=data, path=path_dict, leaves=leaves, level=self._level, bucket_size=self._bucket_size
+            )
+            
+            # If we were not able to insert data, overflow happened, put the block to the temp stash
+            if not inserted:
+                temp_stash.append(data)
+        
+        # Update the stash
+        self._stash = temp_stash
+        
+        # Convert the path_dict back to the bucket format expected by the server
+        # The keys in path_dict are tree indices, we need to convert them to the correct order
+        path_indices = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves).keys()
+        path_indices = sorted(path_indices, reverse=True)  # From leaves to root
+        
+        path = [path_dict[idx] for idx in path_indices]
+        
+        # Return the encrypted buckets
+        return self._encrypt_buckets(buckets=path)
+
+    def _find_leaf_to_local_optimized(self, key: Any) -> int:
+        """
+        Optimized version of _find_leaf_to_local that uses 2h path accesses in h rounds.
+        
+        In each round, we:
+        1. Read 2 paths simultaneously as a combined path (using read_query with [leaf1, leaf2])
+        2. Find and keep the target node in _local, add others to stash
+        3. Evict simultaneously to both paths using _evict_stash_mul_path
+        4. Write back the combined path using write_query with [leaf1, leaf2]
+        
+        This ensures each round processes 2 paths with proper handling of shared buckets.
+        Using combined read/write avoids duplicating data from shared buckets.
+        
+        :param key: Search key of interest.
+        :return: The number of rounds performed.
+        """
+        # Make sure that the local is cleared and is empty at the moment.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
+        
+        round_count = 0
+        
+        # First round: get root node
+        real_leaf = self.root[1]
+        real_key = self.root[0]
+        dummy_leaf = self._get_new_leaf()
+        
+        # Read both paths as a combined path (shared buckets are read only once)
+        combined_path = self._decrypt_buckets(
+            buckets=self._client.read_query(label=self._name, leaf=[real_leaf, dummy_leaf])
+        )
+        
+        # Process combined path: find target node, add others to stash
+        found = False
+        for bucket in combined_path:
+            for data in bucket:
+                if data.key == real_key:
+                    self._local.append(data)
+                    found = True
+                else:
+                    self._stash.append(data)
+        
+        # If not found in path, check stash
+        if not found:
+            for i, data in enumerate(self._stash):
+                if data.key == real_key:
+                    self._local.append(data)
+                    del self._stash[i]
+                    found = True
+                    break
+            if not found:
+                raise KeyError(f"The search key {real_key} is not found.")
+        
+        # Evict to both paths simultaneously and write back using combined leaves
+        evicted = self._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
+        self._client.write_query(label=self._name, leaf=[real_leaf, dummy_leaf], data=evicted)
+        
+        # Check stash overflow
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+        
+        round_count += 1
+        
+        # Get the root node from local and update its leaf
+        node = self._local[0]
+        node.leaf = self._get_new_leaf()
+        self.root = (node.key, node.leaf)
+        
+        # Continue traversing while not at a leaf node
+        while len(node.value.keys) != len(node.value.values):
+            # Find the next child to visit
+            new_leaf = self._get_new_leaf()
+            child_key = None
+            child_leaf = None
+            child_index = None
+            
+            for index, each_key in enumerate(node.value.keys):
+                if key == each_key:
+                    child_key, child_leaf = node.value.values[index + 1]
+                    child_index = index + 1
+                    break
+                elif key < each_key:
+                    child_key, child_leaf = node.value.values[index]
+                    child_index = index
+                    break
+                elif index + 1 == len(node.value.keys):
+                    child_key, child_leaf = node.value.values[index + 1]
+                    child_index = index + 1
+                    break
+            
+            # Generate dummy leaf for this round
+            dummy_leaf = self._get_new_leaf()
+            
+            # Read both paths as a combined path
+            combined_path = self._decrypt_buckets(
+                buckets=self._client.read_query(label=self._name, leaf=[child_leaf, dummy_leaf])
+            )
+            
+            # Process combined path: find target node
+            found = False
+            for bucket in combined_path:
+                for data in bucket:
+                    if data.key == child_key:
+                        self._local.append(data)
+                        found = True
+                    else:
+                        self._stash.append(data)
+            
+            # If not found in path, check stash
+            if not found:
+                for i, data in enumerate(self._stash):
+                    if data.key == child_key:
+                        self._local.append(data)
+                        del self._stash[i]
+                        found = True
+                        break
+                if not found:
+                    raise KeyError(f"The search key {child_key} is not found.")
+            
+            # Evict to both paths simultaneously and write back using combined leaves
+            evicted = self._evict_stash_mul_path(leaves=[child_leaf, dummy_leaf])
+            self._client.write_query(label=self._name, leaf=[child_leaf, dummy_leaf], data=evicted)
+            
+            # Check stash overflow
+            if len(self._stash) > self._stash_size:
+                raise MemoryError("Stash overflow!")
+            
+            round_count += 1
+            
+            # Update the parent's reference to the child with new leaf
+            node.value.values[child_index] = (child_key, new_leaf)
+            
+            # Move to the new node
+            node = self._local[-1]
+            node.leaf = new_leaf
+        
+        return round_count
+
+    def _perform_dummy_rounds(self, num_rounds: int) -> None:
+        """
+        Perform dummy rounds to pad the access pattern.
+        
+        Each dummy round reads 2 paths as a combined path, evicts them together to
+        the deepest positions across both paths, and writes them back together.
+        Using combined read/write avoids duplicating data from shared buckets.
+        
+        :param num_rounds: Number of dummy rounds to perform.
+        """
+        if num_rounds <= 0:
+            return
+        
+        for _ in range(num_rounds):
+            # Generate two random leaves
+            leaf1 = self._get_new_leaf()
+            leaf2 = self._get_new_leaf()
+            
+            # Read both paths as a combined path (shared buckets are read only once)
+            combined_path = self._decrypt_buckets(
+                buckets=self._client.read_query(label=self._name, leaf=[leaf1, leaf2])
+            )
+            
+            # Add all data from combined path to stash
+            for bucket in combined_path:
+                for data in bucket:
+                    self._stash.append(data)
+            
+            # Evict to both paths simultaneously and write back using combined leaves
+            evicted = self._evict_stash_mul_path(leaves=[leaf1, leaf2])
+            self._client.write_query(label=self._name, leaf=[leaf1, leaf2], data=evicted)
+            
+            # Check stash overflow
+            if len(self._stash) > self._stash_size:
+                raise MemoryError("Stash overflow!")
+
+    def _find_leaf_to_local_with_siblings_optimized(self, key: Any) -> int:
+        """
+        Optimized traversal that fetches both target nodes AND their siblings in h rounds.
+        
+        This is designed for delete operations where we need sibling nodes for 
+        potential borrow/merge operations.
+        
+        In each round, we:
+        1. Read 2 paths: target child's path + one sibling's path (or dummy if no sibling)
+        2. Keep target node in _local, keep sibling in _sibling_cache, add others to stash
+        3. Evict to both paths simultaneously
+        4. Write back both paths together
+        
+        After h rounds:
+        - _local contains the traversal path from root to leaf
+        - _sibling_cache contains siblings at each level (for borrow/merge)
+        
+        :param key: Search key of interest.
+        :return: The number of rounds performed.
+        """
+        # Make sure that the local is cleared and is empty at the moment.
+        if self._local:
+            raise MemoryError("The local storage was not emptied before this operation.")
+        
+        # Initialize sibling cache
+        self._sibling_cache = []
+        
+        round_count = 0
+        
+        # First round: get root node (root has no sibling, use dummy path)
+        real_leaf = self.root[1]
+        real_key = self.root[0]
+        dummy_leaf = self._get_new_leaf()
+        
+        # Read both paths as a combined path
+        combined_path = self._decrypt_buckets(
+            buckets=self._client.read_query(label=self._name, leaf=[real_leaf, dummy_leaf])
+        )
+        
+        # Process combined path: find target node, add others to stash
+        found = False
+        for bucket in combined_path:
+            for data in bucket:
+                if data.key == real_key:
+                    self._local.append(data)
+                    found = True
+                else:
+                    self._stash.append(data)
+        
+        # If not found in path, check stash
+        if not found:
+            for i, data in enumerate(self._stash):
+                if data.key == real_key:
+                    self._local.append(data)
+                    del self._stash[i]
+                    found = True
+                    break
+            if not found:
+                raise KeyError(f"The search key {real_key} is not found.")
+        
+        # Evict and write back
+        evicted = self._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
+        self._client.write_query(label=self._name, leaf=[real_leaf, dummy_leaf], data=evicted)
+        
+        # Check stash overflow
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+        
+        round_count += 1
+        
+        # Get the root node from local and update its leaf
+        node = self._local[0]
+        node.leaf = self._get_new_leaf()
+        self.root = (node.key, node.leaf)
+        
+        # Continue traversing while not at a leaf node
+        while len(node.value.keys) != len(node.value.values):
+            # Find the next child to visit
+            new_leaf = self._get_new_leaf()
+            child_key = None
+            child_leaf = None
+            child_index = None
+            
+            for index, each_key in enumerate(node.value.keys):
+                if key == each_key:
+                    child_key, child_leaf = node.value.values[index + 1]
+                    child_index = index + 1
+                    break
+                elif key < each_key:
+                    child_key, child_leaf = node.value.values[index]
+                    child_index = index
+                    break
+                elif index + 1 == len(node.value.keys):
+                    child_key, child_leaf = node.value.values[index + 1]
+                    child_index = index + 1
+                    break
+            
+            # Determine sibling to fetch (prefer left sibling, fallback to right, else dummy)
+            sibling_key = None
+            sibling_leaf = None
+            sibling_index = None
+            sibling_new_leaf = self._get_new_leaf()
+            
+            if child_index > 0:
+                # Left sibling exists
+                sibling_key, sibling_leaf = node.value.values[child_index - 1]
+                sibling_index = child_index - 1
+            elif child_index + 1 < len(node.value.values):
+                # Right sibling exists
+                sibling_key, sibling_leaf = node.value.values[child_index + 1]
+                sibling_index = child_index + 1
+            else:
+                # No sibling, use dummy leaf
+                sibling_leaf = self._get_new_leaf()
+            
+            # Read both paths as a combined path (child + sibling/dummy)
+            combined_path = self._decrypt_buckets(
+                buckets=self._client.read_query(label=self._name, leaf=[child_leaf, sibling_leaf])
+            )
+            
+            # Process combined path: find target node and sibling
+            found_child = False
+            found_sibling = False
+            for bucket in combined_path:
+                for data in bucket:
+                    if data.key == child_key:
+                        self._local.append(data)
+                        found_child = True
+                    elif sibling_key is not None and data.key == sibling_key:
+                        # Update sibling's leaf and add to cache
+                        data.leaf = sibling_new_leaf
+                        self._sibling_cache.append(data)
+                        found_sibling = True
+                    else:
+                        self._stash.append(data)
+            
+            # If child not found in path, check stash
+            if not found_child:
+                for i, data in enumerate(self._stash):
+                    if data.key == child_key:
+                        self._local.append(data)
+                        del self._stash[i]
+                        found_child = True
+                        break
+                if not found_child:
+                    raise KeyError(f"The search key {child_key} is not found.")
+            
+            # If sibling not found in path, check stash
+            if sibling_key is not None and not found_sibling:
+                for i, data in enumerate(self._stash):
+                    if data.key == sibling_key:
+                        data.leaf = sibling_new_leaf
+                        self._sibling_cache.append(data)
+                        del self._stash[i]
+                        found_sibling = True
+                        break
+            
+            # Evict and write back
+            evicted = self._evict_stash_mul_path(leaves=[child_leaf, sibling_leaf])
+            self._client.write_query(label=self._name, leaf=[child_leaf, sibling_leaf], data=evicted)
+            
+            # Check stash overflow
+            if len(self._stash) > self._stash_size:
+                raise MemoryError("Stash overflow!")
+            
+            round_count += 1
+            
+            # Update the parent's reference to the child with new leaf
+            node.value.values[child_index] = (child_key, new_leaf)
+            
+            # Update the parent's reference to the sibling with new leaf (if sibling exists)
+            if sibling_index is not None:
+                node.value.values[sibling_index] = (sibling_key, sibling_new_leaf)
+            
+            # Move to the new node
+            node = self._local[-1]
+            node.leaf = new_leaf
+        
+        return round_count
+
     def _split_node(self, node: Data) -> Tuple[int, int]:
         """
         Given a node that is full, split it depends on whether it is a leaf or not.
@@ -549,12 +947,16 @@ class BPlusOdsOmap(TreeOdsOmap):
     def insert(self, key: Any, value: Any = None) -> None:
         """
         Given key-value pair, insert the pair to the tree.
+        
+        Uses optimized traversal: each round reads 2 paths (1 real + 1 random),
+        performs immediate eviction, and keeps traversal nodes in local.
+        Total rounds = max_height (padded with dummy rounds if needed).
 
         :param key: The search key of interest.
         :param value: The value to insert.
         """
         if key is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_rounds(num_rounds=self._max_height)
             return
 
         # If the current root is empty, we simply set root as this new block.
@@ -564,12 +966,12 @@ class BPlusOdsOmap(TreeOdsOmap):
             # Append data block to the stash.
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
-            # Perform at dummy finds and dummy evictions.
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            # Perform dummy rounds to maintain consistent access pattern.
+            self._perform_dummy_rounds(num_rounds=self._max_height)
             return
 
-        # Get all nodes we need to visit until finding the key.
-        self._find_leaf_to_local(key=key)
+        # Get all nodes we need to visit until finding the key (optimized version).
+        rounds_used = self._find_leaf_to_local_optimized(key=key)
 
         # Set the last node in local as leaf.
         leaf = self._local[-1]
@@ -590,22 +992,23 @@ class BPlusOdsOmap(TreeOdsOmap):
                     leaf.value.values.append(value)
                     break
 
-        # Save the length of the local.
-        num_retrieved_nodes = len(self._local)
-
-        # Perform the insertion to local nodes.
+        # Perform the insertion to local nodes (splitting if needed).
         self._perform_insertion()
 
         # Append local data to stash and clear local.
         self._stash += self._local
         self._local = []
 
-        # Perform the desired number of dummy evictions.
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        # Perform dummy rounds to pad to max_height.
+        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
         Given a search key, return its corresponding value.
+        
+        Uses optimized traversal: each round reads 2 paths (1 real + 1 random),
+        performs immediate eviction, and keeps traversal nodes in local.
+        Total rounds = max_height (padded with dummy rounds if needed).
 
         If the input value is not None, the value corresponding to the search tree will be updated.
         :param key: The search key of interest.
@@ -613,16 +1016,16 @@ class BPlusOdsOmap(TreeOdsOmap):
         :return: The (old) value corresponding to the search key.
         """
         if key is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_rounds(num_rounds=self._max_height)
             return None
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_rounds(num_rounds=self._max_height)
             return None
 
-        # Get all nodes we need to visit until finding the key.
-        self._find_leaf_to_local(key=key)
+        # Get all nodes we need to visit until finding the key (optimized version).
+        rounds_used = self._find_leaf_to_local_optimized(key=key)
 
         # Set the last node in local as leaf and set the return search value to None.
         leaf = self._local[-1]
@@ -637,13 +1040,293 @@ class BPlusOdsOmap(TreeOdsOmap):
                 # Terminate the loop after finding the key.
                 break
 
-        # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
-        num_retrieved_nodes = len(self._local)
+        # Move the local nodes to stash.
         self._stash += self._local
         self._local = []
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        
+        # Perform dummy rounds to pad to max_height.
+        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
 
         return search_value
+
+    @staticmethod
+    def parallel_search(omap1: 'BPlusOdsOmap', key1: Any, 
+                        omap2: 'BPlusOdsOmap', key2: Any,
+                        value1: Any = None, value2: Any = None) -> Tuple[Any, Any]:
+        """
+        Perform search on two OMAPs in parallel, reducing 2h rounds to h rounds.
+        
+        In each round, we batch read paths from both OMAPs, process them locally,
+        and batch write back. This halves the WAN interaction rounds.
+        
+        The key insight is that we only update a parent's pointer to a child
+        AFTER we have actually read the child and assigned it a new leaf.
+        This ensures consistency between parent pointers and child locations.
+        
+        :param omap1: First OMAP instance (e.g., O_W)
+        :param key1: Search key for first OMAP
+        :param omap2: Second OMAP instance (e.g., O_R)  
+        :param key2: Search key for second OMAP
+        :param value1: Optional value to update in omap1
+        :param value2: Optional value to update in omap2
+        :return: Tuple of (search_value1, search_value2)
+        """
+        # Ensure both OMAPs share the same client
+        if omap1._client is not omap2._client:
+            raise ValueError("Both OMAPs must share the same client for parallel access.")
+        
+        client = omap1._client
+        max_height = max(omap1._max_height, omap2._max_height)
+        
+        # Handle None keys (dummy operations)
+        key1_is_none = key1 is None
+        key2_is_none = key2 is None
+        
+        # Handle empty roots
+        root1_is_none = omap1.root is None
+        root2_is_none = omap2.root is None
+        
+        # Ensure _local is cleared for both OMAPs at the start
+        if omap1._local:
+            raise MemoryError("omap1._local was not emptied before parallel_search.")
+        if omap2._local:
+            raise MemoryError("omap2._local was not emptied before parallel_search.")
+        
+        # Initialize traversal states
+        # For each OMAP, we track:
+        # - node_key, node_leaf: the next node to read
+        # - traversing: whether we're still traversing
+        # - pending_child_index: the index in parent's values to update after reading child
+        if not key1_is_none and not root1_is_none:
+            omap1._local = []
+            node1_key = omap1.root[0]
+            node1_leaf = omap1.root[1]
+            traversing1 = True
+            pending_child_index1 = None  # No parent update needed for root
+        else:
+            traversing1 = False
+            node1_key = None
+            node1_leaf = None
+            pending_child_index1 = None
+        
+        # State for omap2
+        if not key2_is_none and not root2_is_none:
+            omap2._local = []
+            node2_key = omap2.root[0]
+            node2_leaf = omap2.root[1]
+            traversing2 = True
+            pending_child_index2 = None  # No parent update needed for root
+        else:
+            traversing2 = False
+            node2_key = None
+            node2_leaf = None
+            pending_child_index2 = None
+        
+        round_count = 0
+        
+        # Perform exactly max_height rounds
+        max_height = max(omap1._max_height, omap2._max_height)
+        for _ in range(max_height):
+            # Prepare read queries for this round
+            labels = []
+            leaves = []
+            omap_indices = []  # Track which omap each query belongs to
+            
+            # For omap1: read target path + dummy path
+            if traversing1:
+                dummy_leaf1 = omap1._get_new_leaf()
+                labels.append(omap1._name)
+                leaves.append([node1_leaf, dummy_leaf1])
+                omap_indices.append((1, node1_leaf, dummy_leaf1, node1_key))
+            else:
+                # Dummy round for omap1
+                leaf1_a = omap1._get_new_leaf()
+                leaf1_b = omap1._get_new_leaf()
+                labels.append(omap1._name)
+                leaves.append([leaf1_a, leaf1_b])
+                omap_indices.append((1, leaf1_a, leaf1_b, None))
+            
+            # For omap2: read target path + dummy path
+            if traversing2:
+                dummy_leaf2 = omap2._get_new_leaf()
+                labels.append(omap2._name)
+                leaves.append([node2_leaf, dummy_leaf2])
+                omap_indices.append((2, node2_leaf, dummy_leaf2, node2_key))
+            else:
+                # Dummy round for omap2
+                leaf2_a = omap2._get_new_leaf()
+                leaf2_b = omap2._get_new_leaf()
+                labels.append(omap2._name)
+                leaves.append([leaf2_a, leaf2_b])
+                omap_indices.append((2, leaf2_a, leaf2_b, None))
+            
+            # Batch read from both OMAPs
+            all_paths = client.read_mul_query(label=labels, leaf=leaves)
+            
+            # Process each OMAP's path
+            evicted_data = []
+            write_labels = []
+            write_leaves = []
+            
+            for i, (omap_idx, real_leaf, dummy_leaf, target_key) in enumerate(omap_indices):
+                omap = omap1 if omap_idx == 1 else omap2
+                path = omap._decrypt_buckets(buckets=all_paths[i])
+                
+                if target_key is not None:
+                    # Find and extract target node
+                    found = False
+                    for bucket in path:
+                        for data in bucket:
+                            if data.key == target_key:
+                                omap._local.append(data)
+                                found = True
+                            else:
+                                omap._stash.append(data)
+                    
+                    # Check stash if not found
+                    if not found:
+                        for j, data in enumerate(omap._stash):
+                            if data.key == target_key:
+                                omap._local.append(data)
+                                del omap._stash[j]
+                                found = True
+                                break
+                        if not found:
+                            raise KeyError(f"The search key {target_key} is not found in omap{omap_idx}.")
+                else:
+                    # Dummy round: just add everything to stash
+                    for bucket in path:
+                        for data in bucket:
+                            omap._stash.append(data)
+                
+                # Evict and prepare write-back
+                evicted = omap._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
+                evicted_data.append(evicted)
+                write_labels.append(omap._name)
+                write_leaves.append([real_leaf, dummy_leaf])
+                
+                # Check stash overflow
+                if len(omap._stash) > omap._stash_size:
+                    raise MemoryError(f"Stash overflow in omap{omap_idx}!")
+            
+            # Batch write back to both OMAPs
+            client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
+            
+            round_count += 1
+            
+            # Update traversal state for omap1
+            if traversing1 and omap1._local:
+                node1 = omap1._local[-1]
+                
+                # Assign new leaf to the node we just read
+                node1.leaf = omap1._get_new_leaf()
+                
+                # Update root or parent's pointer
+                if len(omap1._local) == 1:
+                    # This is root, update root pointer
+                    omap1.root = (node1.key, node1.leaf)
+                else:
+                    # Update parent's reference using the pending_child_index
+                    # This ensures we only update after reading the child
+                    if pending_child_index1 is not None:
+                        parent1 = omap1._local[-2]
+                        parent1.value.values[pending_child_index1] = (node1.key, node1.leaf)
+                
+                # Check if we've reached a leaf node
+                if len(node1.value.keys) == len(node1.value.values):
+                    traversing1 = False
+                    pending_child_index1 = None
+                else:
+                    # Find next child to visit
+                    child_index1 = None
+                    for index, each_key in enumerate(node1.value.keys):
+                        if key1 == each_key:
+                            node1_key, node1_leaf = node1.value.values[index + 1]
+                            child_index1 = index + 1
+                            break
+                        elif key1 < each_key:
+                            node1_key, node1_leaf = node1.value.values[index]
+                            child_index1 = index
+                            break
+                        elif index + 1 == len(node1.value.keys):
+                            node1_key, node1_leaf = node1.value.values[index + 1]
+                            child_index1 = index + 1
+                            break
+                    
+                    # Save the child index for next round to update parent's pointer
+                    pending_child_index1 = child_index1
+            
+            # Update traversal state for omap2
+            if traversing2 and omap2._local:
+                node2 = omap2._local[-1]
+                
+                # Assign new leaf to the node we just read
+                node2.leaf = omap2._get_new_leaf()
+                
+                # Update root or parent's pointer
+                if len(omap2._local) == 1:
+                    # This is root, update root pointer
+                    omap2.root = (node2.key, node2.leaf)
+                else:
+                    # Update parent's reference using the pending_child_index
+                    # This ensures we only update after reading the child
+                    if pending_child_index2 is not None:
+                        parent2 = omap2._local[-2]
+                        parent2.value.values[pending_child_index2] = (node2.key, node2.leaf)
+                
+                # Check if we've reached a leaf node
+                if len(node2.value.keys) == len(node2.value.values):
+                    traversing2 = False
+                    pending_child_index2 = None
+                else:
+                    # Find next child to visit
+                    child_index2 = None
+                    for index, each_key in enumerate(node2.value.keys):
+                        if key2 == each_key:
+                            node2_key, node2_leaf = node2.value.values[index + 1]
+                            child_index2 = index + 1
+                            break
+                        elif key2 < each_key:
+                            node2_key, node2_leaf = node2.value.values[index]
+                            child_index2 = index
+                            break
+                        elif index + 1 == len(node2.value.keys):
+                            node2_key, node2_leaf = node2.value.values[index + 1]
+                            child_index2 = index + 1
+                            break
+                    
+                    # Save the child index for next round to update parent's pointer
+                    pending_child_index2 = child_index2
+        
+        # Extract search results
+        search_value1 = None
+        search_value2 = None
+        
+        # Process omap1 result
+        if not key1_is_none and not root1_is_none and omap1._local:
+            leaf1 = omap1._local[-1]
+            for index, each_key in enumerate(leaf1.value.keys):
+                if key1 == each_key:
+                    search_value1 = leaf1.value.values[index]
+                    if value1 is not None:
+                        leaf1.value.values[index] = value1
+                    break
+            omap1._stash += omap1._local
+            omap1._local = []
+        
+        # Process omap2 result
+        if not key2_is_none and not root2_is_none and omap2._local:
+            leaf2 = omap2._local[-1]
+            for index, each_key in enumerate(leaf2.value.keys):
+                if key2 == each_key:
+                    search_value2 = leaf2.value.values[index]
+                    if value2 is not None:
+                        leaf2.value.values[index] = value2
+                    break
+            omap2._stash += omap2._local
+            omap2._local = []
+        
+        return search_value1, search_value2
 
     def fast_search(self, key: Any, value: Any = None) -> Any:
         """
@@ -795,9 +1478,12 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Delete a key-value pair from the tree.
         
-        Note: This implementation removes the key-value pair from the leaf node
-        but does not perform full B+ tree rebalancing (merge/borrow). Empty leaf 
-        nodes may remain in the tree, which is handled by the insert method.
+        Uses optimized traversal with siblings: each round reads 2 paths 
+        (1 target child + 1 sibling), performs immediate eviction.
+        Total rounds = max_height (padded with dummy rounds if needed).
+        
+        After traversal, both the path nodes and sibling nodes are in local/cache,
+        allowing complete B+ tree deletion with borrow/merge operations locally.
         
         :param key: The search key to delete.
         :return: The deleted value, or None if key not found.
@@ -805,14 +1491,14 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Handle dummy deletion requests
         if key is None:
             # Perform dummy rounds to preserve access pattern
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_rounds(num_rounds=self._max_height)
             return None
 
         if self.root is None:
             raise ValueError("It seems the tree is empty and can't perform deletion.")
 
-        # Traverse to leaf
-        self._find_leaf_to_local(key=key)
+        # Traverse to leaf with siblings (optimized version)
+        rounds_used = self._find_leaf_to_local_with_siblings_optimized(key=key)
 
         # Set the last node in local as leaf
         leaf = self._local[-1]
@@ -826,15 +1512,17 @@ class BPlusOdsOmap(TreeOdsOmap):
                 leaf.value.values.pop(index)
                 break
 
-        # Save the length of local
-        num_retrieved_nodes = len(self._local)
+        # Handle underflow using cached siblings
+        self._handle_underflow_with_cached_siblings()
 
-        # Append local data to stash and clear local
+        # Append local data and siblings to stash and clear
         self._stash += self._local
+        self._stash += self._sibling_cache
         self._local = []
+        self._sibling_cache = []
 
-        # Perform dummy evictions
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        # Perform dummy rounds to pad to max_height
+        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
 
         return deleted_value
 
