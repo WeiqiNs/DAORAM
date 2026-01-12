@@ -1,179 +1,332 @@
+"""Cryptographic primitives: encryption, PRF, and PRP implementations."""
+
+import hashlib
+import os
+from abc import ABC, abstractmethod
 from typing import Optional
 
-from Cryptodome.Cipher import AES
-from Cryptodome.Random import get_random_bytes
-from Cryptodome.Util.Padding import pad, unpad
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-class Aes:
-    def __init__(self, aes_mode=AES.MODE_CBC, key: Optional[bytes] = None, key_byte_length: int = 16):
-        """Class for performing AES encryption and decryption.
+class Encryptor(ABC):
+    """Abstract base class for encryption implementations."""
 
-        :param aes_mode: The mode of AES encryption/decryption, default is CBC.
-        :param key: The AES key to use; it will be randomly sampled unless provided here.
-        :param key_byte_length: The length of AES key to use, default is 16.
+    @property
+    @abstractmethod
+    def key(self) -> bytes:
+        """Get the encryption key."""
+        pass
+
+    @abstractmethod
+    def ciphertext_length(self, plaintext_length: int) -> int:
+        """Calculate the ciphertext length for a given plaintext length.
+
+        :param plaintext_length: Length of the plaintext in bytes.
+        :return: Length of the ciphertext in bytes.
         """
-        # Check if the key length is supported.
+        pass
+
+    @abstractmethod
+    def enc(self, plaintext: bytes) -> bytes:
+        """Encrypt the plaintext."""
+        pass
+
+    @abstractmethod
+    def dec(self, ciphertext: bytes) -> bytes:
+        """Decrypt the ciphertext."""
+        pass
+
+
+class AesGcm(Encryptor):
+    """AES-GCM authenticated encryption using the cryptography package."""
+
+    # GCM standard sizes
+    NONCE_SIZE = 12  # 96 bits (recommended)
+    TAG_SIZE = 16  # 128 bits (default, most secure)
+
+    def __init__(self, key: Optional[bytes] = None, key_byte_length: int = 16):
+        """Class for performing AES-GCM authenticated encryption and decryption.
+
+        :param key: The AES key to use; it will be randomly generated if not provided.
+        :param key_byte_length: The length of AES key to use (16, 24, or 32 bytes).
+        """
         if key_byte_length not in [16, 24, 32]:
             raise ValueError("The AES key length must be 16, 24, or 32 bytes.")
 
-        # Save generate a random key or use the provided key.
-        self.__key = get_random_bytes(key_byte_length) if key is None else key
-
-        # Save other AES configurations.
-        self.__key_byte_length = key_byte_length
-        self.__aes_mode = aes_mode
+        self._key = os.urandom(key_byte_length) if key is None else key
+        self._key_byte_length = key_byte_length
+        self._aes_gcm = AESGCM(self._key)
 
     @property
     def key(self) -> bytes:
         """Get the current AES key."""
-        return self.__key
+        return self._key
 
-    @property
-    def key_byte_length(self) -> int:
-        """Get the current AES key byte length."""
-        return self.__key_byte_length
+    def ciphertext_length(self, plaintext_length: int) -> int:
+        """Calculate the ciphertext length for a given plaintext length.
+
+        Ciphertext = nonce (12 bytes) + encrypted_data + tag (16 bytes)
+        Note: GCM does not require padding, so encrypted_data length equals plaintext length.
+
+        :param plaintext_length: Length of the plaintext in bytes.
+        :return: Length of the ciphertext in bytes.
+        """
+        return self.NONCE_SIZE + plaintext_length + self.TAG_SIZE
 
     def enc(self, plaintext: bytes) -> bytes:
-        """Perform AES encryption on the provided plaintext."""
-        # Sample a new IV to use.
-        iv = get_random_bytes(self.__key_byte_length)
+        """Perform AES-GCM encryption on the provided plaintext.
 
-        # Create a new AES instance.
-        cipher = AES.new(self.__key, self.__aes_mode, iv)
-
-        # Pad the plaintext and encrypt.
-        ciphertext = cipher.encrypt(pad(data_to_pad=plaintext, block_size=self.__key_byte_length, style="pkcs7"))
-
-        # Prepend the iv and return the ciphertext.
-        return iv + ciphertext
+        :param plaintext: The plaintext to encrypt.
+        :return: nonce + ciphertext + tag
+        """
+        nonce = os.urandom(self.NONCE_SIZE)
+        # encrypt() returns ciphertext + tag concatenated
+        ciphertext_with_tag = self._aes_gcm.encrypt(nonce, plaintext, None)
+        return nonce + ciphertext_with_tag
 
     def dec(self, ciphertext: bytes) -> bytes:
-        """Perform AES decryption on the provided ciphertext."""
-        # Separate the IV and the ciphertext.
-        iv = ciphertext[:self.__key_byte_length]
-        ciphertext = ciphertext[self.__key_byte_length:]
+        """Perform AES-GCM decryption on the provided ciphertext.
 
-        # Create a new AES instance.
-        cipher = AES.new(self.__key, self.__aes_mode, iv)
-
-        # Decrypt and un-pad the plaintext.
-        return unpad(padded_data=cipher.decrypt(ciphertext), block_size=self.__key_byte_length, style="pkcs7")
-
-
-class Prf:
-    def __init__(self, key: Optional[bytes] = None):
-        """Class for a pseudo-random function.
-
-        :param key: The 16-byte key to use; it will be randomly sampled unless provided here.
+        :param ciphertext: nonce + ciphertext + tag
+        :return: The decrypted plaintext.
+        :raises InvalidTag: If authentication fails.
         """
-        # Check if the key length is supported.
-        if key is not None and len(key) != 16:
-            raise ValueError("The PRF key length must be 16 bytes.")
+        nonce = ciphertext[:self.NONCE_SIZE]
+        ciphertext_with_tag = ciphertext[self.NONCE_SIZE:]
+        return self._aes_gcm.decrypt(nonce, ciphertext_with_tag, None)
 
-        # Generate a random key or use the provided key.
-        self.__key = get_random_bytes(16) if key is None else key
+
+class PseudoRandomFunction(ABC):
+    """Abstract base class for pseudo-random function implementations."""
+
+    @property
+    @abstractmethod
+    def key(self) -> bytes:
+        """Get the PRF key."""
+        pass
+
+    @abstractmethod
+    def digest(self, message: bytes) -> bytes:
+        """Compute PRF on the message.
+
+        :param message: The message to hash.
+        :return: The PRF output digest.
+        """
+        pass
+
+    @abstractmethod
+    def digest_mod_n(self, message: bytes, mod: int) -> int:
+        """Compute PRF on the message and return result mod n.
+
+        :param message: The message to hash.
+        :param mod: The modulus.
+        :return: PRF output mod n.
+        """
+        pass
+
+
+class Blake2Prf(PseudoRandomFunction):
+    """Pseudo-random function using BLAKE2b keyed hashing."""
+    # Set BLAKE2b key size.
+    KEY_SIZE = 32
+    # Set output digest size.
+    DIGEST_SIZE = 64
+
+    def __init__(self, key: Optional[bytes] = None):
+        """Class for a pseudo-random function using BLAKE2b.
+
+        :param key: The 32-byte key to use; it will be randomly generated if not provided.
+        """
+        if key is not None and len(key) != self.KEY_SIZE:
+            raise ValueError(f"The PRF key length must be {self.KEY_SIZE} bytes.")
+
+        self._key = os.urandom(self.KEY_SIZE) if key is None else key
 
     @property
     def key(self) -> bytes:
         """Get the current PRF key."""
-        return self.__key
+        return self._key
 
     def digest(self, message: bytes) -> bytes:
-        """Run PRF on the provided message."""
-        # Create a new AES instance; fix the IV to make the algorithm deterministic.
-        cipher = AES.new(self.__key, AES.MODE_CBC, iv=b"\x00" * 16)
+        """Compute keyed BLAKE2b hash of the message.
 
-        # Pad the plaintext and encrypt.
-        return cipher.encrypt(pad(data_to_pad=message, block_size=16, style="pkcs7"))
+        :param message: The message to hash.
+        :return: 64-byte digest.
+        """
+        return hashlib.blake2b(message, key=self._key, digest_size=self.DIGEST_SIZE).digest()
 
     def digest_mod_n(self, message: bytes, mod: int) -> int:
-        """Run PRF on the provided message and compute mod n."""
-        return int.from_bytes(self.digest(message=message), "big") % mod
+        """Compute keyed BLAKE2b hash and return result mod n.
 
-import hashlib
-import math
-import os
+        :param message: The message to hash.
+        :param mod: The modulus.
+        :return: Hash value mod n.
+        """
+        return int.from_bytes(self.digest(message), "big") % mod
 
-def prp_prf(key: bytes, x: int, output_bits: int) -> int:
-    data = x.to_bytes((x.bit_length() + 7) // 8 or 1, 'big')
-    h = hashlib.sha256(key + data).digest()
-    # 取足够字节
-    num_bytes = (output_bits + 7) // 8
-    truncated = h[:num_bytes]
-    val = int.from_bytes(truncated, 'big')
-    return val % (1 << output_bits)
 
-class PRP:
-    def __init__(self, key: bytes, n: int):
-        if n <= 1:
-            raise ValueError("n must be >= 2")
-        self.__key = get_random_bytes(16) if key is None else key
-        if key is not None and len(key) < 16:
-            raise ValueError("Key should be at least 16 bytes")
-        self.n = n
-        self.b = (n - 1).bit_length()
+class PseudoRandomPermutation(ABC):
+    """Abstract base class for pseudo-random permutation implementations."""
 
-    def _feistel_encrypt(self, x: int) -> int:
-        half = self.b // 2
-        mask_right = (1 << half) - 1
+    @property
+    @abstractmethod
+    def key(self) -> bytes:
+        """Get the PRP key."""
+        pass
+
+    @property
+    @abstractmethod
+    def domain_size(self) -> int:
+        """Get the domain size n; permutation maps [0, n) -> [0, n)."""
+        pass
+
+    @abstractmethod
+    def permute(self, x: int) -> int:
+        """Apply the permutation to an integer in [0, domain_size).
+
+        :param x: The input integer.
+        :return: The permuted integer.
+        """
+        pass
+
+    @abstractmethod
+    def inverse(self, y: int) -> int:
+        """Apply the inverse permutation to an integer in [0, domain_size).
+
+        :param y: The permuted integer.
+        :return: The original integer.
+        """
+        pass
+
+
+class FeistelPrp(PseudoRandomPermutation):
+    """Pseudo-random permutation using a Feistel network with cycle-walking."""
+
+    # Minimum key size in bytes.
+    KEY_SIZE = 16
+    # Number of Feistel rounds (4 rounds for security).
+    NUM_ROUNDS = 4
+
+    def __init__(self, domain_size: int, key: Optional[bytes] = None):
+        """Initialize a pseudo-random permutation using a balanced Feistel network.
+
+        Uses a 4-round Feistel cipher with SHA-256 as the round function.
+        Cycle-walking ensures outputs stay within [0, domain_size) for
+        non-power-of-2 domain sizes.
+
+        :param domain_size: The size of the permutation domain [0, domain_size).
+        :param key: The key to use; it will be randomly generated if not provided.
+        """
+        if domain_size <= 1:
+            raise ValueError("Domain size must be >= 2.")
+        if key is not None and len(key) < self.KEY_SIZE:
+            raise ValueError(f"Key should be at least {self.KEY_SIZE} bytes.")
+
+        self._key = os.urandom(self.KEY_SIZE) if key is None else key
+        self._domain_size = domain_size
+
+        # Compute the bit length needed to represent domain, rounded up to even for a balanced Feistel.
+        raw_bits = (domain_size - 1).bit_length()
+        self._bit_length = raw_bits + (raw_bits % 2)
+
+    @property
+    def key(self) -> bytes:
+        """Get the current PRP key."""
+        return self._key
+
+    @property
+    def domain_size(self) -> int:
+        """Get the domain size."""
+        return self._domain_size
+
+    def _round_function(self, round_num: int, value: int, output_bits: int) -> int:
+        """Compute the Feistel round function using SHA-256.
+
+        :param round_num: The round number (used for domain separation).
+        :param value: The input value to the round function.
+        :param output_bits: Number of output bits needed.
+        :return: The round function output, truncated to output_bits.
+        """
+        # Concatenate key, round number, and value for domain separation.
+        value_bytes = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+        data = self._key + round_num.to_bytes(1, "big") + value_bytes
+        h = hashlib.sha256(data).digest()
+
+        # Truncate hash to required number of bits.
+        num_bytes = (output_bits + 7) // 8
+        return int.from_bytes(h[:num_bytes], "big") % (1 << output_bits)
+
+    def _feistel_forward(self, x: int) -> int:
+        """Apply the forward Feistel network transformation.
+
+        :param x: The input integer.
+        :return: The transformed integer.
+        """
+        half = self._bit_length // 2
+        mask = (1 << half) - 1
+
+        # Split input into left (high bits) and right (low bits) halves.
         left = x >> half
-        right = x & mask_right
+        right = x & mask
 
-        for i in range(4):
-            round_key = self.key + i.to_bytes(1, 'big')
-            f_out = prp_prf(round_key, right, self.b - half)
+        # Apply Feistel rounds: swap and XOR with round function output.
+        for i in range(self.NUM_ROUNDS):
+            f_out = self._round_function(i, right, half)
             left, right = right, left ^ f_out
 
-        return ((right << half) | left) & ((1 << self.b) - 1)
+        # Recombine halves into output.
+        return ((left << half) | right) & ((1 << self._bit_length) - 1)
 
-    def _feistel_decrypt(self, y: int) -> int:
-        half = self.b // 2
-        mask_right = (1 << half) - 1
+    def _feistel_inverse(self, y: int) -> int:
+        """Apply the inverse Feistel network transformation.
+
+        :param y: The transformed integer.
+        :return: The original integer.
+        """
+        half = self._bit_length // 2
+        mask = (1 << half) - 1
+
+        # Split input into left (high bits) and right (low bits) halves.
         left = y >> half
-        right = y & mask_right
+        right = y & mask
 
-        for i in reversed(range(4)):
-            round_key = self.key + i.to_bytes(1, 'big')
-            f_out = prp_prf(round_key, left, self.b - half)
+        # Apply inverse Feistel rounds in reverse order.
+        for i in reversed(range(self.NUM_ROUNDS)):
+            f_out = self._round_function(i, left, half)
             right, left = left, right ^ f_out
 
-        return ((right << half) | left) & ((1 << self.b) - 1)
+        # Recombine halves into output.
+        return ((left << half) | right) & ((1 << self._bit_length) - 1)
 
-    def encrypt(self, x: int) -> int:
-        if not (0 <= x < self.n):
-            raise ValueError(f"Input must be in [0, {self.n})")
-        y = x
-        while y >= self.n:
-            y = self._feistel_encrypt(y)
+    def permute(self, x: int) -> int:
+        """Apply the permutation to an integer.
+
+        :param x: Integer in [0, domain_size).
+        :return: Permuted integer in [0, domain_size).
+        :raises ValueError: If x is not in [0, domain_size).
+        """
+        if not (0 <= x < self._domain_size):
+            raise ValueError(f"Input must be in [0, {self._domain_size}).")
+
+        # Cycle-walking: repeatedly apply Feistel until output is in domain.
+        # This handles non-power-of-2 domain sizes while preserving bijectivity.
+        y = self._feistel_forward(x)
+        while y >= self._domain_size:
+            y = self._feistel_forward(y)
         return y
 
-    def decrypt(self, y: int) -> int:
-        if not (0 <= y < self.n):
-            raise ValueError(f"Input must be in [0, {self.n})")
-        x = y
-        while x >= self.n:
-            x = self._feistel_decrypt(x)
+    def inverse(self, y: int) -> int:
+        """Apply the inverse permutation to an integer.
+
+        :param y: Integer in [0, domain_size).
+        :return: Original integer in [0, domain_size).
+        :raises ValueError: If y is not in [0, domain_size).
+        """
+        if not (0 <= y < self._domain_size):
+            raise ValueError(f"Input must be in [0, {self._domain_size}).")
+
+        # Cycle-walking: repeatedly apply inverse Feistel until output is in domain.
+        x = self._feistel_inverse(y)
+        while x >= self._domain_size:
+            x = self._feistel_inverse(x)
         return x
-
-if __name__ == "__main__":
-    n = pow(2, 20)  # 任意 n，比如 100 万
-    key = os.urandom(32)
-    prp = PRP(key, n)
-
-    test_vals = [0, 1, 123456, n - 1]
-    for x in test_vals:
-        y = prp.encrypt(x)
-        x2 = prp.decrypt(y)
-        print(f"x={x:8d} → y={y:8d} → x2={x2:8d} {'✅' if x == x2 else '❌'}")
-
-    seen = set()
-    for x in range(n):
-        y = prp.encrypt(x)
-        assert 0 <= y < n
-        if y in seen:
-            print("Collision!")
-            break
-        seen.add(y)
-    else:
-        print(f"No collision in values.")

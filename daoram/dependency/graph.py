@@ -1,3 +1,5 @@
+"""Graph data structures and algorithms for ORAM constructions."""
+
 import random
 from typing import Dict, List
 
@@ -36,7 +38,7 @@ def split_set(input_list: list, split_num: int) -> List[list]:
 def fixed_undirected_graph_gen(num_ver: int, num_neigh: int) -> Graph:
     """Deterministically generate simple undirected graph on vertices 1 to num_ver.
 
-    Requires 0 < num_neigh < num_ver and num_ver * num_neigh  to be even.
+    Requires 0 < num_neigh < num_ver and num_ver * num_neigh to be even.
     :param num_ver: The desired number of vertex to generate.
     :param num_neigh: The number of neighbors each vertex should have.
     :return: a dictionary {vertex: neighbors}.

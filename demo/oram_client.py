@@ -1,113 +1,68 @@
-"""This file demonstrates how to set up a client for each of the oram we include in this library.
+"""ORAM Client Demo.
 
-Each function shows how the client should initialize the server and how to perform operations.
+Usage:
+    python oram_client.py <type> [--num-data N] [--ip IP] [--port PORT]
+
+Examples:
+    python oram_client.py path
+    python oram_client.py da --num-data 512
 """
+
+import argparse
 import time
-from daoram.dependency import InteractRemoteServer
+
+from daoram.dependency import InteractRemoteServer, ZMQSocket
 from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
+# Available ORAM types.
+ORAM_TYPES = {
+    "path": PathOram,
+    "recursive": RecursivePathOram,
+    "freecursive": FreecursiveOram,
+    "da": DAOram,
+}
 
-def path_oram_client():
-    # Define the number of data to store.
-    num_data = pow(2, 14)
 
-    # Create the path oram object.
-    oram = PathOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
+def run_demo(oram_type: str, num_data: int, ip: str, port: int):
+    """Run ORAM demo: write all values, then read and verify."""
+    # Connect to server.
+    client = InteractRemoteServer()
+    client.init_connection(client=ZMQSocket(ip=ip, port=port, is_server=False))
 
-    # Initialize the client to make a connection.
-    oram.client.init_connection()
-
-    # Initialize the server storage.
+    # Create and initialize ORAM.
+    oram = ORAM_TYPES[oram_type](num_data=num_data, data_size=10, client=client)
     oram.init_server_storage()
+    print(f"Initialized {oram_type} ORAM with {num_data} entries.")
 
-    # Perform some operations.
-    for i in range(num_data):
-        oram.operate_on_key(op="w", key=i, value=i)
-
-    for i in range(num_data):
-        print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
-
-    # Finally, close the connection.
-    oram.client.close_connection()
-
-
-def recursive_oram_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
-
-    # Create the path oram object.
-    oram = RecursivePathOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
-
-    # Initialize the client to make a connection.
-    oram.client.init_connection()
-
-    # Initialize the server storage.
-    oram.init_server_storage()
-
-    # Perform some operations.
-    for i in range(num_data):
-        oram.operate_on_key(op="w", key=i, value=i)
-
-    for i in range(num_data):
-        print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
-
-    # Finally, close the connection.
-    oram.client.close_connection()
-
-
-def freecursive_oram_client():
-    # Define the number of data to store.
-    num_data = pow(2, 14)
-
-    # Create the path oram object.
-    oram = FreecursiveOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
-
-    # Initialize the client to make a connection.
-    oram.client.init_connection()
-
-    # Initialize the server storage.
-    oram.init_server_storage()
-
-    # Perform some operations.
-    for i in range(num_data):
-        oram.operate_on_key(op="w", key=i, value=i)
-
-    for i in range(num_data):
-        print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
-
-    # Finally, close the connection.
-    oram.client.close_connection()
-
-
-def da_oram_client():
-    # Define the number of data to store.
-    num_data = pow(2, 10)
-
-    # Create the path oram object.
-    oram = DAOram(num_data=num_data, data_size=10, client=InteractRemoteServer())
-
-    # Initialize the client to make a connection.
-    oram.client.init_connection()
-
-    # Initialize the server storage.
-    oram.init_server_storage()
-
-    # Perform some operations.
-    for i in range(num_data):
-        oram.operate_on_key(op="w", key=i, value=i)
-
-    for i in range(num_data):
-        print(f"Read key {i} have value {oram.operate_on_key(op='r', key=i, value=None)}")
-
-    # Finally, close the connection.
-    oram.client.close_connection()
-
-
-if __name__ == '__main__':
+    # Write phase.
     start = time.time()
-    path_oram_client()
-    end = time.time()
-    print(f"Path Oram takes {end - start} seconds to run.")
-    # recursive_oram_client()
-    # freecursive_oram_client()
-    # da_oram_client()
+    for i in range(num_data):
+        oram.operate_on_key(key=i, value=i)
+    write_time = time.time() - start
+
+    # Read phase.
+    start = time.time()
+    errors = sum(1 for i in range(num_data) if oram.operate_on_key(key=i) != i)
+    read_time = time.time() - start
+
+    # Summary.
+    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Errors: {errors}")
+
+    client.close_connection()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ORAM Client Demo")
+    parser.add_argument("type", choices=ORAM_TYPES.keys(), help="ORAM type")
+    parser.add_argument("--num-data", type=int, default=1024, help="Number of entries (default: 1024)")
+    parser.add_argument("--ip", default="localhost", help="Server IP (default: localhost)")
+    parser.add_argument("--port", type=int, default=5555, help="Server port (default: 5555)")
+    args = parser.parse_args()
+
+    run_demo(args.type, args.num_data, args.ip, args.port)
+
+
+if __name__ == "__main__":
+    main()

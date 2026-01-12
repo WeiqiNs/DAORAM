@@ -1,8 +1,10 @@
 """This module implements a simple binary tree data structure that fits our need."""
 import math
-from typing import Any, Dict, List, Union
-import pickle
-from daoram.dependency.helper import Block, Buckets, Data, Storage
+from collections import defaultdict
+from typing import Dict, List, Tuple
+
+from daoram.dependency.storage import Storage, Data
+from daoram.dependency.types import BucketKey, BlockKey, PathData, BucketData, BlockData, Block, Buckets
 
 
 class BinaryTree:
@@ -12,15 +14,18 @@ class BinaryTree:
             bucket_size: int,
             filename: str = None,
             data_size: int = None,
-            enc_key_size: int = None) -> None:
+            disk_size: int = None,
+            encryption: bool = False
+    ) -> None:
         """
         Initializes the binary tree based on input parameters.
 
-        :param num_data: The Number of data points the tree should hold.
+        :param num_data: The number of data points the tree should hold.
         :param bucket_size: Size of each node/bucket in the tree.
-        :param data_size: Size of each data point in the tree.
-        :param filename: The Name of the file the tree should hold.
-        :param enc_key_size: The key size for the encryption, if set to 0 it means encryption will not be used.
+        :param filename: Optional backing file to persist the tree.
+        :param data_size: Plaintext byte size of each data point (padding header is handled by Storage).
+        :param disk_size: Plaintext byte length of each on-disk block; Storage adds the padding header internally.
+        :param encryption: Deprecated alias for use_encryption; kept for compatibility.
         """
         # Store the number of data point and bucket size.
         self._num_data = num_data
@@ -38,8 +43,9 @@ class BinaryTree:
             size=self._size,
             filename=filename,
             data_size=data_size,
+            disk_size=disk_size,
             bucket_size=bucket_size,
-            enc_key_size=enc_key_size
+            encryption=encryption,
         )
 
     @property
@@ -109,33 +115,18 @@ class BinaryTree:
         return sorted(list(path), reverse=True)
 
     @staticmethod
-    def get_mul_path_dict(level: int, indices: List[int]) -> Dict[int, list]:
+    def get_mul_path_dict(level: int, indices: List[int]) -> PathData:
         """
         Given a list of indices of nodes, get a dictionary whose keys are index to all buckets belong to these paths.
 
         :param level: The level of the tree.
         :param indices: A list of indices of nodes.
-        :return: A dictionary where keys are indices from the input nodes to the root and each value is an empty list.
+        :return: PathData dict where keys are indices from the input nodes to the root and each value is an empty list.
         """
         # Get the start leaf of the tree.
         indices = [index + pow(2, level - 1) - 1 for index in indices]
         # Return a dictionary where each index appears once with an empty list.
         return {index: [] for index in BinaryTree.get_mul_path_indices(indices=indices)}
-
-    @staticmethod
-    def fill_buckets_with_dummy_data(buckets: Buckets, bucket_size: int) -> None:
-        """
-        Given a list of buckets, fill them with dummy data.
-
-        Note that the default dummy size eventually yields encryption of 96 bytes. When saving this, there's an
-        overhead of 33 bytes introduced by pickle. Also, when set to 1 to 10 bytes, this takes 32 bytes.
-        :param buckets: A list of buckets.
-        :param bucket_size: Size of each bucket.
-        :return: Modify the input list of lists in-place.
-        """
-        for bucket in buckets:
-            while len(bucket) < bucket_size:
-                bucket.append(Data())
 
     @staticmethod
     def get_cross_index(leaf_one: int, leaf_two: int, level: int) -> int:
@@ -173,86 +164,29 @@ class BinaryTree:
         return int(math.ceil(math.log(index + 2, 2))) - 1
 
     @staticmethod
-    def fill_data_to_path(data: Data, path: Buckets, leaf: int, level: int, bucket_size: int) -> bool:
+    def fill_data_to_path(data: Data, path: PathData, leaves: List[int], level: int, bucket_size: int) -> bool:
         """
-        Provide a list of buckets (path), fill the data to the lowest leaf node possible.
+        Fill data to the lowest possible bucket in a PathData dict.
 
         :param data: The data to be filled in.
-        :param path: The list of buckets to fill.
-        :param leaf: The leaf of the list of buckets.
+        :param path: PathData dict (storage index -> bucket).
+        :param leaves: List of leaves representing the paths in the dict.
         :param level: The level of the entire tree.
         :param bucket_size: The size of each bucket.
-        :return: Modify the input list of lists in-place, return True if data was filled.
+        :return: True if data was filled, False if no space available.
         """
-        # Get the lowest crossed level index of the path between the data and the current path.
-        index = BinaryTree.get_cross_index_level(leaf_one=data.leaf, leaf_two=leaf, level=level)
-
-        # Go backwards from bottom to up.
-        for path_index in range(index, -1, -1):
-            # Check if the bucket is full.
-            if len(path[path_index]) < bucket_size:
-                # If the data is inserted, return True.
-                path[path_index].append(data)
-                return True
-
-        # Otherwise return False.
-        return False
-
-    @staticmethod
-    def fill_data_to_path_dict(data: Data, path: dict, leaf: int, level: int, bucket_size: int) -> bool:
-        """
-        Provide a dictionary of buckets, fill the data to the lowest leaf node possible.
-
-        :param data: The data to be filled in.
-        :param path: The dictionary of buckets (tree index are the keys).
-        :param leaf: The leaf of the list of buckets.
-        :param level: The level of the entire tree.
-        :param bucket_size: The size of each bucket.
-        :return: Modify the input dict in-place, return True if data was filled.
-        """
-        # Get the lowest crossed index of the path between the data and the current path.
-        index = BinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level)
-
-        # Go backwards from bottom to up.
-        while index >= 0:
-            # Check if the bucket is full.
-            if len(path[index]) < bucket_size:
-                # If the data is inserted, return True.
-                path[index].append(data)
-                return True
-            else:
-                index = BinaryTree.get_parent_index(index=index)
-
-        # Otherwise return False.
-        return False
-
-    @staticmethod
-    def fill_data_to_mul_path(data: Data, path: dict, leaves: List[int], level: int, bucket_size: int) -> bool:
-        """
-        Provide a list of buckets, fill the data to the lowest leaf node possible.
-
-        :param data: The data to be filled in.
-        :param path: The dictionary of buckets (tree index are the keys).
-        :param leaves: A list of leaves where the data can be potentially stored to.
-        :param level: The level of the entire tree.
-        :param bucket_size: The size of each bucket.
-        :return: Modify the input dict in-place, return True if data was filled.
-        """
-        # Get the lowest crossed index of the path between the data and the current path.
+        # Get the lowest crossed index for each leaf path.
         indices = [BinaryTree.get_cross_index(leaf_one=data.leaf, leaf_two=leaf, level=level) for leaf in leaves]
         max_index = max(indices)
 
         # Go backwards from bottom to up.
         while max_index >= 0:
-            # Check if the bucket is full.
             if len(path[max_index]) < bucket_size:
-                # If the data is inserted, return True.
                 path[max_index].append(data)
                 return True
             else:
                 max_index = BinaryTree.get_parent_index(index=max_index)
 
-        # Otherwise return False.
         return False
 
     def fill_data_to_storage_leaf(self, data: Data) -> bool:
@@ -296,150 +230,93 @@ class BinaryTree:
         """
         return self.get_leaf_path(leaf=leaf)[-index - 1]
 
-    def read_path(self, leaf: Union[int, List[int]]) -> Buckets:
+    def read_path(self, leaves: List[int]) -> PathData:
         """
-        Given one leaf node or a list of nodes, grab all buckets of data along the path(s).
+        Read unique buckets along the path(s) to the given leaves.
 
-        :param leaf: The label of a leaf or a list of leaves.
-        :return: A list of buckets of Data objects, from leaf/leaves to root.
+        :param leaves: A list of leaf labels.
+        :return: PathData mapping storage_index -> bucket (deduplicated).
         """
-        # If the leaf is an integer, we read one path.
-        if isinstance(leaf, int):
-            path_to_read = self.get_leaf_path(leaf=leaf)
+        indices = self.get_mul_leaf_path(leaves)
+        return {idx: self._storage[idx] for idx in indices}
 
-        # If the leaf is a list, we read multiple paths.
-        elif isinstance(leaf, list):
-            path_to_read = self.get_mul_leaf_path(leaves=leaf) 
-
-        # Otherwise, raise a type error.
-        else:
-            raise TypeError("Leaf must be an integer or list of integers.")
-
-        # Read the desired values.
-        return [self._storage[data_index] for data_index in path_to_read]
-
-    def write_path(self, leaf: Union[int, List[int]], data: Buckets) -> None:
+    def write_path(self, data: PathData) -> None:
         """
-        Given one leaf node or a list of nodes, write provided data to the path(s).
+        Write buckets to storage from a PathData dict.
 
-        :param leaf: The label of a leaf or a list of leaves.
-        :param data: A list of buckets of Data objects.
+        :param data: PathData mapping storage_index -> bucket.
         """
-        # If the leaf is an integer, we read one path.
-        if isinstance(leaf, int):
-            # Get the path to write to.
-            path_to_write = self.get_leaf_path(leaf=leaf)
+        for idx, bucket in data.items():
+            self._storage[idx] = bucket
 
-            # Check if the provided data to write has the same length.
-            if len(data) != len(path_to_write):
-                raise ValueError("Wrong number of buckets on a path.")
-
-        # If the leaf is a list, we read multiple paths.
-        elif isinstance(leaf, list):
-            # Get the path to write to.
-            path_to_write = self.get_mul_leaf_path(leaves=leaf)
-
-            # Check if the provided data to write has the same length.
-            if len(data) != len(path_to_write):
-                raise ValueError("Wrong number of buckets on a path.")
-
-        # Otherwise, raise a type error.
-        else:
-            raise TypeError("Leaf must be an integer or list of integers.")
-
-        # Write the data.
-        for i, path_index in enumerate(path_to_write):
-            self._storage[path_index] = data[i]
-
-    def read_block(self, leaf: int, bucket_id: int, block_id: int) -> Block:
+    def extract_path(self, leaf: int, data: PathData) -> Buckets:
         """
-        Given a leaf node, a bucket index, and a block index, grab data stored in that location.
+        Extract a single leaf's path from a PathData dict.
 
-        :param leaf: The label of a leaf.
-        :param bucket_id: The index of the bucket of interest.
-        :param block_id: The index of the block of interest.
-        :return: One data value.
+        :param leaf: The leaf label to extract.
+        :param data: PathData mapping storage_index -> bucket.
+        :return: List of buckets from leaf to root.
+        :raises KeyError: If the path is not fully contained in data.
         """
-        # Read the desired values.
-        return self._storage[self.get_leaf_block(leaf=leaf, index=bucket_id)][block_id]
+        indices = self.get_leaf_path(leaf)
+        missing = [idx for idx in indices if idx not in data]
+        # Check if the data contains the desired path.
+        if missing:
+            raise KeyError(f"Path for leaf {leaf} not fully contained. Missing indices: {missing}")
+        # Return data on that path.
+        return [data[idx] for idx in indices]
 
-    def write_block(self, leaf: int, bucket_id: int, block_id: int, data: Block) -> None:
+    def read_bucket(self, keys: List[BucketKey]) -> BucketData:
         """
-        Given a leaf node, a bucket index, and a block index, write data to that location.
+        Read buckets at the specified locations.
 
-        :param leaf: The label of a leaf.
-        :param bucket_id: The index of the bucket of interest.
-        :param block_id: The index of the block of interest.
-        :param data: The data to write.
+        :param keys: A list of (leaf, bucket_id) tuples specifying which buckets to read.
+        :return: BucketData mapping (leaf, bucket_id) -> bucket.
         """
-        # Compute the index to write to.
-        index_to_write = self.get_leaf_block(leaf=leaf, index=bucket_id)
-        # Get the bucket data.
-        bucket_data = self._storage[index_to_write]
-        # Update bucket data.
-        bucket_data[block_id] = data
-        # Write it back.
-        self._storage[index_to_write] = bucket_data
-
-    def __getstate__(self) -> Dict[str, Any]:
-        """Custom serialization method"""
         return {
-            # Basic parameters
-            '_num_data': self._num_data,
-            '_bucket_size': self._bucket_size,
-            '_level': self._level,
-            '_size': self._size,
-            '_start_leaf': self._start_leaf,
-            
-            # Storage configuration
-            '_filename': self._storage._Storage__filename,
-            '_data_size': self._storage._Storage__data_size,
-            '_encryption': self._storage._Storage__encryption,
-            '_total_size': self._storage._Storage__total_size,
-            
-            # Storage data
-            '_storage_data': self._serialize_storage_data()
+            BucketKey(leaf, bucket_id): self._storage[self.get_leaf_block(leaf, bucket_id)]
+            for leaf, bucket_id in keys
         }
-    
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        """Custom deserialization method"""
-        # Restore basic parameters
-        self._num_data = state['_num_data']
-        self._bucket_size = state['_bucket_size']
-        self._level = state['_level']
-        self._size = state['_size']
-        self._start_leaf = state['_start_leaf']
-        
-        # Re-create the Storage object
-        self._storage = Storage(
-            size=state['_size'],
-            filename=state['_filename'],
-            data_size=state['_data_size'],
-            bucket_size=state['_bucket_size']
-        )
-        
-        # Restore storage data
-        self._deserialize_storage_data(state['_storage_data'])
-    
-    def _serialize_storage_data(self) -> bytes:
-        """Serialize storage data"""
-        if self._storage._Storage__filename is None:
-            # In-memory storage: directly serialize the internal data
-            return pickle.dumps(self._storage._Storage__internal_data)
-        else:
-            # File-based storage: read file content and serialize it
-            self._storage._Storage__file.seek(0)
-            file_data = self._storage._Storage__file.read()
-            return pickle.dumps(file_data)
-    
-    def _deserialize_storage_data(self, data: bytes) -> None:
-        """Deserialize storage data"""
-        storage_data = pickle.loads(data)
-        
-        if self._storage._Storage__filename is None:
-            # In-memory storage: directly restore the internal data
-            self._storage._Storage__internal_data = storage_data
-        else:
-            # File-based storage: write to the file
-            self._storage._Storage__file.seek(0)
-            self._storage._Storage__file.write(storage_data)
+
+    def write_bucket(self, data: BucketData) -> None:
+        """
+        Write buckets to storage from a BucketData dict.
+
+        :param data: BucketData mapping (leaf, bucket_id) -> bucket.
+        """
+        for (leaf, bucket_id), bucket in data.items():
+            self._storage[self.get_leaf_block(leaf, bucket_id)] = bucket
+
+    def read_block(self, keys: List[BlockKey]) -> BlockData:
+        """
+        Read blocks at the specified locations.
+
+        :param keys: A list of (leaf, bucket_id, block_id) tuples specifying which blocks to read.
+        :return: BlockData mapping (leaf, bucket_id, block_id) -> block.
+        """
+        return {
+            BlockKey(leaf, bucket_id, block_id): self._storage[self.get_leaf_block(leaf, bucket_id)][block_id]
+            for leaf, bucket_id, block_id in keys
+        }
+
+    def write_block(self, data: BlockData) -> None:
+        """
+        Write blocks to storage from a BlockData dict.
+
+        :param data: BlockData mapping (leaf, bucket_id, block_id) -> block.
+        """
+        # Group by (leaf, bucket_id) to minimize storage accesses.
+        by_bucket: Dict[BucketKey, List[Tuple[int, Block]]] = defaultdict(list)
+        for (leaf, bucket_id, block_id), block in data.items():
+            by_bucket[BucketKey(leaf, bucket_id)].append((block_id, block))
+
+        # Unpack the input data dictionary.
+        # Note: We read the bucket, modify it, then write back explicitly to make sure file-based storage works.
+        for (leaf, bucket_id), blocks in by_bucket.items():
+            storage_idx = self.get_leaf_block(leaf, bucket_id)
+            # Get the bucket.
+            bucket = self._storage[storage_idx]
+            for block_id, block in blocks:
+                bucket[block_id] = block
+            # Write the whole bucket back.
+            self._storage[storage_idx] = bucket

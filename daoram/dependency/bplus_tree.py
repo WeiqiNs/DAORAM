@@ -6,8 +6,8 @@ import secrets
 from dataclasses import astuple, dataclass
 from typing import Any, List, Optional
 
-from daoram.dependency import Data
-from daoram.dependency.avl_tree import KV_PAIR
+from daoram.dependency.storage import Data
+from daoram.dependency.types import KVPair
 
 
 @dataclass
@@ -47,14 +47,14 @@ class BPlusTreeNode:
         self.is_leaf: bool = True
 
     # Insert at the leaf
-    def add_kv_pair(self, kv_pair: KV_PAIR):
+    def add_kv_pair(self, kv_pair: KVPair):
         """
         Add a key-value pair to this node.
 
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         """
         # Unpack the key, value pair.
-        key, value = kv_pair
+        key, value = kv_pair.key, kv_pair.value
 
         # If keys is not empty, we find the correct place to insert the input value.
         if self.keys:
@@ -78,16 +78,16 @@ class BPlusTree:
 
         :param order: The branching degree of the B+ tree, minimum should be 3.
         """
-        self.__order = order
-        self.__mid = order // 2
-        self.__leaf_range = leaf_range
+        self._order = order
+        self._mid = order // 2
+        self._leaf_range = leaf_range
 
-    def __get_new_leaf(self) -> int:
+    def _get_new_leaf(self) -> int:
         """Get a random leaf label within the range."""
-        return secrets.randbelow(self.__leaf_range)
+        return secrets.randbelow(self._leaf_range)
 
     @staticmethod
-    def __find_leaf(key: Any, root: BPlusTreeNode) -> BPlusTreeNode:
+    def _find_leaf(key: Any, root: BPlusTreeNode) -> BPlusTreeNode:
         """
         Given B+ tree root and a key of interest, find the leaf where the key is stored.
 
@@ -118,7 +118,7 @@ class BPlusTree:
         return cur_node
 
     @staticmethod
-    def __find_leaf_path(key: Any, root: BPlusTreeNode) -> List[BPlusTreeNode]:
+    def _find_leaf_path(key: Any, root: BPlusTreeNode) -> List[BPlusTreeNode]:
         """
         Given B+ tree root and a key of interest, find the entire path to the leaf where the key is stored.
 
@@ -152,7 +152,7 @@ class BPlusTree:
         # Return the node that was found.
         return result
 
-    def __split_node(self, node: BPlusTreeNode) -> BPlusTreeNode:
+    def _split_node(self, node: BPlusTreeNode) -> BPlusTreeNode:
         """
         Given a node that is full, split it depends on whether it is a leaf or not.
 
@@ -166,24 +166,24 @@ class BPlusTree:
         # Depending on whether the child node is a leaf node, we break it differently.
         if node.is_leaf:
             # New leaf gets half of the old leaf.
-            right_node.keys = node.keys[self.__mid:]
-            right_node.values = node.values[self.__mid:]
+            right_node.keys = node.keys[self._mid:]
+            right_node.values = node.values[self._mid:]
 
             # The old leaf keeps on the first half.
-            node.keys = node.keys[:self.__mid]
-            node.values = node.values[:self.__mid]
+            node.keys = node.keys[:self._mid]
+            node.values = node.values[:self._mid]
 
         else:
             # Mark the node as a non-leaf node.
             right_node.is_leaf = False
 
             # New leaf gets half of the old leaf.
-            right_node.keys = node.keys[self.__mid + 1:]
-            right_node.values = node.values[self.__mid + 1:]
+            right_node.keys = node.keys[self._mid + 1:]
+            right_node.values = node.values[self._mid + 1:]
 
             # The old leaf keeps on the first half.
-            node.keys = node.keys[:self.__mid]
-            node.values = node.values[:self.__mid + 1]
+            node.keys = node.keys[:self._mid]
+            node.values = node.values[:self._mid + 1]
 
         # Because the nodes are modified in place, we only need to return the right one.
         return right_node
@@ -196,10 +196,10 @@ class BPlusTree:
         :param parent_node: A B+ tree node containing the child node.
         """
         # Store the key to insert to parent.
-        insert_key = child_node.keys[self.__mid]
+        insert_key = child_node.keys[self._mid]
 
         # Perform the node split.
-        right_node = self.__split_node(node=child_node)
+        right_node = self._split_node(node=child_node)
 
         # Now we perform the actual insertion to parent.
         for index, each_key in enumerate(parent_node.keys):
@@ -220,10 +220,10 @@ class BPlusTree:
         :return: A B+ tree node containing the split left and right child nodes.
         """
         # Store the key to insert to parent.
-        insert_key = child_node.keys[self.__mid]
+        insert_key = child_node.keys[self._mid]
 
         # Perform the node split.
-        right_node = self.__split_node(node=child_node)
+        right_node = self._split_node(node=child_node)
 
         # Create the parent node.
         parent_node = BPlusTreeNode()
@@ -237,16 +237,16 @@ class BPlusTree:
 
         return parent_node
 
-    def insert(self, root: BPlusTreeNode, kv_pair: KV_PAIR) -> BPlusTreeNode:
+    def insert(self, root: BPlusTreeNode, kv_pair: KVPair) -> BPlusTreeNode:
         """
         Inserts a new node into the tree, which is represented by the root.
 
         :param root: The root node of the B+ tree.
-        :param kv_pair: A tuple containing two values (key, value).
+        :param kv_pair: A KVPair containing key and value.
         :return: The updated B+ tree root node.
         """
         # Find which leaf to insert.
-        leaves = self.__find_leaf_path(root=root, key=kv_pair[0])
+        leaves = self._find_leaf_path(root=root, key=kv_pair.key)
         # Add kv pair to the leaf node, which has to be the last one.
         leaves[-1].add_kv_pair(kv_pair=kv_pair)
 
@@ -255,7 +255,7 @@ class BPlusTree:
 
         # Iterate through the leaves.
         while index >= 0:
-            if len(leaves[index].keys) >= self.__order:
+            if len(leaves[index].keys) >= self._order:
                 # When insertion is needed, we first locate the parent.
                 if index > 0:
                     # Perform the insertion.
@@ -280,7 +280,7 @@ class BPlusTree:
         :return: The value corresponding to the provided search key.
         """
         # First get the node leaf.
-        leaf = self.__find_leaf(root=root, key=key)
+        leaf = self._find_leaf(root=root, key=key)
 
         # Search in the node leaf.
         for index, each_key in enumerate(leaf.keys):
@@ -288,6 +288,131 @@ class BPlusTree:
                 return leaf.values[index]
 
         raise KeyError(f"The key {key} is not found.")
+
+    def delete(self, root: Optional[BPlusTreeNode], key: Any) -> Optional[BPlusTreeNode]:
+        """
+        Deletes a key from the B+ tree.
+
+        Template for oblivious version: uses 'local' list to track (node, child_index) pairs.
+
+        :param root: The root node of the B+ tree.
+        :param key: The key to delete.
+        :return: The updated B+ tree root node, or None if tree becomes empty.
+        """
+        if not root:
+            return None
+
+        # Compute the minimum number of keys each node should have.
+        min_keys = (self._order - 1) // 2
+
+        # Store path of internal nodes as (node, child_index) pairs.
+        local = []
+        current = root
+
+        # Locate the leaf containing the key.
+        while not current.is_leaf:
+            # Find child index to descend to.
+            child_index = len(current.keys)
+            for i, k in enumerate(current.keys):
+                if key < k:
+                    child_index = i
+                    break
+                elif key == k:
+                    child_index = i + 1
+                    break
+            local.append((current, child_index))
+            current = current.values[child_index]
+
+        # Now current is the leaf.
+        leaf = current
+
+        # Delete key from leaf.
+        key_index = None
+        for i, k in enumerate(leaf.keys):
+            if k == key:
+                key_index = i
+                break
+
+        # Key not found.
+        if key_index is None:
+            return root
+
+        leaf.keys.pop(key_index)
+        leaf.values.pop(key_index)
+
+        # Handle root leaf case (local is empty when root is the leaf).
+        if not local:
+            return None if len(leaf.keys) == 0 else root
+
+        # Handle underflow from bottom to top, starting with the leaf.
+        node = leaf
+        for i in range(len(local) - 1, -1, -1):
+            parent, child_index = local[i]
+
+            # No underflow, done.
+            if len(node.keys) >= min_keys:
+                break
+
+            # Get sibling info.
+            has_left = child_index > 0
+            has_right = child_index < len(parent.values) - 1
+            left_sib = parent.values[child_index - 1] if has_left else None
+            right_sib = parent.values[child_index + 1] if has_right else None
+
+            # Try borrow from left.
+            if has_left and len(left_sib.keys) > min_keys:
+                if node.is_leaf:
+                    node.keys.insert(0, left_sib.keys.pop())
+                    node.values.insert(0, left_sib.values.pop())
+                    parent.keys[child_index - 1] = node.keys[0]
+                else:
+                    node.keys.insert(0, parent.keys[child_index - 1])
+                    node.values.insert(0, left_sib.values.pop())
+                    parent.keys[child_index - 1] = left_sib.keys.pop()
+                break
+
+            # Try borrow from right.
+            if has_right and len(right_sib.keys) > min_keys:
+                if node.is_leaf:
+                    node.keys.append(right_sib.keys.pop(0))
+                    node.values.append(right_sib.values.pop(0))
+                    parent.keys[child_index] = right_sib.keys[0]
+                else:
+                    node.keys.append(parent.keys[child_index])
+                    node.values.append(right_sib.values.pop(0))
+                    parent.keys[child_index] = right_sib.keys.pop(0)
+                break
+
+            # Merge; prefer left sibling.
+            if has_left:
+                if node.is_leaf:
+                    left_sib.keys.extend(node.keys)
+                    left_sib.values.extend(node.values)
+                else:
+                    left_sib.keys.append(parent.keys[child_index - 1])
+                    left_sib.keys.extend(node.keys)
+                    left_sib.values.extend(node.values)
+                parent.keys.pop(child_index - 1)
+                parent.values.pop(child_index)
+            else:
+                if node.is_leaf:
+                    node.keys.extend(right_sib.keys)
+                    node.values.extend(right_sib.values)
+                else:
+                    node.keys.append(parent.keys[child_index])
+                    node.keys.extend(right_sib.keys)
+                    node.values.extend(right_sib.values)
+                parent.keys.pop(child_index)
+                parent.values.pop(child_index + 1)
+
+            # Move up to parent for next iteration.
+            node = parent
+
+        # Check if root needs replacement.
+        if len(root.keys) == 0:
+            return None if root.is_leaf else root.values[0]
+
+        return root
 
     def get_data_list(self, root: BPlusTreeNode, block_id: int = 0, encryption: bool = False) -> List[Data]:
         """From root, expand the AVL tree as a list of Data objects.
@@ -299,7 +424,7 @@ class BPlusTree:
         """
         # Update the root id and assign a new leaf.
         root.id = block_id
-        root.leaf = self.__get_new_leaf()
+        root.leaf = self._get_new_leaf()
         # Increment the id.
         block_id += 1
 
@@ -316,7 +441,7 @@ class BPlusTree:
             if not node.is_leaf:
                 for child in node.values:
                     child.id = block_id
-                    child.leaf = self.__get_new_leaf()
+                    child.leaf = self._get_new_leaf()
                     block_id += 1
 
                 # Create the bplus data with node keys and updated child ids and leaves.
