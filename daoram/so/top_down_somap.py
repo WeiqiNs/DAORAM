@@ -59,7 +59,7 @@ class TopDownSomap:
         self._aes_key = aes_key
         self._num_key_bytes = num_key_bytes
         self._use_encryption = use_encryption
-        self._extended_size = 2*self._num_data
+        self._extended_size = 3*self._num_data
 
         # PRFs: one for group hashing, one for leaf mapping
         self._group_prf = Prf()
@@ -350,6 +350,10 @@ class TopDownSomap:
         value_old1 = self._Ow.search(key)
         value_old2 = self._Or.search(key)
         uncached_key = self._Ob.find_available()
+
+        # this is used to simulate the cost
+        validate_key = self._Or.search(uncached_key)
+
         value_old = None
         # Case a: key in cache Ow
         if value_old1 is not None:
