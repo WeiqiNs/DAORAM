@@ -49,6 +49,22 @@ class MulPathOram(PathOram):
         # Store temporary leaves for batch operations without immediate eviction.
         self._tmp_leaves: List[int] = []
 
+    def init_server_storage(self, data_map: dict = None, path_map: dict = None) -> None:
+        """
+        Initialize the server storage based on the data map for this oram.
+
+        :param data_map: A dictionary storing {key: data}.
+        :param path_map: Optional dictionary mapping {key: leaf}. If provided, overrides
+                         the random position map values for these keys.
+        """
+        # Override position map with provided paths if given
+        if path_map:
+            for key, leaf in path_map.items():
+                self._pos_map[key] = leaf
+
+        # Call parent implementation
+        super().init_server_storage(data_map=data_map)
+
     def _retrieve_mul_data_blocks(
             self,
             path: PathData,
@@ -110,15 +126,20 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys(
-            self, key_value_map: Dict[int, Any], key_path_map: Dict[int, int] = None,
+            self,
+            key_value_map: Dict[int, Any],
+            key_path_map: Dict[int, int] = None,
+            new_path_map: Dict[int, int] = None,
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys. Reads all paths at once,
         performs operations, and evicts all paths at once.
 
         :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
-        :param key_path_map: Optional dict mapping key to path. If None, paths are
-            retrieved from the position map.
+        :param key_path_map: Optional dict mapping key to old path (where to read from).
+            If None, paths are retrieved from the position map.
+        :param new_path_map: Optional dict mapping key to new path (where to write to).
+            If None, new paths are generated randomly.
         :return: Dict mapping key to its value (before write if writing).
         """
         key_list = list(key_value_map.keys())
@@ -127,7 +148,7 @@ class MulPathOram(PathOram):
         if not key_list:
             return {}
 
-        # Look up current leaves and generate new leaves for all keys.
+        # Look up current leaves and determine new leaves for all keys.
         old_leaves: List[int] = []
         key_leaf_map: Dict[int, int] = {}
 
@@ -139,8 +160,11 @@ class MulPathOram(PathOram):
                 old_leaf = self._look_up_pos_map(key=key)
             old_leaves.append(old_leaf)
 
-            # Generate a new leaf and update position map.
-            new_leaf = self._get_new_leaf()
+            # Determine new leaf: use provided map or generate randomly.
+            if new_path_map is not None and key in new_path_map:
+                new_leaf = new_path_map[key]
+            else:
+                new_leaf = self._get_new_leaf()
             self._pos_map[key] = new_leaf
             key_leaf_map[key] = new_leaf
 
@@ -164,15 +188,20 @@ class MulPathOram(PathOram):
         return read_values
 
     def operate_on_keys_without_eviction(
-            self, key_value_map: Dict[int, Any], key_path_map: Dict[int, int] = None,
+            self,
+            key_value_map: Dict[int, Any],
+            key_path_map: Dict[int, int] = None,
+            new_path_map: Dict[int, int] = None,
     ) -> Dict[int, Any]:
         """
         Perform batch operations on multiple keys without eviction.
         Call eviction_for_mul_keys() later to complete the operation.
 
         :param key_value_map: Dict mapping key to value to write. Use UNSET for read-only.
-        :param key_path_map: Optional dict mapping key to path. If None, paths are
-            retrieved from the position map.
+        :param key_path_map: Optional dict mapping key to old path (where to read from).
+            If None, paths are retrieved from the position map.
+        :param new_path_map: Optional dict mapping key to new path (where to write to).
+            If None, new paths are generated randomly.
         :return: Dict mapping key to its value (before write if writing).
         """
         key_list = list(key_value_map.keys())
@@ -181,7 +210,7 @@ class MulPathOram(PathOram):
         if not key_list:
             return {}
 
-        # Look up current leaves and generate new leaves for all keys.
+        # Look up current leaves and determine new leaves for all keys.
         old_leaves: List[int] = []
         key_leaf_map: Dict[int, int] = {}
 
@@ -193,8 +222,11 @@ class MulPathOram(PathOram):
                 old_leaf = self._look_up_pos_map(key=key)
             old_leaves.append(old_leaf)
 
-            # Generate a new leaf and update position map.
-            new_leaf = self._get_new_leaf()
+            # Determine new leaf: use provided map or generate randomly.
+            if new_path_map is not None and key in new_path_map:
+                new_leaf = new_path_map[key]
+            else:
+                new_leaf = self._get_new_leaf()
             self._pos_map[key] = new_leaf
             key_leaf_map[key] = new_leaf
 
