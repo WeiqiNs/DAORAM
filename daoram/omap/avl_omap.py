@@ -154,56 +154,6 @@ class LocalNodes:
             if parent_key == old_key:
                 self.parent_of[key] = new_key
 
-    def rotate(self, node_key: Any, rotate_left: bool) -> Tuple[Any, int, int]:
-        """
-        Perform an AVL rotation at the given node.
-
-        :param node_key: Key of the node to rotate (will become child after rotation).
-        :param rotate_left: True for left rotation, False for right rotation.
-        :return: Tuple of (new_parent_key, new_parent_leaf, new_parent_height).
-        :raises ValueError: If the pivot node is not loaded.
-        """
-        node = self.nodes.get(node_key)
-        if node is None:
-            raise ValueError(f"Node {node_key} not found in local.")
-
-        # Get pivot (the child that will become parent)
-        pivot_key = node.value.r_key if rotate_left else node.value.l_key
-        pivot = self.nodes.get(pivot_key)
-        if pivot is None or pivot.key != pivot_key:
-            side = "Right" if rotate_left else "Left"
-            raise ValueError(f"{side} node is not loaded when it is supposed to.")
-
-        if rotate_left:
-            # Left rotation: pivot's left subtree becomes node's right subtree
-            node.value.r_key = pivot.value.l_key
-            node.value.r_leaf = pivot.value.l_leaf
-            node.value.r_height = pivot.value.l_height
-            # Node becomes pivot's left child
-            pivot.value.l_key = node.key
-            pivot.value.l_leaf = node.leaf
-            pivot.value.l_height = 1 + max(node.value.l_height, node.value.r_height)
-        else:
-            # Right rotation: pivot's right subtree becomes node's left subtree
-            node.value.l_key = pivot.value.r_key
-            node.value.l_leaf = pivot.value.r_leaf
-            node.value.l_height = pivot.value.r_height
-            # Node becomes pivot's right child
-            pivot.value.r_key = node.key
-            pivot.value.r_leaf = node.leaf
-            pivot.value.r_height = 1 + max(node.value.l_height, node.value.r_height)
-
-        # Update parent relationships: pivot takes node's position
-        grandparent_key = self.parent_of.get(node_key)
-        self.reparent(pivot_key, grandparent_key)
-        self.reparent(node_key, pivot_key)
-
-        # Swap positions in path
-        self.swap_in_path(node_key, pivot_key)
-
-        new_height = 1 + max(pivot.value.l_height, pivot.value.r_height)
-        return pivot.key, pivot.leaf, new_height
-
     def to_list(self) -> List[Data]:
         """Return all nodes as a list (for moving to stash)."""
         return list(self.nodes.values())
@@ -537,6 +487,56 @@ class AVLOmap(ObliviousSearchTree):
                 else:
                     parent.value.r_height = new_height
 
+    def _rotate_node(self, node_key: Any, rotate_left: bool) -> Tuple[Any, int, int]:
+        """
+        Perform an AVL rotation at the given node.
+
+        :param node_key: Key of the node to rotate (will become child after rotation).
+        :param rotate_left: True for left rotation, False for right rotation.
+        :return: Tuple of (new_parent_key, new_parent_leaf, new_parent_height).
+        :raises ValueError: If the pivot node is not loaded.
+        """
+        node = self._local.get(node_key)
+        if node is None:
+            raise ValueError(f"Node {node_key} not found in local.")
+
+        # Get pivot (the child that will become parent)
+        pivot_key = node.value.r_key if rotate_left else node.value.l_key
+        pivot = self._local.get(pivot_key)
+        if pivot is None or pivot.key != pivot_key:
+            side = "Right" if rotate_left else "Left"
+            raise ValueError(f"{side} node is not loaded when it is supposed to.")
+
+        if rotate_left:
+            # Left rotation: pivot's left subtree becomes node's right subtree
+            node.value.r_key = pivot.value.l_key
+            node.value.r_leaf = pivot.value.l_leaf
+            node.value.r_height = pivot.value.l_height
+            # Node becomes pivot's left child
+            pivot.value.l_key = node.key
+            pivot.value.l_leaf = node.leaf
+            pivot.value.l_height = 1 + max(node.value.l_height, node.value.r_height)
+        else:
+            # Right rotation: pivot's right subtree becomes node's left subtree
+            node.value.l_key = pivot.value.r_key
+            node.value.l_leaf = pivot.value.r_leaf
+            node.value.l_height = pivot.value.r_height
+            # Node becomes pivot's right child
+            pivot.value.r_key = node.key
+            pivot.value.r_leaf = node.leaf
+            pivot.value.r_height = 1 + max(node.value.l_height, node.value.r_height)
+
+        # Update parent relationships: pivot takes node's position
+        grandparent_key = self._local.get_parent_key(node_key)
+        self._local.reparent(pivot_key, grandparent_key)
+        self._local.reparent(node_key, pivot_key)
+
+        # Swap positions in path
+        self._local.swap_in_path(node_key, pivot_key)
+
+        new_height = 1 + max(pivot.value.l_height, pivot.value.r_height)
+        return pivot.key, pivot.leaf, new_height
+
     def _balance_node(self, node_key: Any, is_delete: bool = False) -> Tuple[Any, int, int]:
         """
         Re-balance a node if it is unbalanced.
@@ -561,11 +561,11 @@ class AVLOmap(ObliviousSearchTree):
                 if is_delete and not self._local.get(grandchild_key):
                     self._move_node_to_local(key=grandchild_key, leaf=child_node.value.r_leaf, parent_key=child_key)
 
-                key, leaf, height = self._local.rotate(child_key, rotate_left=True)
+                key, leaf, height = self._rotate_node(child_key, rotate_left=True)
                 node.value.l_key, node.value.l_leaf, node.value.l_height = key, leaf, height
 
             # Left-left case: rotate right.
-            return self._local.rotate(node_key, rotate_left=False)
+            return self._rotate_node(node_key, rotate_left=False)
 
         # Right heavy subtree rotation.
         if balance < -1:
@@ -580,11 +580,11 @@ class AVLOmap(ObliviousSearchTree):
                 if is_delete and not self._local.get(grandchild_key):
                     self._move_node_to_local(key=grandchild_key, leaf=child_node.value.l_leaf, parent_key=child_key)
 
-                key, leaf, height = self._local.rotate(child_key, rotate_left=False)
+                key, leaf, height = self._rotate_node(child_key, rotate_left=False)
                 node.value.r_key, node.value.r_leaf, node.value.r_height = key, leaf, height
 
             # Right-right case: rotate left.
-            return self._local.rotate(node_key, rotate_left=True)
+            return self._rotate_node(node_key, rotate_left=True)
 
         return node.key, node.leaf, 1 + max(node.value.l_height, node.value.r_height)
 

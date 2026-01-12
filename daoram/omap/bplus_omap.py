@@ -3,11 +3,115 @@
 import math
 import os
 from functools import cached_property
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Data, Encryptor, Helper, InteractServer, \
-    KVPair, PathData
+from daoram.dependency import (
+    BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Data, Encryptor, Helper, InteractServer, KVPair, PathData
+)
 from daoram.omap.oblivious_search_tree import KV_LIST, ROOT, ObliviousSearchTree
+
+
+class LocalNodes:
+    """
+    A container for managing nodes retrieved during B+ tree operations.
+
+    Uses a dictionary with explicit parent tracking and child index tracking,
+    making tree operations cleaner and eliminating positional assumptions.
+    """
+
+    def __init__(self):
+        self.nodes: Dict[Any, Data] = {}  # key -> Data node
+        self.parent_of: Dict[Any, Any] = {}  # key -> parent_key
+        self.child_index_of: Dict[Any, int] = {}  # key -> index in parent's values
+        self.root_key: Any = None
+        self.path: List[Any] = []  # Keys in traversal order (root to leaf)
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def __bool__(self) -> bool:
+        return len(self.nodes) > 0
+
+    @staticmethod
+    def is_leaf_node(node: Data) -> bool:
+        """Check if a node is a leaf node (keys and values have same length)."""
+        return len(node.value.keys) == len(node.value.values)
+
+    def add(self, node: Data, parent_key: Any = None, child_index: int = None) -> None:
+        """
+        Add a node with its parent relationship and track in path.
+
+        :param node: The Data node to add.
+        :param parent_key: The key of the parent node (None if this is the root).
+        :param child_index: The index of this node in parent's values array.
+        """
+        self.nodes[node.key] = node
+        self.parent_of[node.key] = parent_key
+        if child_index is not None:
+            self.child_index_of[node.key] = child_index
+        self.path.append(node.key)
+        if parent_key is None:
+            self.root_key = node.key
+
+    def get(self, key: Any) -> Optional[Data]:
+        """Get a node by its key."""
+        return self.nodes.get(key)
+
+    def get_parent(self, key: Any) -> Optional[Data]:
+        """Get the parent node of a given key."""
+        parent_key = self.parent_of.get(key)
+        return self.nodes.get(parent_key) if parent_key is not None else None
+
+    def get_child_index(self, key: Any) -> Optional[int]:
+        """Get the child index of a node (its position in parent's values)."""
+        return self.child_index_of.get(key)
+
+    def get_root(self) -> Optional[Data]:
+        """Get the root node."""
+        return self.nodes.get(self.root_key) if self.root_key is not None else None
+
+    def get_leaf(self) -> Optional[Data]:
+        """Get the leaf node (last node in path)."""
+        if not self.path:
+            return None
+        return self.nodes.get(self.path[-1])
+
+    def update_all_leaves(self, get_new_leaf) -> None:
+        """
+        Update leaves for all nodes and fix parent pointers in a single pass.
+
+        :param get_new_leaf: A callable that returns a new random leaf.
+        """
+        for key, node in self.nodes.items():
+            node.leaf = get_new_leaf()
+            parent = self.get_parent(key)
+            child_index = self.get_child_index(key)
+            if parent is not None and child_index is not None:
+                parent.value.values[child_index] = (node.key, node.leaf)
+
+    def remove(self, key: Any) -> Optional[Data]:
+        """Remove and return a node by its key."""
+        node = self.nodes.pop(key, None)
+        if node:
+            self.parent_of.pop(key, None)
+            self.child_index_of.pop(key, None)
+            if key in self.path:
+                self.path.remove(key)
+            if self.root_key == key:
+                self.root_key = None
+        return node
+
+    def to_list(self) -> List[Data]:
+        """Return all nodes as a list (for moving to stash)."""
+        return list(self.nodes.values())
+
+    def clear(self) -> None:
+        """Clear all stored nodes."""
+        self.nodes.clear()
+        self.parent_of.clear()
+        self.child_index_of.clear()
+        self.root_key = None
+        self.path.clear()
 
 
 class BPlusOmap(ObliviousSearchTree):
@@ -43,10 +147,10 @@ class BPlusOmap(ObliviousSearchTree):
             filename=filename,
             num_data=num_data,
             key_size=key_size,
+            encryptor=encryptor,
             data_size=data_size,
             bucket_size=bucket_size,
-            stash_scale=stash_scale,
-            encryptor=encryptor
+            stash_scale=stash_scale
         )
 
         # Save the branching order and middle point.
@@ -58,6 +162,9 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Compute the maximum height of the B+ tree.
         self._max_height: int = math.ceil(math.log(num_data, math.ceil(order / 2)))
+
+        # Override _local with LocalNodes for explicit parent tracking.
+        self._local: LocalNodes = LocalNodes()
 
         # B+ uses a larger block size, so update disk_size for file storage.
         if self._filename and self._encryptor:
@@ -238,9 +345,9 @@ class BPlusOmap(ObliviousSearchTree):
         tree = BinaryTree(
             filename=self._filename,
             num_data=self._num_data,
-            data_size=self._max_block_size,
-            bucket_size=self._bucket_size,
             disk_size=self._disk_size,
+            bucket_size=self._bucket_size,
+            data_size=self._max_block_size,
             encryption=True if self._encryptor else False,
         )
 
@@ -287,6 +394,71 @@ class BPlusOmap(ObliviousSearchTree):
 
         return tree, root_list
 
+    def _move_node_to_local(self, key: Any, leaf: int, parent_key: Any = None, child_index: int = None) -> None:
+        """
+        Retrieve a node and add it to local with parent tracking.
+
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data is stored in the ORAM.
+        :param parent_key: The key of the parent node (None if this is the root).
+        :param child_index: The index of this node in parent's values array.
+        """
+        self._move_node_to_local_without_eviction(key=key, leaf=leaf, parent_key=parent_key, child_index=child_index)
+
+        # Perform eviction and write the path back.
+        self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))
+        self._client.execute()
+
+    def _move_node_to_local_without_eviction(
+            self, key: Any, leaf: int, parent_key: Any = None, child_index: int = None
+    ) -> None:
+        """
+        Retrieve a node and add it to local without eviction.
+
+        :param key: Search key of interest.
+        :param leaf: Indicate which path the data is stored in the ORAM.
+        :param parent_key: The key of the parent node (None if this is the root).
+        :param child_index: The index of this node in parent's values array.
+        """
+        found = False
+        to_index = len(self._stash)
+
+        # Read the path from the server.
+        self._client.add_read_path(label=self._name, leaves=[leaf])
+        result = self._client.execute()
+        path_data = result.results[self._name]
+
+        # Decrypt the path.
+        path = self._decrypt_path_data(path=path_data)
+
+        # Find the desired data in the path.
+        for bucket in path.values():
+            for data in bucket:
+                if data.key == key:
+                    self._local.add(node=data, parent_key=parent_key, child_index=child_index)
+                    found = True
+                else:
+                    self._stash.append(data)
+
+        # Check if stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
+        # If the desired data is not found in the path, check the stash.
+        if not found:
+            stash_idx = self._find_in_stash(key)
+            if 0 <= stash_idx < to_index:
+                self._local.add(node=self._stash[stash_idx], parent_key=parent_key, child_index=child_index)
+                del self._stash[stash_idx]
+                return
+
+            raise KeyError(f"The search key {key} is not found.")
+
+    def _flush_local_to_stash(self) -> None:
+        """Move all nodes from local to stash and clear local."""
+        self._stash += self._local.to_list()
+        self._local.clear()
+
     def _find_leaf(self, key: Any) -> Tuple[int, int]:
         """Find the leaf containing the desired key, return the leaf node's old path and the number of visited nodes.
 
@@ -299,10 +471,11 @@ class BPlusOmap(ObliviousSearchTree):
             raise MemoryError("The local storage was not emptied before this operation.")
 
         # Get the node information from oram storage.
-        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
+        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1], parent_key=None,
+                                                  child_index=None)
 
         # Get the node from local.
-        node = self._local[0]
+        node = self._local.get_root()
 
         # Save node leaf, update it and root.
         old_leaf = node.leaf
@@ -313,56 +486,33 @@ class BPlusOmap(ObliviousSearchTree):
         num_retrieved_node = 1
 
         # While we do not reach a leaf (whose number of children keys and number of children values are the same).
-        while len(node.value.keys) != len(node.value.values):
+        while not self._local.is_leaf_node(node):
             # Sample a new leaf for updating the current storage.
             new_leaf = self._get_new_leaf()
 
+            # Find child index.
+            child_index = len(node.value.keys)
             for index, each_key in enumerate(node.value.keys):
-                # If key equals, it is on the right.
                 if key == each_key:
-                    # Get the old child leaf.
-                    child_key, child_leaf = node.value.values[index + 1]
-                    # Update the current stored value.
-                    node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
-                    # Add the node to stash and perform eviction before grabbing the next path.
-                    self._stash.append(node)
-                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
-                    self._client.execute()
-                    # Move the next node to local.
-                    self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
+                    child_index = index + 1
                     break
-
-                # If the key is smaller, it is on the left.
                 elif key < each_key:
-                    # Get the old child leaf.
-                    child_key, child_leaf = node.value.values[index]
-                    # Update the current stored value.
-                    node.value.values[index] = (node.value.values[index][0], new_leaf)
-                    # Add the node to stash and perform eviction before grabbing the next path.
-                    self._stash.append(node)
-                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
-                    self._client.execute()
-                    # Move the next node to local.
-                    self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
+                    child_index = index
                     break
 
-                # If we reached the end, it is on the right.
-                elif index + 1 == len(node.value.keys):
-                    # Get the old child leaf.
-                    child_key, child_leaf = node.value.values[index + 1]
-                    # Update the current stored value.
-                    node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
-                    # Add the node to stash and perform eviction before grabbing the next path.
-                    self._stash.append(node)
-                    self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
-                    self._client.execute()
-                    # Move the next node to local.
-                    self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf)
-                    break
+            # Get old child info.
+            child_key, child_leaf = node.value.values[child_index]
+            # Update the current stored value.
+            node.value.values[child_index] = (child_key, new_leaf)
+            # Add the node to stash and perform eviction before grabbing the next path.
+            self._stash.append(self._local.remove(node.key))
+            self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
+            self._client.execute()
+            # Move the next node to local.
+            self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
 
-            # Delete last node, store new node leaf and update its leaf.
-            del self._local[0]
-            node = self._local[0]
+            # Get new node from local and update.
+            node = self._local.get_root()
             old_leaf = node.leaf
             node.leaf = new_leaf
 
@@ -381,45 +531,39 @@ class BPlusOmap(ObliviousSearchTree):
             raise MemoryError("The local storage was not emptied before this operation.")
 
         # Get the node information from oram storage.
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None, child_index=None)
 
         # Get the node from local.
-        node = self._local[0]
+        node = self._local.get_root()
 
         # Update node leaf and root.
         node.leaf = self._get_new_leaf()
         self.root = (node.key, node.leaf)
 
         # While we do not reach a leaf (whose number of children keys and number of children values are the same).
-        while len(node.value.keys) != len(node.value.values):
+        while not self._local.is_leaf_node(node):
             # Sample a new leaf for updating the current storage.
             new_leaf = self._get_new_leaf()
 
+            # Find child index.
+            child_index = len(node.value.keys)
             for index, each_key in enumerate(node.value.keys):
-                # If key equals, it is on the right.
                 if key == each_key:
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
-                    # Update the current stored value.
-                    node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
+                    child_index = index + 1
                     break
-                # If the key is smaller, it is on the left.
                 elif key < each_key:
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index][0], leaf=node.value.values[index][1])
-                    # Update the current stored value.
-                    node.value.values[index] = (node.value.values[index][0], new_leaf)
-                    break
-                # If we reached the end, it is on the right.
-                elif index + 1 == len(node.value.keys):
-                    # Move the next node to local.
-                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
-                    # Update the current stored value.
-                    node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
+                    child_index = index
                     break
 
+            # Get child info.
+            child_key, child_leaf = node.value.values[child_index]
+            # Move the next node to local with parent tracking.
+            self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=node.key, child_index=child_index)
+            # Update the current stored value with new leaf.
+            node.value.values[child_index] = (child_key, new_leaf)
+
             # Update the node and its leaf.
-            node = self._local[-1]
+            node = self._local.get_leaf()
             node.leaf = new_leaf
 
     def _split_node(self, node: Data) -> Tuple[int, int]:
@@ -434,7 +578,7 @@ class BPlusOmap(ObliviousSearchTree):
         right_node = self._get_bplus_data()
 
         # Depending on whether the child node is a leaf node, we break it differently.
-        if len(node.value.keys) == len(node.value.values):
+        if self._local.is_leaf_node(node):
             # New leaf gets half of the old leaf.
             right_node.value.keys = node.value.keys[self._mid:]
             right_node.value.values = node.value.values[self._mid:]
@@ -513,20 +657,26 @@ class BPlusOmap(ObliviousSearchTree):
 
     def _perform_insertion(self):
         """Perform the insertion to local nodes."""
-        # We start from the last node.
-        index = len(self._local) - 1
+        # We start from the last node (leaf).
+        path = self._local.path
+        index = len(path) - 1
 
-        # Iterate through the leaves.
+        # Iterate through the path from leaf to root.
         while index >= 0:
-            if len(self._local[index].value.keys) >= self._order:
+            node_key = path[index]
+            node = self._local.get(node_key)
+
+            if len(node.value.keys) >= self._order:
                 # When insertion is needed, we first locate the parent.
                 if index > 0:
+                    parent_key = path[index - 1]
+                    parent_node = self._local.get(parent_key)
                     # Perform the insertion.
-                    self._insert_in_parent(child_node=self._local[index], parent_node=self._local[index - 1])
+                    self._insert_in_parent(child_node=node, parent_node=parent_node)
                     index -= 1
                 # Or we need a new parent node.
                 else:
-                    self._create_parent(child_node=self._local[index])
+                    self._create_parent(child_node=node)
                     break
 
             # We may reach to a point earlier than the root to stop splitting.
@@ -563,7 +713,7 @@ class BPlusOmap(ObliviousSearchTree):
         self._find_leaf_to_local(key=key)
 
         # Set the last node in local as leaf.
-        leaf = self._local[-1]
+        leaf = self._local.get_leaf()
 
         # Find the proper place to insert the leaf.
         for index, each_key in enumerate(leaf.value.keys):
@@ -586,7 +736,7 @@ class BPlusOmap(ObliviousSearchTree):
         self._flush_local_to_stash()
 
         # Perform the desired number of dummy evictions.
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -614,7 +764,7 @@ class BPlusOmap(ObliviousSearchTree):
         self._find_leaf_to_local(key=key)
 
         # Set the last node in local as leaf and set the return search value to None.
-        leaf = self._local[-1]
+        leaf = self._local.get_leaf()
         search_value = None
 
         # Search the desired key and update its value as needed.
@@ -629,7 +779,7 @@ class BPlusOmap(ObliviousSearchTree):
         # Save the number of retrieved nodes, move the local nodes to stash and perform dummy evictions.
         num_retrieved_nodes = len(self._local)
         self._flush_local_to_stash()
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved_nodes)
 
         return search_value
 
@@ -660,7 +810,7 @@ class BPlusOmap(ObliviousSearchTree):
         old_leaf, num_retrieved_nodes = self._find_leaf(key=key)
 
         # Set the last node in local as leaf and set the return search value to None.
-        leaf = self._local[-1]
+        leaf = self._local.get_leaf()
         search_value = None
 
         # Search the desired key and update its value as needed.
@@ -684,10 +834,6 @@ class BPlusOmap(ObliviousSearchTree):
 
         return search_value
 
-    def _is_leaf_node(self, node: Data) -> bool:
-        """Check if a node is a leaf node (keys and values have same length)."""
-        return len(node.value.keys) == len(node.value.values)
-
     def _find_path_for_delete(self, key: Any) -> Tuple[Dict[int, Data], List[int]]:
         """
         Find the path from root to leaf for the given key, returning nodes by level.
@@ -701,8 +847,8 @@ class BPlusOmap(ObliviousSearchTree):
         level = 0
 
         # Get the root node.
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
-        node = self._local.pop()  # Remove from local, store in our dict
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None, child_index=None)
+        node = self._local.remove(self._local.root_key)  # Remove from local, store in our dict
 
         # Update node leaf and root.
         node.leaf = self._get_new_leaf()
@@ -710,7 +856,7 @@ class BPlusOmap(ObliviousSearchTree):
         path_nodes[level] = node
 
         # Traverse down to leaf.
-        while not self._is_leaf_node(node):
+        while not (len(node.value.keys) == len(node.value.values)):
             # Sample a new leaf for the child.
             new_leaf = self._get_new_leaf()
 
@@ -729,8 +875,8 @@ class BPlusOmap(ObliviousSearchTree):
 
             # Move the next node to local.
             child_key, child_leaf = node.value.values[child_index]
-            self._move_node_to_local(key=child_key, leaf=child_leaf)
-            child_node = self._local.pop()  # Remove from local, store in our dict
+            self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
+            child_node = self._local.remove(self._local.root_key)  # Remove from local, store in our dict
 
             # Update the parent's pointer to child with new leaf.
             node.value.values[child_index] = (child_key, new_leaf)
@@ -755,8 +901,8 @@ class BPlusOmap(ObliviousSearchTree):
         new_leaf = self._get_new_leaf()
 
         # Move sibling to local then pop it out.
-        self._move_node_to_local(key=sibling_key, leaf=sibling_leaf)
-        sibling = self._local.pop()
+        self._move_node_to_local(key=sibling_key, leaf=sibling_leaf, parent_key=None, child_index=None)
+        sibling = self._local.remove(self._local.root_key)
 
         # Update the sibling's leaf.
         sibling.leaf = new_leaf
@@ -847,7 +993,7 @@ class BPlusOmap(ObliviousSearchTree):
                 left_sib = self._fetch_sibling_for_delete(parent, child_index - 1)
                 fetched_siblings.append(left_sib)
                 if len(left_sib.value.keys) > min_keys:
-                    if self._is_leaf_node(node):
+                    if len(node.value.keys) == len(node.value.values):
                         # Borrow from left for leaf.
                         node.value.keys.insert(0, left_sib.value.keys.pop())
                         node.value.values.insert(0, left_sib.value.values.pop())
@@ -864,7 +1010,7 @@ class BPlusOmap(ObliviousSearchTree):
                 right_sib = self._fetch_sibling_for_delete(parent, child_index + 1)
                 fetched_siblings.append(right_sib)
                 if len(right_sib.value.keys) > min_keys:
-                    if self._is_leaf_node(node):
+                    if len(node.value.keys) == len(node.value.values):
                         # Borrow from right for leaf.
                         node.value.keys.append(right_sib.value.keys.pop(0))
                         node.value.values.append(right_sib.value.values.pop(0))
@@ -878,7 +1024,7 @@ class BPlusOmap(ObliviousSearchTree):
 
             # Cannot borrow, must merge. Prefer left sibling.
             if has_left and left_sib is not None:
-                if self._is_leaf_node(node):
+                if len(node.value.keys) == len(node.value.values):
                     # Merge leaf into left sibling.
                     left_sib.value.keys.extend(node.value.keys)
                     left_sib.value.values.extend(node.value.values)
@@ -896,7 +1042,7 @@ class BPlusOmap(ObliviousSearchTree):
                 del path_nodes[node_level]
 
             elif has_right and right_sib is not None:
-                if self._is_leaf_node(node):
+                if len(node.value.keys) == len(node.value.values):
                     # Merge right sibling into node.
                     node.value.keys.extend(right_sib.value.keys)
                     node.value.values.extend(right_sib.value.values)
@@ -920,7 +1066,7 @@ class BPlusOmap(ObliviousSearchTree):
         # Check if root needs replacement.
         root_node = path_nodes.get(0)
         if root_node is not None and len(root_node.value.keys) == 0:
-            if self._is_leaf_node(root_node):
+            if len(root_node.value.keys) == len(root_node.value.values):
                 self.root = None
             else:
                 # Root has no keys but has one child - promote child to root.
@@ -944,6 +1090,6 @@ class BPlusOmap(ObliviousSearchTree):
             total_nodes += 1
 
         # Perform dummy operations.
-        self._perform_dummy_operation(num_round=3 * self._max_height - total_nodes)
+        self._perform_dummy_operation(num_round=2 * self._max_height - total_nodes)
 
         return deleted_value
