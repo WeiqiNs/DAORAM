@@ -546,7 +546,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             else:
                 break
 
-    def insert(self, key: Any, value: Any) -> None:
+    def insert(self, key: Any, value: Any = None) -> None:
         """
         Given key-value pair, insert the pair to the tree.
 
@@ -555,6 +555,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         if key is None:
             self._perform_dummy_operation(num_round=3 * self._max_height)
+            return
 
         # If the current root is empty, we simply set root as this new block.
         if self.root is None:
@@ -573,16 +574,21 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Set the last node in local as leaf.
         leaf = self._local[-1]
 
-        # Find the proper place to insert the leaf.
-        for index, each_key in enumerate(leaf.value.keys):
-            if key < each_key:
-                leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
-                leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
-                break
-            elif index + 1 == len(leaf.value.keys):
-                leaf.value.keys.append(key)
-                leaf.value.values.append(value)
-                break
+        # Handle empty leaf node (can happen after delete operations)
+        if len(leaf.value.keys) == 0:
+            leaf.value.keys = [key]
+            leaf.value.values = [value]
+        else:
+            # Find the proper place to insert the leaf.
+            for index, each_key in enumerate(leaf.value.keys):
+                if key < each_key:
+                    leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
+                    leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
+                    break
+                elif index + 1 == len(leaf.value.keys):
+                    leaf.value.keys.append(key)
+                    leaf.value.values.append(value)
+                    break
 
         # Save the length of the local.
         num_retrieved_nodes = len(self._local)
@@ -608,10 +614,12 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         if key is None:
             self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform search.")
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+            return None
 
         # Get all nodes we need to visit until finding the key.
         self._find_leaf_to_local(key=key)
@@ -786,6 +794,10 @@ class BPlusOdsOmap(TreeOdsOmap):
     def delete(self, key: Any) -> Any:
         """
         Delete a key-value pair from the tree.
+        
+        Note: This implementation removes the key-value pair from the leaf node
+        but does not perform full B+ tree rebalancing (merge/borrow). Empty leaf 
+        nodes may remain in the tree, which is handled by the insert method.
         
         :param key: The search key to delete.
         :return: The deleted value, or None if key not found.

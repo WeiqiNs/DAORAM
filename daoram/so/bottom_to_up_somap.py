@@ -1,8 +1,7 @@
 import os
 from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.dependency.crypto import Aes
-from daoram.omap.avl_ods_omap import AVLOdsOmap
-from daoram.omap.avl_ods_omap_opt import AVLOdsOmapOptimized
+from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 from daoram.oram.static_oram import StaticOram
 from typing import Any, Dict
 import pickle
@@ -59,8 +58,8 @@ class BottomUpSomap:
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         
         # OMAP caches
-        self._Ow: AVLOdsOmap = None  
-        self._Or: AVLOdsOmap = None  
+        self._Ow: BPlusOdsOmap = None  
+        self._Or: BPlusOdsOmap = None  
         
         # Queues
         self._Qw: list = []  
@@ -143,7 +142,8 @@ class BottomUpSomap:
         )
         
         # Initialize OMAP caches and queues
-        self._Ow = AVLOdsOmapOptimized(
+        self._Ow = BPlusOdsOmap(
+            order=5,
             num_data=self._cache_size,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
@@ -157,7 +157,8 @@ class BottomUpSomap:
             use_encryption=self._use_encryption
         )
         
-        self._Or = AVLOdsOmapOptimized(
+        self._Or = BPlusOdsOmap(
+            order=5,
             num_data=self._cache_size,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
