@@ -71,6 +71,9 @@ class TestAVLOdsOmap:
             assert omap.fast_search(key=i) == i
 
     def test_int_key_with_enc_file(self):
+        # Clean up any leftover test files.
+        remove_file()
+        
         # Create the omap instance.
         omap = AVLOdsOmap(
             num_data=NUM_DATA,
@@ -235,6 +238,9 @@ class TestAVLOdsOmapOptimized:
             assert omap.fast_search(key=i) == i
 
     def test_int_key_with_enc_file(self):
+        # Clean up any leftover test files.
+        remove_file()
+        
         # Create the omap instance.
         omap = AVLOdsOmapOptimized(
             num_data=NUM_DATA,
@@ -420,6 +426,9 @@ class TestBPlusOdsOmap:
             assert omap.fast_search(key=f"{i}") == f"{i}"
 
     def test_str_key_with_enc_file(self):
+        # Clean up any leftover test files.
+        remove_file()
+        
         # Create the omap instance.
         omap = BPlusOdsOmap(
             order=10,
@@ -747,6 +756,9 @@ class TestBPlusOdsOmapOptimized:
             assert omap.fast_search(key=f"{i}") == f"{i}"
 
     def test_str_key_with_enc_file(self):
+        # Clean up any leftover test files.
+        remove_file()
+        
         # Create the omap instance.
         omap = BPlusOdsOmapOptimized(
             order=10,

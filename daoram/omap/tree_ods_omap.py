@@ -145,6 +145,10 @@ class TreeOdsOmap(ABC):
         # Perform eviction and write the path back.
         self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
 
+        # After eviction, check for persistent overflow.
+        if len(self._stash) > self._stash_size:
+            raise MemoryError("Stash overflow!")
+
     def _move_node_to_local_without_eviction(self, key: Any, leaf: Any) -> None:
         """
         Given key and path, retrieve the path and move the data block corresponding to the leaf to local.
@@ -165,23 +169,21 @@ class TreeOdsOmap(ABC):
         for bucket in path:
             for data in bucket:
                 if data.key == key:
-                    # We append the data we want to stash.
+                    # We append the data we want to local.
                     self._local.append(data)
                     found = True
                 else:
-                    # Skip adding other real data to stash in non-evicting read to prevent overflow.
-                    pass
+                    # Other real data are directly added to the stash.
+                    self._stash.append(data)
 
-        # Check if stash overflows.
-        if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
-
-        # If the desired data is not found in the path, we check the stash (entire stash).
+        # If the desired data is not found in the path, we check the stash.
         if not found:
-            for i in range(len(self._stash)):
+            for i in range(to_index):
+                # If we find the data, we add it to local and remove it from the stash.
                 if self._stash[i].key == key:
                     self._local.append(self._stash[i])
                     del self._stash[i]
+                    # Terminate the function.
                     return
 
             # If also not found in the stash, raise an error.

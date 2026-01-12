@@ -19,7 +19,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                  name: str = "bplus",
                  filename: str = None,
                  bucket_size: int = 4,
-                 stash_scale: int = 7,
+                 stash_scale: int = 100,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
@@ -393,8 +393,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Get the node information from ORAM storage (non-evicting read for stability).
-        self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1])
+        # Get the node information from oram storage.
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1])
 
         # Get the node from local.
         node = self._local[0]
@@ -411,22 +411,22 @@ class BPlusOdsOmap(TreeOdsOmap):
             for index, each_key in enumerate(node.value.keys):
                 # If key equals, it is on the right.
                 if key == each_key:
-                    # Move the next node to local (non-evicting).
-                    self._move_node_to_local_without_eviction(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
+                    # Move the next node to local.
+                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
                     # Update the current stored value.
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     break
                 # If the key is smaller, it is on the left.
                 elif key < each_key:
-                    # Move the next node to local (non-evicting).
-                    self._move_node_to_local_without_eviction(key=node.value.values[index][0], leaf=node.value.values[index][1])
+                    # Move the next node to local.
+                    self._move_node_to_local(key=node.value.values[index][0], leaf=node.value.values[index][1])
                     # Update the current stored value.
                     node.value.values[index] = (node.value.values[index][0], new_leaf)
                     break
                 # If we reached the end, it is on the right.
                 elif index + 1 == len(node.value.keys):
-                    # Move the next node to local (non-evicting).
-                    self._move_node_to_local_without_eviction(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
+                    # Move the next node to local.
+                    self._move_node_to_local(key=node.value.values[index + 1][0], leaf=node.value.values[index + 1][1])
                     # Update the current stored value.
                     node.value.values[index + 1] = (node.value.values[index + 1][0], new_leaf)
                     break
@@ -553,6 +553,9 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param key: The search key of interest.
         :param value: The value to insert.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+
         # If the current root is empty, we simply set root as this new block.
         if self.root is None:
             # Create a new bplus data block.
@@ -603,6 +606,9 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param value: The updated value.
         :return: The (old) value corresponding to the search key.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=3 * self._max_height)
+
         # If the current root is empty, we can't perform search.
         if self.root is None:
             raise ValueError(f"It seems the tree is empty and can't perform search.")
@@ -641,6 +647,9 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param value: The value to update.
         :return: The (old) value corresponding to the search key.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=self._max_height)
+
         # If the current root is empty, we can't perform search.
         if self.root is None:
             raise ValueError(f"It seems the tree is empty and can't perform search.")

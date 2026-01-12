@@ -59,7 +59,7 @@ class TestTopDownSomap:
         assert somap._cache_size == 10
         assert somap._data_size == 20
         assert somap._use_encryption is False
-        assert somap._extended_size == 2 * MIN_NUM_DATA
+        assert somap._extended_size == 3 * MIN_NUM_DATA
 
     def test_setup_empty(self):
         """Test setup with no initial data"""
@@ -147,8 +147,8 @@ class TestTopDownSomap:
         )
         somap.setup()
         
-        # Extended size should be 2 * num_data
-        assert len(somap._main_storage) == 2 * MIN_NUM_DATA
+        # Extended size should be 3 * num_data
+        assert len(somap._main_storage) == 3 * MIN_NUM_DATA
 
     def test_tree_initialization(self):
         """Test that binary tree is properly initialized"""

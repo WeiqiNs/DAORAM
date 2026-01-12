@@ -14,7 +14,7 @@ class BPlusOdsOmapOptimized(BPlusOdsOmap):
                  name: str = "bplus_opt",
                  filename: str = None,
                  bucket_size: int = 4,
-                 stash_scale: int = 7,
+                 stash_scale: int = 100,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True):
