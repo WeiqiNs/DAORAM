@@ -1490,6 +1490,52 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         return search_value1, search_value2
 
+    @staticmethod
+    def parallel_search_with_delete(omap1: 'BPlusOdsOmap', search_key1: Any, delete_key1: Any,
+                                     omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any) -> Tuple[Any, Any, Any]:
+        """
+        Perform search on two OMAPs in parallel, while also executing pending deletions.
+        
+        This method combines:
+        1. Search for search_key1 in omap1 and search_key2 in omap2
+        2. Delete delete_key1 from omap1 (if not None) 
+        3. Delete delete_key2 from omap2 (if not None)
+        
+        All operations share the same h rounds of WAN interaction.
+        
+        :param omap1: First OMAP (O_W)
+        :param search_key1: Key to search in omap1
+        :param delete_key1: Key to delete from omap1 (None for dummy deletion)
+        :param omap2: Second OMAP (O_R)  
+        :param search_key2: Key to search in omap2
+        :param delete_key2: Key to delete from omap2 (None for dummy deletion)
+        :return: Tuple of (search_value1, search_value2, deleted_value_from_omap1)
+        """
+        # For now, implement as sequential operations
+        # A full optimization would interleave all 4 operations in the same h rounds
+        
+        # First, do the parallel search
+        search_value1, search_value2 = BPlusOdsOmap.parallel_search(
+            omap1=omap1, key1=search_key1,
+            omap2=omap2, key2=search_key2
+        )
+        
+        # Then do the deletions (these add more rounds, but maintain correctness)
+        deleted_value1 = None
+        if delete_key1 is not None:
+            deleted_value1 = omap1.delete(delete_key1)
+        else:
+            # Dummy deletion to maintain access pattern
+            omap1.delete(None)
+        
+        if delete_key2 is not None:
+            omap2.delete(delete_key2)
+        else:
+            # Dummy deletion to maintain access pattern
+            omap2.delete(None)
+        
+        return search_value1, search_value2, deleted_value1
+
     def fast_search(self, key: Any, value: Any = None) -> Any:
         """
         Given a search key, return its corresponding value.

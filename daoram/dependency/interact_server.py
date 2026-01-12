@@ -481,6 +481,12 @@ class InteractLocalServer(InteractServer):
             elif op['op'] == 'list_insert':
                 self.list_insert(label=op['label'], index=op.get('index', 0), value=op['value'])
                 results.append(None)
+            elif op['op'] == 'list_pop':
+                result = self.list_pop(label=op['label'], index=op.get('index', -1))
+                results.append(result)
+            elif op['op'] == 'list_get':
+                result = self.list_get(label=op['label'], index=op['index'])
+                results.append(result)
         return results
     
 class RemoteServer(InteractLocalServer):
