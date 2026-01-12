@@ -15,21 +15,23 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from daoram.dependency import BinaryTree, Blake2Prf, Data, Encryptor, Helper, InteractServer
+from daoram.oram import
 
 
 class GroupOmap:
     def __init__(self,
-                 num_groups: int,
+                 num_data: int,
                  key_size: int,
                  data_size: int,
+                 oram: TreeBaseOram,
                  client: InteractServer,
                  name: str = "group_omap",
                  bucket_size: int = 4,
-                 stash_scale: int = 100,
+                 stash_scale: int = 7,
                  encryptor: Encryptor = None):
         """Initialize the group-path OMAP.
 
-        :param num_groups: number of groups to partition keys into, should be a power of 2.
+        :param num_data: number of groups to partition keys into, should be a power of 2.
         :param key_size: bytes for random dummy keys (used for padding/encryption sizing).
         :param data_size: bytes for random dummy data used for padding/encryption sizing.
         :param client: InteractServer to talk to server.
@@ -38,8 +40,10 @@ class GroupOmap:
         :param stash_scale: scaling factor for stash size limit.
         :param encryptor: The encryptor to use for encryption.
         """
-        self._num_groups = num_groups
-        self._operation_num = num_groups
+        self._oram = oram
+        self._name = name
+        self._num_groups = num_data
+        self._operation_num = num_data
         self._num_data = 0
         self._stash_scale = stash_scale
         self._key_size = key_size
@@ -47,11 +51,10 @@ class GroupOmap:
         self._bucket_size = bucket_size
         self._client = client
         self._encryptor = encryptor
-        self._name = name
 
         # PRFs: one for group hashing, one for leaf mapping
-        self._group_prf = Blake2Prf()
         self._leaf_prf = Blake2Prf()
+        self._group_prf = Blake2Prf()
         self._stash: List[Data] = []
 
         # First compute how many are in the buckets, according to https://eprint.iacr.org/2021/1280.
