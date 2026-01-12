@@ -1049,6 +1049,168 @@ class BPlusOdsOmap(TreeOdsOmap):
 
         return search_value
 
+    def search_local(self, key: Any, value: Any = None) -> Any:
+        """
+        Search for a key in stash (after parallel_search has loaded the path).
+        
+        This method assumes the path from root to the target leaf is already
+        in the stash after a parallel_search operation. It traverses the stash
+        to find the key and optionally updates its value.
+        
+        Performs dummy ORAM rounds to maintain consistent access pattern.
+        
+        :param key: The search key of interest.
+        :param value: If provided, update the key's value to this.
+        :return: The (old) value corresponding to the search key, or None if not found.
+        """
+        if key is None:
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return None
+
+        if self.root is None:
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return None
+
+        search_value = None
+        
+        # Traverse stash from root to leaf to find the key
+        current_key = self.root[0]
+        current_node = None
+        
+        # Build local path by traversing through stash
+        for _ in range(self._max_height):
+            # Find current node in stash
+            for data in self._stash:
+                if data.key == current_key:
+                    current_node = data
+                    break
+            
+            if current_node is None:
+                break
+                
+            # Check if leaf node (keys.length == values.length)
+            if len(current_node.value.keys) == len(current_node.value.values):
+                # This is a leaf, search for key
+                for index, each_key in enumerate(current_node.value.keys):
+                    if key == each_key:
+                        search_value = current_node.value.values[index]
+                        if value is not None:
+                            current_node.value.values[index] = value
+                        break
+                break
+            else:
+                # Internal node, find next child
+                child_key = None
+                for index, each_key in enumerate(current_node.value.keys):
+                    if key == each_key:
+                        child_key, _ = current_node.value.values[index + 1]
+                        break
+                    elif key < each_key:
+                        child_key, _ = current_node.value.values[index]
+                        break
+                    elif index + 1 == len(current_node.value.keys):
+                        child_key, _ = current_node.value.values[index + 1]
+                        break
+                current_key = child_key
+                current_node = None
+        
+        # Perform dummy ORAM rounds to maintain access pattern
+        self._perform_dummy_rounds(num_rounds=self._max_height)
+        
+        return search_value
+
+    def insert_local(self, key: Any, value: Any = None) -> None:
+        """
+        Insert a key-value pair using path already in stash (after parallel_search).
+        
+        This method assumes the path from root to the target leaf is already
+        in the stash after a parallel_search operation. It finds the correct
+        leaf in the stash and performs the insertion locally.
+        
+        Performs dummy ORAM rounds to maintain consistent access pattern.
+        
+        :param key: The key to insert.
+        :param value: The value to insert.
+        """
+        if key is None:
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return
+
+        # If tree is empty, create root
+        if self.root is None:
+            data_block = self._get_bplus_data(keys=[key], values=[value])
+            self._stash.append(data_block)
+            self.root = (data_block.key, data_block.leaf)
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return
+
+        # Traverse stash from root to leaf, building _local path
+        self._local = []
+        current_key = self.root[0]
+        
+        for _ in range(self._max_height):
+            # Find current node in stash and move to local
+            found_idx = None
+            for i, data in enumerate(self._stash):
+                if data.key == current_key:
+                    found_idx = i
+                    break
+            
+            if found_idx is None:
+                break
+            
+            current_node = self._stash.pop(found_idx)
+            self._local.append(current_node)
+            
+            # Check if leaf node
+            if len(current_node.value.keys) == len(current_node.value.values):
+                # This is a leaf, stop traversing
+                break
+            else:
+                # Internal node, find next child
+                child_key = None
+                for index, each_key in enumerate(current_node.value.keys):
+                    if key == each_key:
+                        child_key, _ = current_node.value.values[index + 1]
+                        break
+                    elif key < each_key:
+                        child_key, _ = current_node.value.values[index]
+                        break
+                    elif index + 1 == len(current_node.value.keys):
+                        child_key, _ = current_node.value.values[index + 1]
+                        break
+                current_key = child_key
+
+        # Get the leaf node (last in local)
+        if self._local:
+            leaf = self._local[-1]
+            
+            # Handle empty leaf
+            if len(leaf.value.keys) == 0:
+                leaf.value.keys = [key]
+                leaf.value.values = [value]
+            else:
+                # Find proper place to insert
+                for index, each_key in enumerate(leaf.value.keys):
+                    if key < each_key:
+                        leaf.value.keys = leaf.value.keys[:index] + [key] + leaf.value.keys[index:]
+                        leaf.value.values = leaf.value.values[:index] + [value] + leaf.value.values[index:]
+                        break
+                    elif index + 1 == len(leaf.value.keys):
+                        leaf.value.keys.append(key)
+                        leaf.value.values.append(value)
+                        break
+            
+            # Perform insertion (splitting if needed)
+            self._perform_insertion()
+        
+        # Move local back to stash
+        self._stash += self._local
+        self._local = []
+        
+        # Perform dummy ORAM rounds to maintain access pattern
+        self._perform_dummy_rounds(num_rounds=self._max_height)
+
     @staticmethod
     def parallel_search(omap1: 'BPlusOdsOmap', key1: Any, 
                         omap2: 'BPlusOdsOmap', key2: Any,

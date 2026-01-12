@@ -64,6 +64,19 @@ class InteractServer(ABC):
         raise NotImplementedError
     
     def scale_down(self, label: str) -> bool:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def batch_query(self, operations: List[dict]) -> List[Any]:
+        """Execute multiple operations in a single round trip.
+        
+        Each operation is a dict with 'op' key and operation-specific parameters:
+        - {'op': 'write', 'label': str, 'leaf': int/list, 'data': Buckets}
+        - {'op': 'list_insert', 'label': str, 'index': int, 'value': Any}
+        
+        :param operations: List of operations to execute
+        :return: List of results (None for write operations)
+        """
         raise NotImplementedError   
     # @abstractmethod
     # def add_query(self, query: Query) -> None:
@@ -317,6 +330,13 @@ class InteractRemoteServer(InteractServer):
         self.__client.send(query)
         return self.__check_scale()
 
+    def batch_query(self, operations: List[dict]) -> List[Any]:
+        """Execute multiple operations in a single round trip."""
+        self.__check_client()
+        query = {"type": "batch", "operations": operations}
+        self.__client.send(query)
+        return self.__client.recv()
+
 class InteractLocalServer(InteractServer):
     def __init__(self):
         """Create an instance for the local server with storages."""
@@ -450,6 +470,18 @@ class InteractLocalServer(InteractServer):
         if label not in self.__storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
         return self.__storage[label].scale_down()
+
+    def batch_query(self, operations: List[dict]) -> List[Any]:
+        """Execute multiple operations in a single round trip."""
+        results = []
+        for op in operations:
+            if op['op'] == 'write':
+                self.write_query(label=op['label'], leaf=op['leaf'], data=op['data'])
+                results.append(None)
+            elif op['op'] == 'list_insert':
+                self.list_insert(label=op['label'], index=op.get('index', 0), value=op['value'])
+                results.append(None)
+        return results
     
 class RemoteServer(InteractLocalServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
@@ -524,6 +556,8 @@ class RemoteServer(InteractLocalServer):
                 self.list_update(label=query["label"], index=query["index"], value=query["value"])
         elif query["type"] == "la":
                 return self.list_all(label=query["label"])
+        elif query["type"] == "batch":
+                return self.batch_query(operations=query["operations"])
         else:
             raise ValueError("Invalid query type was given.")
         return SERVER_DEFAULT_RESPONSE

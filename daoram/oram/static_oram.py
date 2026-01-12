@@ -5,7 +5,7 @@ StaticOram overrides the __retrieve_stash and __retrieve_block methods to not ca
 """
 import os
 import random
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from daoram.dependency import Buckets
 from daoram.dependency.binary_tree import BinaryTree
@@ -202,6 +202,32 @@ class StaticOram(PathOram):
         self.client.write_query(label=self._name, leaf=leaf, data=path)
 
         return value
+
+    def operate_on_key_deferred(self, op: str, key: int, value: Any = None) -> Tuple[Any, int, Any]:
+        """
+        Perform operation on a given key but defer the write-back.
+        
+        Returns the value, leaf, and evicted path for later batch write.
+
+        :param op: An operation, which can be "r", "w" or "rw".
+        :param key: The key of the data block of interest.
+        :param value: If the operation is "w", this is the new value for data block.
+        :return: Tuple of (value, leaf, evicted_path)
+        """
+        # Find which path the data of interest lies on.
+        leaf = self._get_path_number(key)
+
+        # We read the path from the server.
+        path = self.client.read_query(label=self._name, leaf=leaf)
+
+        # Retrieve value from the path, or write to it.
+        result_value = self.__retrieve_block(op=op, key=key, path=path, value=value)
+
+        # Perform an eviction and get a new path.
+        evicted_path = self._evict_stash(leaf=leaf)
+
+        # Return value, leaf, and path for deferred write
+        return result_value, leaf, evicted_path
 
     def _get_path_number(self, key: int) -> int:
         """

@@ -208,40 +208,52 @@ class BottomUpSomap:
         # Case a: Key is in write cache O_W
         if value_ow is not None:
             old_value = value_ow
-            # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key = None)
-            # update (𝑘,𝑣) in O_W
+            # Dummy access D_S and update Q_W in one round
+            _, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=None)
+            # update (𝑘,𝑣) in O_W locally (path already in stash from parallel_search)
             if op == 'read':
-                self._Ow.search(key)
+                self._Ow.search_local(key)
             else:
-                self._Ow.search(key, value)
-                
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Dummy"))
+                self._Ow.search_local(key, value)
+            # Batch: write D_S path + insert Q_W in one round
+            encrypted_data = self._encrypt_data((key, "Dummy"))
+            self._client.batch_query([
+                {'op': 'write', 'label': self._Ds_name, 'leaf': leaf, 'data': evicted_path},
+                {'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': encrypted_data}
+            ])
                
         # Case b: Key is in read cache O_R
         elif value_or is not None:
             old_value,_ = value_or
-            # Dummy access: randomly access a path
-            self._Ds.operate_on_key(op="r", key = None)
-            #  insert (𝑘,𝑣) to O_W
+            # Dummy access D_S and update Q_W in one round
+            _, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=None)
+            # insert (𝑘,𝑣) to O_W locally (path already in stash from parallel_search)
             if op == 'read':
-                self._Ow.insert(key, old_value)  
+                self._Ow.insert_local(key, old_value)  
             else:
-                self._Ow.insert(key, value)
-            
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
+                self._Ow.insert_local(key, value)
+            # Batch: write D_S path + insert Q_W in one round
+            encrypted_data = self._encrypt_data((key, "Key"))
+            self._client.batch_query([
+                {'op': 'write', 'label': self._Ds_name, 'leaf': leaf, 'data': evicted_path},
+                {'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': encrypted_data}
+            ])
               
         # Case c: Key is not in cache
         else:
-            # Retrieve from static ORAM tree using path number
-            old_value = self._Ds.operate_on_key(op="r", key=key)
-            #  insert (𝑘,𝑣) to O_W
+            # Retrieve from static ORAM tree and defer write-back
+            old_value, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=key)
+            # insert (𝑘,𝑣) to O_W locally (path already in stash from parallel_search)
             if op == 'read':
-                self._Ow.insert(key, old_value)  
+                self._Ow.insert_local(key, old_value)  
             else:
-                self._Ow.insert(key, value)
-
-            self.operate_on_list(label=self._Qw_name, op="insert", data=(key, "Key"))
+                self._Ow.insert_local(key, value)
+            # Batch: write D_S path + insert Q_W in one round
+            encrypted_data = self._encrypt_data((key, "Key"))
+            self._client.batch_query([
+                {'op': 'write', 'label': self._Ds_name, 'leaf': leaf, 'data': evicted_path},
+                {'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': encrypted_data}
+            ])
 
         self._Qw_len += 1
                          
