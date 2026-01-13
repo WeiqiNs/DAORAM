@@ -468,6 +468,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         # Update the stash
         self._stash = temp_stash
+
+        self._update_peak_client_size()
         
         # Convert the path_dict back to the bucket format expected by the server
         # The keys in path_dict are tree indices, we need to convert them to the correct order
@@ -520,6 +522,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                     found = True
                 else:
                     self._stash.append(data)
+
+        self._update_peak_client_size()
         
         # If not found in path, check stash
         if not found:
@@ -531,6 +535,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                     break
             if not found:
                 raise KeyError(f"The search key {real_key} is not found.")
+
+        self._update_peak_client_size()
         
         # Evict to both paths simultaneously and write back using combined leaves
         evicted = self._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
@@ -644,6 +650,8 @@ class BPlusOdsOmap(TreeOdsOmap):
             for bucket in combined_path:
                 for data in bucket:
                     self._stash.append(data)
+
+            self._update_peak_client_size()
             
             # Evict to both paths simultaneously and write back using combined leaves
             evicted = self._evict_stash_mul_path(leaves=[leaf1, leaf2])
@@ -652,6 +660,8 @@ class BPlusOdsOmap(TreeOdsOmap):
             # Check stash overflow
             if len(self._stash) > self._stash_size:
                 raise MemoryError("Stash overflow!")
+
+            self._update_peak_client_size()
 
     def _find_leaf_to_local_with_siblings_optimized(self, key: Any) -> int:
         """
@@ -788,6 +798,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                         found_sibling = True
                     else:
                         self._stash.append(data)
+
+            self._update_peak_client_size()
             
             # If child not found in path, check stash
             if not found_child:
@@ -819,6 +831,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                 raise MemoryError("Stash overflow!")
             
             round_count += 1
+
+            self._update_peak_client_size()
             
             # Update the parent's reference to the child with new leaf
             node.value.values[child_index] = (child_key, new_leaf)
@@ -831,6 +845,8 @@ class BPlusOdsOmap(TreeOdsOmap):
             node = self._local[-1]
             node.leaf = new_leaf
         
+            self._update_peak_client_size()
+
         return round_count
 
     def _split_node(self, node: Data) -> Tuple[int, int]:
@@ -973,6 +989,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Get all nodes we need to visit until finding the key (optimized version).
         rounds_used = self._find_leaf_to_local_optimized(key=key)
 
+        self._update_peak_client_size()
+
         # Set the last node in local as leaf.
         leaf = self._local[-1]
 
@@ -994,6 +1012,8 @@ class BPlusOdsOmap(TreeOdsOmap):
 
         # Perform the insertion to local nodes (splitting if needed).
         self._perform_insertion()
+
+        self._update_peak_client_size()
 
         # Append local data to stash and clear local.
         self._stash += self._local
@@ -1027,6 +1047,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Get all nodes we need to visit until finding the key (optimized version).
         rounds_used = self._find_leaf_to_local_optimized(key=key)
 
+        self._update_peak_client_size()
+
         # Set the last node in local as leaf and set the return search value to None.
         leaf = self._local[-1]
         search_value = None
@@ -1043,6 +1065,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Move the local nodes to stash.
         self._stash += self._local
         self._local = []
+
+        self._update_peak_client_size()
         
         # Perform dummy rounds to pad to max_height.
         self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
@@ -1116,6 +1140,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         # Perform dummy ORAM rounds to maintain access pattern
         self._perform_dummy_rounds(num_rounds=self._max_height)
+
+        self._update_peak_client_size()
         
         return search_value
 
@@ -1210,6 +1236,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         # Perform dummy ORAM rounds to maintain access pattern
         self._perform_dummy_rounds(num_rounds=self._max_height)
+
+        self._update_peak_client_size()
 
     @staticmethod
     def parallel_search(omap1: 'BPlusOdsOmap', key1: Any, 
@@ -1360,6 +1388,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                     for bucket in path:
                         for data in bucket:
                             omap._stash.append(data)
+
+                omap._update_peak_client_size()
                 
                 # Evict and prepare write-back
                 evicted = omap._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
@@ -1370,6 +1400,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                 # Check stash overflow
                 if len(omap._stash) > omap._stash_size:
                     raise MemoryError(f"Stash overflow in omap{omap_idx}!")
+
+                omap._update_peak_client_size()
             
             # Batch write back to both OMAPs
             client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
@@ -1734,6 +1766,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                         for data in bucket:
                             if not any(d.key == data.key for d in omap._stash):
                                 omap._stash.append(data)
+
+                omap._update_peak_client_size()
                 
                 # Evict and prepare write-back
                 evicted = omap._evict_stash_mul_path(leaves=[real_leaf, aux_leaf])
@@ -1743,6 +1777,8 @@ class BPlusOdsOmap(TreeOdsOmap):
                 
                 if len(omap._stash) > omap._stash_size:
                     raise MemoryError("Stash overflow!")
+
+                omap._update_peak_client_size()
             
             # Batch write all paths
             client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
@@ -1793,6 +1829,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 child_index = index + 1
                                 break
                         state.pending_child_index = child_index
+                        state.omap._update_peak_client_size()
         
         # Extract results
         search_value1 = None

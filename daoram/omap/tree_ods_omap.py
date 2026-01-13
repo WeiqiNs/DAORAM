@@ -68,6 +68,9 @@ class TreeOdsOmap(ABC):
         self._local: list = []
         self._stash: list = []
 
+        # 客户端占用峰值统计（块数）
+        self._peak_client_size: int = 0
+
         # Use encryption if required.
         self._aes_key: bytes = aes_key
         self._num_key_bytes: int = num_key_bytes
@@ -75,6 +78,19 @@ class TreeOdsOmap(ABC):
 
         # Initialize the client connection.
         self._client: InteractServer = client
+
+    def reset_peak_client_size(self) -> None:
+        """Reset recorded client peak usage."""
+        self._peak_client_size = 0
+
+    def _update_peak_client_size(self) -> None:
+        """Update client peak usage with current local buffers and stash."""
+        stash_len = len(self._stash)
+        local_len = len(self._local)
+        sibling_len = len(getattr(self, "_sibling_cache", []))
+        total = stash_len + local_len + sibling_len
+        if total > self._peak_client_size:
+            self._peak_client_size = total
 
     @property
     def root(self) -> ROOT:
@@ -142,8 +158,12 @@ class TreeOdsOmap(ABC):
         # Move the node to local without doing eviction.
         self._move_node_to_local_without_eviction(key=key, leaf=leaf)
 
+        self._update_peak_client_size()
+
         # Perform eviction and write the path back.
         self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
+
+        self._update_peak_client_size()
 
         # After eviction, check for persistent overflow.
         if len(self._stash) > self._stash_size:
@@ -184,10 +204,13 @@ class TreeOdsOmap(ABC):
                     self._local.append(self._stash[i])
                     del self._stash[i]
                     # Terminate the function.
+                    self._update_peak_client_size()
                     return
 
             # If also not found in the stash, raise an error.
             raise KeyError(f"The search key {key} is not found.")
+
+        self._update_peak_client_size()
 
     def _evict_stash(self, leaf: int) -> Buckets:
         """
@@ -215,6 +238,8 @@ class TreeOdsOmap(ABC):
         # Update the stash.
         self._stash = temp_stash
 
+        self._update_peak_client_size()
+
         # Note that we return the path in the reversed order because we copy the path from bottom up.
         return self._encrypt_buckets(buckets=path[::-1])
 
@@ -237,8 +262,12 @@ class TreeOdsOmap(ABC):
                 for data in bucket:
                     self._stash.append(data)
 
+            self._update_peak_client_size()
+
             # Evict the stash and write the path back to the ODS storage.
             self._client.write_query(label=self._name, leaf=leaf, data=self._evict_stash(leaf=leaf))
+
+            self._update_peak_client_size()
 
             # After eviction, check for persistent overflow.
             if len(self._stash) > self._stash_size:

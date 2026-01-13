@@ -99,6 +99,9 @@ class BottomUpSomapFixedCache:
         # Pending Q_R inserts (enqueue in next batch round with D_S/Q_W ops)
         self._pending_qr_inserts: list = []
 
+        # 客户端占用统计（块数）
+        self._peak_client_size = 0
+
     @property
     def client(self) -> InteractServer:
         """Return the client object."""
@@ -129,6 +132,21 @@ class BottomUpSomapFixedCache:
         except Exception as e:
             print(f"Error decrypting data: {e}")
             return encrypted_data
+
+    def reset_peak_client_size(self) -> None:
+        self._peak_client_size = 0
+
+    def _update_peak_client_size(self) -> None:
+        ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
+        or_stash = len(self._Or._stash) if self._Or is not None else 0
+        ds_stash = len(getattr(self._Ds, "_stash", [])) if self._Ds is not None else 0
+        q_sizes = self._Qw_len + self._Qr_len
+        ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
+        or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
+        pending_qr = len(self._pending_qr_inserts)
+        total = ow_stash + or_stash + ds_stash + q_sizes + ow_local + or_local + pending_qr
+        if total > self._peak_client_size:
+            self._peak_client_size = total
     
     def setup(self, data_map: Dict[int, Any] = None) -> None:
         """
@@ -217,6 +235,8 @@ class BottomUpSomapFixedCache:
         """
         old_value = None
 
+        self._update_peak_client_size()
+
         # 先处理上一次删除留下的待写回（O_R 插入 + D_S 写回），使用完整 h 轮保证路径正确
         if self._pending_insert_ds is not None:
             ds_key, ds_value = self._pending_insert_ds
@@ -226,6 +246,8 @@ class BottomUpSomapFixedCache:
             or_key, or_value, or_ts, _ = self._pending_insert_or
             self._Or.insert(or_key, (or_value, or_ts))
             self._pending_insert_or = None
+
+        self._update_peak_client_size()
 
         # Get pending delete keys for parallel execution
         delete_key_ow = None
@@ -248,6 +270,8 @@ class BottomUpSomapFixedCache:
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
             omap2=self._Or, search_key2=key, delete_key2=delete_key_or
         )
+
+        self._update_peak_client_size()
         
         # Handle the deleted O_W value: move to O_R and update D_S
         if self._pending_delete_ow is not None:
@@ -299,6 +323,8 @@ class BottomUpSomapFixedCache:
             qw_marker = "Key"
 
         self._Qw_len += 1
+
+        self._update_peak_client_size()
         
         # Build batch operations list
         batch_ops = [
@@ -334,6 +360,8 @@ class BottomUpSomapFixedCache:
         
         # Process results
         result_idx = 2 + pending_qr_count  # Skip write, Q_W insert, and pending Q_R inserts
+
+        self._update_peak_client_size()
         
         # Handle Q_W pop result
         if self._Qw_len == self._cache_size and len(batch_ops) > 2:
@@ -363,6 +391,8 @@ class BottomUpSomapFixedCache:
 
         # Update timestamp
         self._timestamp += 1
+
+        self._update_peak_client_size()
         
         return old_value
     
