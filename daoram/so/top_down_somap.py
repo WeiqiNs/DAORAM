@@ -346,13 +346,12 @@ class TopDownSomap:
         :return: the old value of the key
         """
         key = group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=general_key, map_size=self._num_groups)
-        # The client retrieves (𝑘,𝑣𝑘) by checking if 𝑘 exists in O𝑊 and O𝑅:
-        value_old1 = self._Ow.search(key)
-        value_old2 = self._Or.search(key)
+        # 并行检索 O_W 与 O_R，复用 h 轮路径
+        value_old1, value_old2 = BPlusOdsOmap.parallel_search(
+            omap1=self._Ow, key1=key,
+            omap2=self._Or, key2=key
+        )
         uncached_key = self._Ob.find_available()
-
-        # this is used to simulate the cost
-        validate_key = self._Or.search(uncached_key)
 
         value_old = None
         # Case a: key in cache Ow
@@ -362,16 +361,20 @@ class TopDownSomap:
             # Skip if subset OMAP is full (find_available returns None)
             if uncached_key is not None:
                 self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(uncached_key))
+            else:
+                self.operate_on_list(label='DB', op='get', pos=self.PRP.encrypt(self._num_data + self._dummy_index))
             # If 𝑘 ∈ O𝑊, update (𝑘,𝑣𝑘) in O𝑊 and push 𝑛 +𝑑 into 𝑄w
             # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                # Key exists in O_W; update its seed counts in-place
-                self._Ow.search(key, value=[value_old[0]+1, value_old[1]])
+                # 已有路径在 stash，用 search_local 原地更新
+                self._Ow.search_local(key, [value_old[0]+1, value_old[1]])
             else:
-                # Key exists in O_W; update write count in-place
-                self._Ow.search(key, value=[value_old[0], value_old[1]+1])
+                self._Ow.search_local(key, [value_old[0], value_old[1]+1])
             if uncached_key is not None:
                 self.operate_on_list(label=self._Qw_name, op='insert', data=(uncached_key, "Key"))
+            else:
+                self.operate_on_list(label=self._Qw_name, op='insert', data=(self._num_data+self._dummy_index, "Dummy"))
+                self._dummy_index = (self._dummy_index + 1) % self._num_data
 
 
             # Case b: key in cache Or
@@ -389,9 +392,10 @@ class TopDownSomap:
             # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
+                # 已有路径在 stash，用 insert_local 写入
+                self._Ow.insert_local(key, [value_old[0]+1, value_old[1]])  # a+1 for search
             else:
-                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
+                self._Ow.insert_local(key, [value_old[0], value_old[1]+1])  # b+1 for insert
             self.operate_on_list(self._Qw_name, 'insert', data=(key, "Key"))
             # execute𝑑 = 𝑑 + 1 mod n
             self._dummy_index = (self._dummy_index + 1) % self._num_data
@@ -405,9 +409,10 @@ class TopDownSomap:
             # Otherwise, insert (𝑘,𝑣) to Ow and push 𝑘 into 𝑄w.
             # seed = [a, b]: a = read_count (search), b = write_count (insert)
             if op == 'search':
-                self._Ow.insert(key, [value_old[0]+1, value_old[1]])  # a+1 for search
+                # 未命中缓存，DB 读完后将 key 插入 O_W（路径已在 stash）
+                self._Ow.insert_local(key, [value_old[0]+1, value_old[1]])  # a+1 for search
             else:
-                self._Ow.insert(key, [value_old[0], value_old[1]+1])  # b+1 for insert
+                self._Ow.insert_local(key, [value_old[0], value_old[1]+1])  # b+1 for insert
             self.operate_on_list(self._Qw_name, 'insert', data=(key, "Key"))
 
         if op == 'search':
