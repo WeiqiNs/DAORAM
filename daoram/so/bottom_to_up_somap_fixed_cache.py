@@ -202,6 +202,8 @@ class BottomUpSomapFixedCache:
             num_key_bytes=self._num_key_bytes,
             use_encryption=self._use_encryption
         )
+
+        print(f"[DEBUG] O_W tree height: {self._Ow._max_height}, O_R tree height: {self._Or._max_height}")
         
         # Initialize OMAP storage
         st_ow = self._Ow._init_ods_storage([])
@@ -225,8 +227,8 @@ class BottomUpSomapFixedCache:
         Optimized flow:
         1. Execute parallel_search on O_W and O_R, with pending deletions from last query
         2. Process the access (update/insert based on where key was found)
-        3. Batch: D_S write + Q_W insert + Q_W pop + Q_R pop (if applicable)
-        4. Cache popped elements for next query's deletion
+        3. Single batch round: D_S write + Q_W insert + pending Q_R inserts + Q_W pop + Q_R pop
+        4. Cache popped elements for next query's deletion (no Q_R expiry check, always pop one when available)
         
         :param key: Key to access
         :param op: Operation type ('read' or 'write')
@@ -342,18 +344,17 @@ class BottomUpSomapFixedCache:
         self._pending_qr_inserts = []
         
         # If Q_W exceeds cache_size, pop the oldest element
+        qw_pop_added = False
         if self._Qw_len > self._cache_size:
             batch_ops.append({'op': 'list_pop', 'label': self._Qw_name, 'index': -1})
             self._Qw_len = self._cache_size
+            qw_pop_added = True
         
-        # If Q_R has expired element, pop it
-        qr_pop_needed = False
+        # Always pop one element from Q_R if available (no expiry check)
+        qr_pop_added = False
         if self._Qr_len > 0:
-            # Check if oldest element expired (we'll get it in batch)
-            # We need to get it first to check, so always pop if Qr has elements
-            # The actual expiry check happens after we get the element
-            batch_ops.append({'op': 'list_get', 'label': self._Qr_name, 'index': self._Qr_len - 1})
-            qr_pop_needed = True
+            batch_ops.append({'op': 'list_pop', 'label': self._Qr_name, 'index': -1})
+            qr_pop_added = True
         
         # Execute batch query
         results = self._client.batch_query(batch_ops)
@@ -364,7 +365,7 @@ class BottomUpSomapFixedCache:
         self._update_peak_client_size()
         
         # Handle Q_W pop result
-        if self._Qw_len == self._cache_size and len(batch_ops) > 2:
+        if qw_pop_added:
             encrypted_qw_pop = results[result_idx]
             if encrypted_qw_pop is not None:
                 self._pending_delete_ow = self._decrypt_data(encrypted_qw_pop)
@@ -374,17 +375,14 @@ class BottomUpSomapFixedCache:
                 self._pending_qr_inserts.append((qr_insert_key, self._timestamp, qr_insert_marker))
             result_idx += 1
         
-        # Handle Q_R get result for expiry check
-        if qr_pop_needed and result_idx < len(results):
+        # Handle Q_R pop result (always pop one when available)
+        if qr_pop_added and result_idx < len(results):
             encrypted_qr_item = results[result_idx]
             if encrypted_qr_item is not None:
                 qr_item = self._decrypt_data(encrypted_qr_item)
-                # Check if expired
-                if self._timestamp - qr_item[1] > self._cache_size:
-                    # Pop it
-                    self._client.list_pop(label=self._Qr_name, index=-1)
-                    self._Qr_len -= 1
-                    self._pending_delete_or = qr_item
+                self._pending_delete_or = qr_item
+            self._Qr_len -= 1
+            result_idx += 1
 
         # 新插入的 Q_R 元素现在才计入长度（已发送本轮 batch）
         self._Qr_len += pending_qr_count
