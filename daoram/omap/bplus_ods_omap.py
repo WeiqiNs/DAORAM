@@ -1542,11 +1542,13 @@ class BPlusOdsOmap(TreeOdsOmap):
         """
         Perform search and delete on two OMAPs in parallel, all in h rounds.
         
-        For each OMAP, we handle search and delete:
-        - If search_key == delete_key: single traversal handles both
-        - If different: traverse search path + do dummy for delete (simplified)
+        Each round reads 6 paths:
+        - omap1 search: target + dummy (2 paths)
+        - omap1 delete: target + sibling (2 paths) 
+        - omap2 search: target + dummy (2 paths)
+        - omap2 delete: target + sibling (2 paths)
         
-        This method performs 4 logical operations in h rounds by batching ORAM accesses.
+        Delete operations include full sibling handling for underflow (borrow/merge).
         
         :param omap1: First OMAP (O_W)
         :param search_key1: Key to search in omap1
@@ -1562,16 +1564,14 @@ class BPlusOdsOmap(TreeOdsOmap):
         client = omap1._client
         max_height = max(omap1._max_height, omap2._max_height)
         
-        # For simplicity, we handle each OMAP independently
-        # Each OMAP does: search traversal + delete traversal (or dummy)
-        # We batch read 4 paths per round: (omap1_search, omap1_delete, omap2_search, omap2_delete)
-        
         class TraversalState:
-            def __init__(self, omap, key, name):
+            def __init__(self, omap, key, name, needs_sibling=False):
                 self.omap = omap
                 self.key = key
                 self.name = name
+                self.needs_sibling = needs_sibling
                 self.local = []
+                self.sibling_cache = [] if needs_sibling else None
                 self.traversing = (key is not None) and (omap.root is not None)
                 if self.traversing:
                     self.node_key = omap.root[0]
@@ -1580,37 +1580,85 @@ class BPlusOdsOmap(TreeOdsOmap):
                     self.node_key = None
                     self.node_leaf = None
                 self.pending_child_index = None
+                # For sibling tracking
+                self.sibling_key = None
+                self.sibling_leaf = None
+                self.sibling_index = None
         
-        # 4 traversal states
-        search1 = TraversalState(omap1, search_key1, "search1")
-        delete1 = TraversalState(omap1, delete_key1, "delete1")
-        search2 = TraversalState(omap2, search_key2, "search2")
-        delete2 = TraversalState(omap2, delete_key2, "delete2")
+        # 4 traversal states: search needs dummy, delete needs sibling
+        search1 = TraversalState(omap1, search_key1, "search1", needs_sibling=False)
+        delete1 = TraversalState(omap1, delete_key1, "delete1", needs_sibling=True)
+        search2 = TraversalState(omap2, search_key2, "search2", needs_sibling=False)
+        delete2 = TraversalState(omap2, delete_key2, "delete2", needs_sibling=True)
         
         states = [search1, delete1, search2, delete2]
         
         # h rounds of parallel traversal
-        for _ in range(max_height):
+        for round_num in range(max_height):
             labels = []
             leaves = []
-            state_infos = []  # (state, real_leaf, dummy_leaf, target_key)
+            state_infos = []  # (state, real_leaf, aux_leaf, target_key, aux_key, is_sibling_aux)
             
             for state in states:
                 omap = state.omap
                 if state.traversing:
-                    dummy_leaf = omap._get_new_leaf()
-                    labels.append(omap._name)
-                    leaves.append([state.node_leaf, dummy_leaf])
-                    state_infos.append((state, state.node_leaf, dummy_leaf, state.node_key))
+                    if state.needs_sibling and len(state.local) > 0:
+                        # Delete traversal: get sibling
+                        parent = state.local[-1]
+                        if len(parent.value.keys) != len(parent.value.values):  # Internal node
+                            # Find child index for current key
+                            child_idx = None
+                            for idx, each_key in enumerate(parent.value.keys):
+                                if state.key == each_key:
+                                    child_idx = idx + 1
+                                    break
+                                elif state.key < each_key:
+                                    child_idx = idx
+                                    break
+                                elif idx + 1 == len(parent.value.keys):
+                                    child_idx = idx + 1
+                                    break
+                            
+                            # Find sibling
+                            if child_idx is not None and child_idx > 0:
+                                sib_key, sib_leaf = parent.value.values[child_idx - 1]
+                                state.sibling_key = sib_key
+                                state.sibling_leaf = sib_leaf
+                                state.sibling_index = child_idx - 1
+                            elif child_idx is not None and child_idx + 1 < len(parent.value.values):
+                                sib_key, sib_leaf = parent.value.values[child_idx + 1]
+                                state.sibling_key = sib_key
+                                state.sibling_leaf = sib_leaf
+                                state.sibling_index = child_idx + 1
+                            else:
+                                state.sibling_key = None
+                                state.sibling_leaf = omap._get_new_leaf()
+                                state.sibling_index = None
+                        else:
+                            state.sibling_key = None
+                            state.sibling_leaf = omap._get_new_leaf()
+                            state.sibling_index = None
+                        
+                        labels.append(omap._name)
+                        leaves.append([state.node_leaf, state.sibling_leaf])
+                        state_infos.append((state, state.node_leaf, state.sibling_leaf, 
+                                          state.node_key, state.sibling_key, True))
+                    else:
+                        # Search traversal or first round of delete: target + dummy
+                        dummy_leaf = omap._get_new_leaf()
+                        labels.append(omap._name)
+                        leaves.append([state.node_leaf, dummy_leaf])
+                        state_infos.append((state, state.node_leaf, dummy_leaf, 
+                                          state.node_key, None, False))
                 else:
                     # Dummy round
                     leaf_a = omap._get_new_leaf()
                     leaf_b = omap._get_new_leaf()
                     labels.append(omap._name)
                     leaves.append([leaf_a, leaf_b])
-                    state_infos.append((state, leaf_a, leaf_b, None))
+                    state_infos.append((state, leaf_a, leaf_b, None, None, False))
             
-            # Batch read all 4 paths
+            # Batch read all paths
             all_paths = client.read_mul_query(label=labels, leaf=leaves)
             
             # Process each path
@@ -1618,49 +1666,68 @@ class BPlusOdsOmap(TreeOdsOmap):
             write_labels = []
             write_leaves = []
             
-            for i, (state, real_leaf, dummy_leaf, target_key) in enumerate(state_infos):
+            for i, (state, real_leaf, aux_leaf, target_key, aux_key, is_sibling_aux) in enumerate(state_infos):
                 omap = state.omap
                 path = omap._decrypt_buckets(buckets=all_paths[i])
                 
                 if target_key is not None:
                     # Find and extract target node
-                    found = False
+                    found_target = False
+                    found_sibling = False
+                    sibling_new_leaf = omap._get_new_leaf() if aux_key else None
+                    if sibling_new_leaf is None and aux_key is not None:
+                        sibling_new_leaf = omap._get_new_leaf()
+                    
                     for bucket in path:
                         for data in bucket:
                             if data.key == target_key:
-                                # Check if already in local (could be from another traversal on same omap)
                                 already_in_local = any(d.key == target_key for d in state.local)
                                 if not already_in_local:
                                     state.local.append(data)
-                                    found = True
+                                    found_target = True
+                            elif is_sibling_aux and aux_key is not None and data.key == aux_key:
+                                if data.leaf is None:
+                                    data.leaf = sibling_new_leaf
+                                state.sibling_cache.append(data)
+                                found_sibling = True
                             else:
-                                # Check if already in stash
                                 if not any(d.key == data.key for d in omap._stash):
                                     omap._stash.append(data)
                     
-                    if not found:
-                        # Check stash
+                    # Check stash for target if not found
+                    if not found_target:
                         for j, data in enumerate(omap._stash):
                             if data.key == target_key:
                                 already_in_local = any(d.key == target_key for d in state.local)
                                 if not already_in_local:
                                     state.local.append(data)
                                     del omap._stash[j]
-                                found = True
+                                found_target = True
                                 break
-                        if not found:
-                            # Check if the key is in another state's local for the same omap
+                        if not found_target:
+                            # Check other states' local
                             for other_state in states:
                                 if other_state.omap is omap and other_state is not state:
                                     for d in other_state.local:
                                         if d.key == target_key:
                                             state.local.append(d)
-                                            found = True
+                                            found_target = True
                                             break
-                                if found:
+                                if found_target:
                                     break
-                        if not found:
+                        if not found_target:
                             raise KeyError(f"Key {target_key} not found in {state.name}.")
+                    
+                    # Check stash for sibling if not found
+                    if is_sibling_aux and aux_key is not None and not found_sibling:
+                        for j, data in enumerate(omap._stash):
+                            if data.key == aux_key:
+                                if data.leaf is None:
+                                    data.leaf = sibling_new_leaf
+                                state.sibling_cache.append(data)
+                                del omap._stash[j]
+                                found_sibling = True
+                                break
                 else:
                     # Dummy round
                     for bucket in path:
@@ -1669,15 +1736,15 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 omap._stash.append(data)
                 
                 # Evict and prepare write-back
-                evicted = omap._evict_stash_mul_path(leaves=[real_leaf, dummy_leaf])
+                evicted = omap._evict_stash_mul_path(leaves=[real_leaf, aux_leaf])
                 evicted_data.append(evicted)
                 write_labels.append(omap._name)
-                write_leaves.append([real_leaf, dummy_leaf])
+                write_leaves.append([real_leaf, aux_leaf])
                 
                 if len(omap._stash) > omap._stash_size:
                     raise MemoryError("Stash overflow!")
             
-            # Batch write all 4 paths
+            # Batch write all paths
             client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
             
             # Update traversal state for each operation
@@ -1686,8 +1753,9 @@ class BPlusOdsOmap(TreeOdsOmap):
                     node = state.local[-1]
                     omap = state.omap
                     
-                    # Assign new leaf
-                    node.leaf = omap._get_new_leaf()
+                    # Assign new leaf (defensive: some nodes may arrive without a leaf)
+                    if node.leaf is None:
+                        node.leaf = omap._get_new_leaf()
                     
                     # Update root or parent's pointer
                     if len(state.local) == 1:
@@ -1695,6 +1763,13 @@ class BPlusOdsOmap(TreeOdsOmap):
                     elif state.pending_child_index is not None:
                         parent = state.local[-2]
                         parent.value.values[state.pending_child_index] = (node.key, node.leaf)
+                        # Also update sibling pointer if applicable
+                        if state.sibling_index is not None and state.sibling_cache:
+                            sib = state.sibling_cache[-1] if state.sibling_cache else None
+                            if sib:
+                                if sib.leaf is None:
+                                    sib.leaf = omap._get_new_leaf()
+                                parent.value.values[state.sibling_index] = (sib.key, sib.leaf)
                     
                     # Check if leaf
                     if len(node.value.keys) == len(node.value.values):
@@ -1733,7 +1808,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     break
             omap1._stash += search1.local
         
-        # Process delete1: remove key from leaf
+        # Process delete1: remove key from leaf and handle underflow
         if delete1.local:
             if delete_key1 is not None:
                 leaf = delete1.local[-1]
@@ -1743,10 +1818,29 @@ class BPlusOdsOmap(TreeOdsOmap):
                         leaf.value.keys.pop(index)
                         leaf.value.values.pop(index)
                         break
-            # Only add to stash if not already added (could share with search1)
+                
+                # Handle underflow with sibling cache
+                if delete1.sibling_cache:
+                    omap1._local = delete1.local
+                    omap1._sibling_cache = delete1.sibling_cache
+                    omap1._handle_underflow_with_cached_siblings()
+                    delete1.local = omap1._local
+                    delete1.sibling_cache = omap1._sibling_cache
+                    omap1._local = []
+                    omap1._sibling_cache = []
+            
+            # Add to stash (ensure all nodes have valid leaves)
             for d in delete1.local:
+                if d.leaf is None:
+                    d.leaf = omap1._get_new_leaf()
                 if not any(s.key == d.key for s in omap1._stash):
                     omap1._stash.append(d)
+            if delete1.sibling_cache:
+                for d in delete1.sibling_cache:
+                    if d.leaf is None:
+                        d.leaf = omap1._get_new_leaf()
+                    if not any(s.key == d.key for s in omap1._stash):
+                        omap1._stash.append(d)
         
         # Process search2 result
         if search_key2 is not None and omap2.root is not None and search2.local:
@@ -1757,7 +1851,7 @@ class BPlusOdsOmap(TreeOdsOmap):
                     break
             omap2._stash += search2.local
         
-        # Process delete2: remove key from leaf
+        # Process delete2: remove key from leaf and handle underflow
         if delete2.local:
             if delete_key2 is not None:
                 leaf = delete2.local[-1]
@@ -1766,9 +1860,29 @@ class BPlusOdsOmap(TreeOdsOmap):
                         leaf.value.keys.pop(index)
                         leaf.value.values.pop(index)
                         break
+                
+                # Handle underflow with sibling cache
+                if delete2.sibling_cache:
+                    omap2._local = delete2.local
+                    omap2._sibling_cache = delete2.sibling_cache
+                    omap2._handle_underflow_with_cached_siblings()
+                    delete2.local = omap2._local
+                    delete2.sibling_cache = omap2._sibling_cache
+                    omap2._local = []
+                    omap2._sibling_cache = []
+            
+            # Add to stash (ensure all nodes have valid leaves)
             for d in delete2.local:
+                if d.leaf is None:
+                    d.leaf = omap2._get_new_leaf()
                 if not any(s.key == d.key for s in omap2._stash):
                     omap2._stash.append(d)
+            if delete2.sibling_cache:
+                for d in delete2.sibling_cache:
+                    if d.leaf is None:
+                        d.leaf = omap2._get_new_leaf()
+                    if not any(s.key == d.key for s in omap2._stash):
+                        omap2._stash.append(d)
         
         return search_value1, search_value2, deleted_value1
 
@@ -2215,6 +2329,9 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 self._borrow_from_left_leaf(node, left_sibling, parent, sep_key_idx)
                             else:
                                 self._borrow_from_left_internal(node, left_sibling, parent, sep_key_idx)
+                            # Update parent's pointer to left sibling with its new leaf
+                            if left_sibling.leaf is not None:
+                                parent.value.values[left_sib_idx] = (left_sibling.key, left_sibling.leaf)
                         else:
                             if is_leaf:
                                 self._merge_leaf_nodes(left_sibling, node)
@@ -2222,6 +2339,14 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 separator_key = parent.value.keys[sep_key_idx] if sep_key_idx < len(parent.value.keys) else None
                                 self._merge_internal_nodes(left_sibling, node, separator_key)
                             self._remove_child_from_parent(parent, node_idx_in_parent, sep_key_idx)
+                            # After removing child, left_sib_idx might have shifted if node was after it
+                            # Update parent's pointer to left sibling with its new leaf
+                            if left_sibling.leaf is not None:
+                                # Find left_sibling's new position in parent
+                                for new_idx, child_tuple in enumerate(parent.value.values):
+                                    if isinstance(child_tuple, tuple) and child_tuple[0] == left_sibling.key:
+                                        parent.value.values[new_idx] = (left_sibling.key, left_sibling.leaf)
+                                        break
                             node.value.keys = []
                             node.value.values = []
                             merged = True
@@ -2241,6 +2366,12 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 self._borrow_from_right_leaf(node, right_sibling, parent, right_sep_key_idx)
                             else:
                                 self._borrow_from_right_internal(node, right_sibling, parent, right_sep_key_idx)
+                            # Update parent's pointer to right sibling with its new leaf
+                            if right_sibling.leaf is not None:
+                                parent.value.values[right_sib_idx] = (right_sibling.key, right_sibling.leaf)
+                            # Also update parent's pointer to node with its new leaf
+                            if node.leaf is not None:
+                                parent.value.values[node_idx_in_parent] = (node.key, node.leaf)
                         else:
                             if is_leaf:
                                 self._merge_leaf_nodes(node, right_sibling)
@@ -2248,11 +2379,34 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 separator_key = parent.value.keys[right_sep_key_idx] if right_sep_key_idx < len(parent.value.keys) else None
                                 self._merge_internal_nodes(node, right_sibling, separator_key)
                             self._remove_child_from_parent(parent, right_sib_idx, right_sep_key_idx)
+                            # Update parent's pointer to node with its new leaf
+                            if node.leaf is not None:
+                                # Find node's new position in parent after removal
+                                for new_idx, child_tuple in enumerate(parent.value.values):
+                                    if isinstance(child_tuple, tuple) and child_tuple[0] == node.key:
+                                        parent.value.values[new_idx] = (node.key, node.leaf)
+                                        break
                             right_sibling.value.keys = []
                             right_sibling.value.values = []
                             merged = True
             
             i -= 1
+
+        # Ensure all nodes and child pointers have valid leaves
+        for node in self._local:
+            if node.leaf is None:
+                node.leaf = self._get_new_leaf()
+            for idx, child in enumerate(node.value.values):
+                if isinstance(child, tuple):
+                    child_key, child_leaf = child
+                    if child_leaf is None:
+                        child_leaf = self._get_new_leaf()
+                        node.value.values[idx] = (child_key, child_leaf)
+
+        # Ensure sibling cache nodes also carry valid leaves
+        for sib in self._sibling_cache:
+            if sib.leaf is None:
+                sib.leaf = self._get_new_leaf()
         
         # Update root if it becomes empty
         if len(self._local) > 0:
