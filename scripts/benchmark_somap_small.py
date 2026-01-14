@@ -9,7 +9,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
-from daoram.dependency.interact_server import InteractLocalServer
+import pickle
+from daoram.dependency.binary_tree import BinaryTree
+from daoram.dependency.interact_server import InteractLocalServer, InteractServer
 from daoram.so.bottom_to_up_somap_fixed_cache import BottomUpSomapFixedCache
 from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache
 from daoram.omap.bplus_ods_omap import BPlusOdsOmap
@@ -21,13 +23,96 @@ WAN_LATENCY_SEC = float(os.environ.get("WAN_LATENCY_SEC", "0.05"))
 
 # 用于真实通信的统计辅助
 class RoundCounter:
-    def __init__(self, client):
+    def __init__(self, client: InteractServer):
         self.client = client
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
+        self._tree_patched = False
+
     def wrap(self):
-        pass  # 本地模式无需 patch
+        # 本地模式没有真实网络，这里以序列化大小估算通信量，并把每次 RPC 计为一轮
+        self._orig_batch = getattr(self.client, "batch_query", None)
+        self._orig_read = getattr(self.client, "read_query", None)
+        self._orig_read_mul = getattr(self.client, "read_mul_query", None)
+        self._orig_write = getattr(self.client, "write_query", None)
+        self._orig_write_mul = getattr(self.client, "write_mul_query", None)
+
+        def _size(obj: Any) -> int:
+            try:
+                return len(pickle.dumps(obj))
+            except Exception:
+                return 0
+
+        if self._orig_batch:
+            def _batch(ops):
+                self.rounds += 1
+                self.bytes_sent += _size({"type": "batch", "operations": ops})
+                resp = self._orig_batch(ops)
+                self.bytes_recv += _size(resp)
+                return resp
+            self.client.batch_query = _batch
+
+        if self._orig_read:
+            def _read(label, leaf):
+                self.rounds += 1
+                self.bytes_sent += _size({"type": "r", "label": label, "leaf": leaf})
+                resp = self._orig_read(label, leaf)
+                self.bytes_recv += _size(resp)
+                return resp
+            self.client.read_query = _read
+
+        if self._orig_read_mul:
+            def _read_mul(label, leaf):
+                self.rounds += 1
+                self.bytes_sent += _size([{"type": "r", "label": label[i], "leaf": leaf[i]} for i in range(len(label))])
+                resp = self._orig_read_mul(label, leaf)
+                self.bytes_recv += _size(resp)
+                return resp
+            self.client.read_mul_query = _read_mul
+
+        if self._orig_write:
+            def _write(label, leaf, data):
+                self.rounds += 1
+                self.bytes_sent += _size({"type": "w", "label": label, "leaf": leaf, "data": data})
+                resp = self._orig_write(label, leaf, data)
+                self.bytes_recv += _size(None)
+                return resp
+            self.client.write_query = _write
+
+        if self._orig_write_mul:
+            def _write_mul(label, leaf, data):
+                self.rounds += 1
+                self.bytes_sent += _size([{"type": "w", "label": label[i], "leaf": leaf[i], "data": data[i]} for i in range(len(label))])
+                resp = self._orig_write_mul(label, leaf, data)
+                self.bytes_recv += _size(None)
+                return resp
+            self.client.write_mul_query = _write_mul
+
+        # 进一步细粒度统计：BinaryTree 路径读写也计入轮次/字节（本地模式模拟 WAN 轮）。
+        if not self._tree_patched:
+            self._orig_bt_read = getattr(BinaryTree, "read_path", None)
+            self._orig_bt_write = getattr(BinaryTree, "write_path", None)
+
+            def _bt_read(this, leaf):
+                self.rounds += 1
+                self.bytes_sent += _size({"type": "bt_r", "leaf": leaf})
+                resp = self._orig_bt_read(this, leaf)
+                self.bytes_recv += _size(resp)
+                return resp
+
+            def _bt_write(this, leaf, data):
+                self.rounds += 1
+                self.bytes_sent += _size({"type": "bt_w", "leaf": leaf, "data": data})
+                resp = self._orig_bt_write(this, leaf, data)
+                self.bytes_recv += _size(None)
+                return resp
+
+            if self._orig_bt_read:
+                BinaryTree.read_path = _bt_read
+            if self._orig_bt_write:
+                BinaryTree.write_path = _bt_write
+            self._tree_patched = True
 
 
 

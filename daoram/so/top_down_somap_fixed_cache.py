@@ -261,6 +261,10 @@ class TopDownSomapFixedCache:
 
         self._update_peak_client_size()
 
+        # 本轮需要的 DB 读取请求，批到后续 batch_query 一起发送
+        db_requests = []  # list of (tag, pos)
+        db_results = {}
+
         # 先冲刷上次 pending 写回
         if self._pending_insert_ds is not None:
             ds_key, ds_value = self._pending_insert_ds
@@ -321,7 +325,8 @@ class TopDownSomapFixedCache:
         current_ow_hit = value_old1 is not None
         if value_old1 is not None:
             old_value = value_old1
-            self._operate_db_dummy()
+            db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
+            self._dummy_index = (self._dummy_index + 1) % self._num_data
             if op == 'search':
                 self._Ow.search_local(key, [value_old1[0] + 1, value_old1[1]])
             else:
@@ -332,18 +337,16 @@ class TopDownSomapFixedCache:
                 old_value = list(value_old2[0])
             else:
                 old_value = [0, 0]
-            self._operate_db_dummy()
+            db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
+            self._dummy_index = (self._dummy_index + 1) % self._num_data
             if op == 'search':
-                self._Ow.insert_local(key, [old_value[0] + 1, old_value[1]])
+                # 延后 insert_local，等 DB 请求与其他操作一起完成后再做
+                pass
             else:
-                self._Ow.insert_local(key, [old_value[0], old_value[1] + 1])
+                pass
             qw_marker = "Key"
         else:
-            old_value = self.operate_on_list('DB', 'get', pos=self.PRP.encrypt(key))
-            if op == 'search':
-                self._Ow.insert_local(key, [old_value[0] + 1, old_value[1]])
-            else:
-                self._Ow.insert_local(key, [old_value[0], old_value[1] + 1])
+            db_requests.append(("main", self.PRP.encrypt(key)))
             qw_marker = "Key"
 
         # 处理上一轮 Ob 可用键：仅当本轮 O_W 命中才执行插入/访问逻辑
@@ -353,14 +356,13 @@ class TopDownSomapFixedCache:
             avail_or = self._Or.search(avail_key)
             if current_ow_hit:
                 if avail_or is None:
-                    val_ds = self.operate_on_list('DB', 'get', pos=self.PRP.encrypt(avail_key))
-                    self._Ow.insert_local(avail_key, val_ds)
+                    db_requests.append(("avail", self.PRP.encrypt(avail_key)))
                     self._pending_ob_insert = avail_key  # 本地插入，下一轮写回 O_B
                 else:
                     or_val = avail_or[0] if isinstance(avail_or, tuple) else avail_or
-                    self._Ow.insert_local(avail_key, or_val)
                     self._pending_ob_insert = avail_key
-                    self._operate_db_dummy()
+                    db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
+                    self._dummy_index = (self._dummy_index + 1) % self._num_data
             # 无论是否命中，都清除 pending 标记（保持访问模式已完成）
             self._pending_available_key = None
 
@@ -371,9 +373,13 @@ class TopDownSomapFixedCache:
 
         self._Qw_len += 1
 
-        batch_ops = [
-            {'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))}
-        ]
+        batch_ops = []
+
+        # 先把本轮所有 DB 读取（真实/伪）塞到 batch，一轮搞定
+        for _, pos in db_requests:
+            batch_ops.append({'op': 'list_get', 'label': 'DB', 'index': pos})
+
+        batch_ops.append({'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))})
 
         pending_qr_count = len(self._pending_qr_inserts)
         for qr_key, qr_ts, qr_marker in self._pending_qr_inserts:
@@ -395,7 +401,13 @@ class TopDownSomapFixedCache:
             qr_pop_needed = True
 
         results = self._client.batch_query(batch_ops)
-        result_idx = 1 + pending_qr_count
+        result_idx = 0
+
+        # 先处理 DB 读取结果，填充到 db_results
+        for tag, _ in db_requests:
+            if result_idx < len(results):
+                db_results.setdefault(tag, []).append(self._decrypt_data(results[result_idx]))
+            result_idx += 1
 
         self._update_peak_client_size()
 
@@ -414,11 +426,38 @@ class TopDownSomapFixedCache:
             encrypted_qr_item = results[result_idx]
             if encrypted_qr_item is not None:
                 qr_item = self._decrypt_data(encrypted_qr_item)
-                if self._timestamp - qr_item[1] > self._cache_size:
+                try:
+                    qr_ts = int(qr_item[1])
+                except Exception:
+                    qr_ts = 0
+                if self._timestamp - qr_ts > self._cache_size:
                     self._client.list_pop(label=self._Qr_name, index=-1)
                     self._Qr_len -= 1
                     self._pending_delete_or = qr_item
         self._Qr_len += pending_qr_count
+
+        # 使用 DB 结果完成延迟的 insert_local
+        if value_old2 is not None:
+            val = old_value
+            if op == 'search':
+                self._Ow.insert_local(key, [val[0] + 1, val[1]])
+            else:
+                self._Ow.insert_local(key, [val[0], val[1] + 1])
+        elif value_old1 is None:  # cache miss
+            if "main" in db_results and db_results["main"]:
+                fetched = db_results["main"].pop(0)
+                old_value = fetched
+                if op == 'search':
+                    self._Ow.insert_local(key, [old_value[0] + 1, old_value[1]])
+                else:
+                    self._Ow.insert_local(key, [old_value[0], old_value[1] + 1])
+
+        # 可用键的延迟插入：补上 DB 读结果
+        if self._pending_ob_insert is not None and current_ow_hit:
+            if "avail" in db_results and db_results["avail"]:
+                avail_val = db_results["avail"].pop(0)
+                self._Ow.insert_local(self._pending_ob_insert, avail_val)
+            # dummy 结果已消费/丢弃，无需处理
 
         if op == 'search':
             ret = self.search(general_key, old_value)
