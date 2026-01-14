@@ -1,230 +1,289 @@
-#!/usr/bin/env python3
-"""
-Benchmark SOMAP fixed-cache variants and baseline OMAP in client/server mode.
-- Supports local (in-memory) or remote socket server.
-- Counts rounds as RPC calls; bytes as pickle size of payloads.
-
-Usage:
-  python scripts/benchmark_somap_wan.py [--remote ip port] [--ops 200] [--read-ratio 0.7]
-
-For remote mode, start a server compatible with InteractServer on the given ip/port.
-"""
-import argparse
 import os
-import pickle
-import random
 import sys
+import random
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from daoram.dependency.interact_server import InteractLocalServer, InteractServer  # type: ignore
-from daoram.so.bottom_to_up_somap_fixed_cache import BottomUpSomapFixedCache  # type: ignore
-from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache  # type: ignore
-from daoram.omap.bplus_ods_omap import BPlusOdsOmap  # type: ignore
+import argparse
+import time
+import pickle
+import os
+import sys
+import random
+from typing import Any, Dict, List, Tuple
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
+from daoram.dependency.interact_server import InteractRemoteServer, InteractServer
+from daoram.so.bottom_to_up_somap_fixed_cache import BottomUpSomapFixedCache
+from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache
+from daoram.omap.bplus_ods_omap import BPlusOdsOmap
+
+# WAN Latency Simulation
 class RoundCounter:
-    def __init__(self, client):
+    def __init__(self, client: InteractServer, latency: float = 0.0):
         self.client = client
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
-        self._patched = False
+        self.latency = latency
 
-    def _size(self, obj: Any) -> int:
-        try:
-            return len(pickle.dumps(obj))
-        except Exception:
-            return 0
+    def _simulate_latency(self):
+        if self.latency > 0:
+            time.sleep(self.latency)
 
     def wrap(self):
-        if self._patched:
-            return
-        self._patched = True
-        # wrap client RPCs - reads and batch count as rounds, writes don't (batched with reads)
-        for name, ctor in {
-            "batch_query": lambda fn: self._wrap_rpc(fn, lambda ops: {"type": "batch", "operations": ops}, count_round=True),
-            "read_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf: {"type": "r", "label": label, "leaf": leaf}, count_round=True),
-            "read_mul_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf: [
-                {"type": "r", "label": label[i], "leaf": leaf[i]} for i in range(len(label))
-            ], count_round=True),
-            "write_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf, data: {"type": "w", "label": label, "leaf": leaf, "data": data}, count_round=False),
-            "write_mul_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf, data: [
-                {"type": "w", "label": label[i], "leaf": leaf[i], "data": data[i]} for i in range(len(label))
-            ], count_round=False),
-        }.items():
-            orig = getattr(self.client, name, None)
-            if orig:
-                setattr(self.client, name, ctor(orig))
-
-    def _wrap_rpc(self, fn, payload_builder, count_round=True):
-        def inner(*args, **kwargs):
-            if count_round:
-                self.rounds += 1
+        # We wrap the methods to count rounds and simulate latency. 
+        self._orig_batch = getattr(self.client, "batch_query", None)
+        self._orig_read = getattr(self.client, "read_query", None)
+        self._orig_read_mul = getattr(self.client, "read_mul_query", None)
+        self._orig_write = getattr(self.client, "write_query", None)
+        self._orig_write_mul = getattr(self.client, "write_mul_query", None)
+        
+        # Helper to size estimation (rough)
+        def _size(obj: Any) -> int:
             try:
-                payload = payload_builder(*args, **kwargs)
-                self.bytes_sent += self._size(payload)
+                return len(pickle.dumps(obj))
             except Exception:
-                pass
-            resp = fn(*args, **kwargs)
-            self.bytes_recv += self._size(resp)
-            return resp
-        return inner
+                return 0
 
+        if self._orig_batch:
+            def _batch(ops):
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                    self._simulate_latency()
+                self.bytes_sent += _size({"type": "batch", "operations": ops})
+                res = self._orig_batch(ops)
+                self.bytes_recv += _size(res)
+                return res
+            self.client.batch_query = _batch
 
-def zipf_keys(n: int, size: int, alpha: float = 0.8) -> List[int]:
-    weights = [1 / ((i + 1) ** alpha) for i in range(n)]
+        if self._orig_read:
+            def _read(label, leaf):
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                    self._simulate_latency()
+                self.bytes_sent += _size({"type": "r", "label": label, "leaf": leaf})
+                res = self._orig_read(label, leaf)
+                self.bytes_recv += _size(res)
+                return res
+            self.client.read_query = _read
+
+        if self._orig_read_mul:
+            def _read_mul(label, leaf):
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                    self._simulate_latency()
+                self.bytes_sent += _size([{"type": "r", "label": l, "leaf": f} for l, f in zip(label, leaf)])
+                res = self._orig_read_mul(label, leaf)
+                self.bytes_recv += _size(res)
+                return res
+            self.client.read_mul_query = _read_mul
+
+        if self._orig_write:
+            def _write(label, leaf, data):
+                self.rounds += 1
+                self._simulate_latency()
+                self.bytes_sent += _size({"type": "w", "label": label, "leaf": leaf, "data": data})
+                res = self._orig_write(label, leaf, data)
+                self.bytes_recv += _size(res) # usually None or ack
+                return res
+            self.client.write_query = _write
+            
+        if self._orig_write_mul:
+            def _write_mul(label, leaf, data):
+                self.rounds += 1
+                self._simulate_latency()
+                payload = [{"type": "w", "label": label[i], "leaf": leaf[i], "data": data[i]} for i in range(len(label))]
+                self.bytes_sent += _size(payload)
+                res = self._orig_write_mul(label, leaf, data)
+                self.bytes_recv += _size(res)
+                return res
+            self.client.write_mul_query = _write_mul
+
+def zipf_keys(n, size, alpha=1.0):
+    weights = [1.0 / (i + 1) ** alpha for i in range(n)]
     total = sum(weights)
     probs = [w / total for w in weights]
     return random.choices(range(n), weights=probs, k=size)
 
-
 def build_data(num_data: int) -> Dict[int, Any]:
     return {i: [i, i] for i in range(num_data)}
 
-
-def client_sizes_bottom_up(proto: BottomUpSomapFixedCache) -> int:
-    return len(proto._Ow._stash) + len(proto._Or._stash) + len(proto._Ds._stash) + proto._Qw_len + proto._Qr_len
-
-
-def client_sizes_top_down(proto: TopDownSomapFixedCache) -> int:
-    return len(proto._Ow._stash) + len(proto._Or._stash) + len(proto._tree_stash) + proto._Qw_len + proto._Qr_len
-
-
-def run_bottom_up(client, num_data, cache_size, data_size, keys, ops, counter):
+def run_bottom_up(num_data: int, cache_size: int, data_size: int, keys: List[int], ops: List[str], latency: float = 0.0):
+    # Connect to Remote Server
+    client = InteractRemoteServer(ip="localhost", port=10000)
+    try:
+        client.init_connection()
+    except ConnectionRefusedError:
+        print("Error: Could not connect to server at localhost:10000. Make sure server.py is running.")
+        sys.exit(1)
+        
+    counter = RoundCounter(client, latency=latency)
+    counter.wrap()
+    
+    # print(f"Initialize BottomUp with Latency {latency}s...")
     proto = BottomUpSomapFixedCache(num_data=num_data, cache_size=cache_size, data_size=data_size,
                                     client=client, use_encryption=False)
+    
+    print("Setup Protocol (Upload Initial State)...")
     proto.setup(build_data(num_data))
     proto.reset_peak_client_size()
-    max_size = 0
+    
     start = time.time()
-    for key, op in zip(keys, ops):
+    print("Start Operations...")
+    for i, (key, op) in enumerate(zip(keys, ops)):
+        if i % 10 == 0:
+            sys.stdout.write(f"\rProgress: {i}/{len(keys)}")
+            sys.stdout.flush()
+            
         if op == 'read':
             proto.access(key, 'read')
         else:
             proto.access(key, 'write', [key, key + 1])
-        max_size = max(max_size, client_sizes_bottom_up(proto))
+    print("")
+            
+    client.close_connection()
+            
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'max_client_size_external': max_size,
-        'max_client_size_internal': max(proto._peak_client_size, max_size),
         'elapsed_sec': time.time() - start
     }
 
+def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int], ops: List[str], latency: float = 0.0):
+    # Connect to Remote Server
+    client = InteractRemoteServer(ip="localhost", port=10000)
+    try:
+        client.init_connection()
+    except ConnectionRefusedError:
+        print("Error: Could not connect to server. Ensure server.py is running.")
+        sys.exit(1)
+        
+    counter = RoundCounter(client, latency=latency)
+    counter.wrap()
 
-def run_top_down(client, num_data, cache_size, data_size, keys, ops, counter):
+    # print(f"Initialize TopDown with Latency {latency}s...")
     proto = TopDownSomapFixedCache(num_data=num_data, cache_size=cache_size, data_size=data_size,
                                    client=client, use_encryption=False)
+    
+    print("Setup Protocol (Upload Initial State)...")
+    # TopDown takes a list of tuples for setup
     proto.setup([(k, [k, k]) for k in range(num_data)])
     proto.reset_peak_client_size()
-    max_size = 0
+    
     start = time.time()
-    for key, op in zip(keys, ops):
+    print("Start Operations...")
+    for i, (key, op) in enumerate(zip(keys, ops)):
+        if i % 10 == 0:
+            sys.stdout.write(f"\rProgress: {i}/{len(keys)}")
+            sys.stdout.flush()
         gk = str(key)
         try:
             if op == 'read':
                 proto.access('search', gk)
             else:
                 proto.access('insert', gk, [key, key + 1])
-            max_size = max(max_size, client_sizes_top_down(proto))
         except (KeyError, MemoryError):
-            continue
+             continue
+    print("")
+
+    client.close_connection()
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'max_client_size_external': max_size,
-        'max_client_size_internal': max(proto._peak_client_size, max_size),
         'elapsed_sec': time.time() - start
     }
 
+def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[str], latency: float = 0.0):
+    # Connect to Remote Server
+    client = InteractRemoteServer(ip="localhost", port=10000)
+    try:
+        client.init_connection()
+    except ConnectionRefusedError:
+        print("Error: Could not connect to server. Ensure server.py is running.")
+        sys.exit(1)
+    
+    counter = RoundCounter(client, latency=latency)
+    counter.wrap()
 
-def run_baseline_omap(client, num_data, data_size, keys, ops, counter):
+    # print(f"Initialize Baseline OMAP with Latency {latency}s...")
     omap = BPlusOdsOmap(order=4, num_data=num_data, key_size=16, data_size=data_size,
                         client=client, name="baseline", use_encryption=False)
+    
+    print("Setup Protocol (Upload Initial State)...")
+    # BPlusOdsOmap init logic from benchmark_somap_small.py
     storage = omap._init_ods_storage([(k, [k, k]) for k in range(num_data)])
     client.init({omap._name: storage})
     omap.reset_peak_client_size()
-    max_size = 0
+
     start = time.time()
-    for key, op in zip(keys, ops):
+    print("Start Operations...")
+    for i, (key, op) in enumerate(zip(keys, ops)):
+        if i % 10 == 0:
+            sys.stdout.write(f"\rProgress: {i}/{len(keys)}")
+            sys.stdout.flush()
         if op == 'read':
             omap.search(key)
         else:
             omap.insert(key, [key, key + 1])
-        max_size = max(max_size, len(omap._stash))
+    print("")
+
+    client.close_connection()
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'max_client_size_external': max_size,
-        'max_client_size_internal': max(omap._peak_client_size, max_size),
         'elapsed_sec': time.time() - start
     }
 
-
-def make_client(remote_ip: str = None, remote_port: int = None):
-    if remote_ip:
-        c = InteractServer(ip=remote_ip, port=remote_port)
-        c.init_connection()
-    else:
-        c = InteractLocalServer()
-    return c
-
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--remote', nargs=2, metavar=('IP', 'PORT'), help='Use remote InteractServer at IP PORT')
-    parser.add_argument('--ops', type=int, default=200)
-    parser.add_argument('--read-ratio', type=float, default=0.7)
-    parser.add_argument('--num-data', type=int, default=2 ** 14)
-    parser.add_argument('--cache-size', type=int, default=2 ** 10)
-    parser.add_argument('--data-size', type=int, default=16)
+    parser = argparse.ArgumentParser(description="WAN Benchmark")
+    parser.add_argument("--latency", type=float, default=0.00, help="Simulated Network Latency (one-way? No, Round Trip Delay approx) per round in seconds.")
+    parser.add_argument("--ops", type=int, default=20, help="Number of operations")
+    parser.add_argument("--protocol", type=str, default="all", choices=["all", "bottom_up", "top_down", "baseline"], help="Which protocol to benchmark")
     args = parser.parse_args()
 
-    num_data = args.num_data
-    cache_size = args.cache_size
-    data_size = args.data_size
+    num_data = (2 ** 14)-1  # 16383
+    cache_size = (2 ** 10)-1 # 1023
+    data_size = 16
     total_ops = args.ops
-    read_ratio = args.read_ratio
+    read_ratio = 0.7
 
     keys = zipf_keys(num_data, total_ops, alpha=0.8)
     ops = ['read' if random.random() < read_ratio else 'write' for _ in range(total_ops)]
 
-    remote_ip, remote_port = (args.remote[0], int(args.remote[1])) if args.remote else (None, None)
-    mode = 'remote' if remote_ip else 'local'
-    print(f"模式: {mode}, N={num_data}, cache={cache_size}, ops={total_ops}, read_ratio={read_ratio}")
+    print(f"Client-Server Benchmark Config: N={num_data}, cache={cache_size}, ops={total_ops}, Latency={args.latency}s")
 
-    print("[运行] bottom_up_somap_fixed_cache")
-    client = make_client(remote_ip, remote_port)
-    counter = RoundCounter(client)
-    counter.wrap()
-    r1 = run_bottom_up(client, num_data, cache_size, data_size, keys, ops, counter)
-    print(r1)
+    if args.protocol == "all" or args.protocol == "bottom_up":
+        print("\n[运行] Bottom-Up (WAN Mode)")
+        r1 = run_bottom_up(num_data, cache_size, data_size, keys, ops, latency=args.latency)
+        print(f"Result BottomUp: {r1}")
+        print(f"BU Avg Time per Op: {r1['elapsed_sec']/total_ops:.4f}s")
+        print(f"BU Avg Rounds per Op: {r1['rounds']/total_ops:.2f}")
 
-    print("[运行] top_down_somap_fixed_cache")
-    client = make_client(remote_ip, remote_port)
-    counter = RoundCounter(client)
-    counter.wrap()
-    r2 = run_top_down(client, num_data, cache_size, data_size, keys, ops, counter)
-    print(r2)
+    if args.protocol == "all" or args.protocol == "top_down":
+        print("\n[运行] Top-Down (WAN Mode)")
+        r2 = run_top_down(num_data, cache_size, data_size, keys, ops, latency=args.latency)
+        print(f"Result TopDown: {r2}")
+        print(f"TD Avg Time per Op: {r2['elapsed_sec']/total_ops:.4f}s")
+        print(f"TD Avg Rounds per Op: {r2['rounds']/total_ops:.2f}")
 
-    print("[运行] baseline bplus_ods_omap")
-    client = make_client(remote_ip, remote_port)
-    counter = RoundCounter(client)
-    counter.wrap()
-    r3 = run_baseline_omap(client, num_data, data_size, keys, ops, counter)
-    print(r3)
-
-    if remote_ip:
-        client.close_connection()
-
+    if args.protocol == "all" or args.protocol == "baseline":
+        print("\n[运行] Baseline BPlusOdsOmap (WAN Mode)")
+        r3 = run_baseline_omap(num_data, data_size, keys, ops, latency=args.latency)
+        print(f"Result Baseline: {r3}")
+        print(f"Baseline Avg Time per Op: {r3['elapsed_sec']/total_ops:.4f}s")
+        print(f"Baseline Avg Rounds per Op: {r3['rounds']/total_ops:.2f}")
 
 if __name__ == "__main__":
     main()
+

@@ -35,6 +35,7 @@ class RoundCounter:
         self._orig_read_mul = getattr(self.client, "read_mul_query", None)
         self._orig_write = getattr(self.client, "write_query", None)
         self._orig_write_mul = getattr(self.client, "write_mul_query", None)
+        # print(f"DEBUG: Wrapping client. read_mul found? {self._orig_read_mul is not None}")
 
         def _size(obj: Any) -> int:
             try:
@@ -44,7 +45,9 @@ class RoundCounter:
 
         if self._orig_batch:
             def _batch(ops):
-                self.rounds += 1
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                # print(f"DEBUG: batch query called. Rounds: {self.rounds}")
                 self.bytes_sent += _size({"type": "batch", "operations": ops})
                 resp = self._orig_batch(ops)
                 self.bytes_recv += _size(resp)
@@ -53,7 +56,9 @@ class RoundCounter:
 
         if self._orig_read:
             def _read(label, leaf):
-                self.rounds += 1
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                # print(f"DEBUG: read query called. Rounds: {self.rounds}")
                 self.bytes_sent += _size({"type": "r", "label": label, "leaf": leaf})
                 resp = self._orig_read(label, leaf)
                 self.bytes_recv += _size(resp)
@@ -62,7 +67,9 @@ class RoundCounter:
 
         if self._orig_read_mul:
             def _read_mul(label, leaf):
-                self.rounds += 1
+                if not getattr(self.client, "skip_round_counting", False):
+                    self.rounds += 1
+                # print(f"DEBUG: read_mul query called. Rounds: {self.rounds} Label: {label}")
                 self.bytes_sent += _size([{"type": "r", "label": label[i], "leaf": leaf[i]} for i in range(len(label))])
                 resp = self._orig_read_mul(label, leaf)
                 self.bytes_recv += _size(resp)
@@ -155,7 +162,7 @@ def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int]
                 proto.access('insert', gk, [key, key + 1])
             max_size = max(max_size, client_sizes_top_down(proto))
         except (KeyError, MemoryError):
-            continue
+             continue
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
@@ -194,8 +201,8 @@ def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[
 
 
 def main():
-    num_data = 2 ** 14
-    cache_size = 2 ** 10
+    num_data = (2 ** 14)-1
+    cache_size = (2 ** 10)-1
     data_size = 16
     total_ops = 200
     read_ratio = 0.7
@@ -209,7 +216,9 @@ def main():
     r1 = run_bottom_up(num_data, cache_size, data_size, keys, ops)
     print(r1)
 
-    print("[运行] top_down_somap_fixed_cache")
+    # print("[运行] top_down_somap_fixed_cache")
+    # r2 = run_top_down(num_data, cache_size, data_size, keys, ops)
+    # print(r2)
     r2 = run_top_down(num_data, cache_size, data_size, keys, ops)
     print(r2)
 

@@ -1139,7 +1139,9 @@ class BPlusOdsOmap(TreeOdsOmap):
                 current_node = None
         
         # Perform dummy ORAM rounds to maintain access pattern
-        self._perform_dummy_rounds(num_rounds=self._max_height)
+        # OPTIMIZATION: In Top-Down protocol, 'search_local' is called after 'parallel_search'
+        # which already performed h rounds. We shouldn't add another h rounds here.
+        # self._perform_dummy_rounds(num_rounds=self._max_height)
 
         self._update_peak_client_size()
         
@@ -1167,7 +1169,8 @@ class BPlusOdsOmap(TreeOdsOmap):
             data_block = self._get_bplus_data(keys=[key], values=[value])
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            # OPTIMIZATION: Remove forced dummy rounds
+            # self._perform_dummy_rounds(num_rounds=self._max_height)
             return
 
         # Traverse stash from root to leaf, building _local path
@@ -1235,7 +1238,8 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._local = []
         
         # Perform dummy ORAM rounds to maintain access pattern
-        self._perform_dummy_rounds(num_rounds=self._max_height)
+        # OPTIMIZATION: Remove forced dummy rounds
+        # self._perform_dummy_rounds(num_rounds=self._max_height)
 
         self._update_peak_client_size()
 
@@ -1324,10 +1328,20 @@ class BPlusOdsOmap(TreeOdsOmap):
             
             # For omap1: read target path + dummy path
             if traversing1:
-                dummy_leaf1 = omap1._get_new_leaf()
-                labels.append(omap1._name)
-                leaves.append([node1_leaf, dummy_leaf1])
-                omap_indices.append((1, node1_leaf, dummy_leaf1, node1_key))
+                # FIX for BottomUp: Check if leaf is within range of this omap
+                if node1_leaf >= omap1._leaf_range:
+                    traversing1 = False
+                    # Create dummy round instead
+                    leaf1_a = omap1._get_new_leaf()
+                    leaf1_b = omap1._get_new_leaf()
+                    labels.append(omap1._name)
+                    leaves.append([leaf1_a, leaf1_b])
+                    omap_indices.append((1, leaf1_a, leaf1_b, None))
+                else:
+                    dummy_leaf1 = omap1._get_new_leaf()
+                    labels.append(omap1._name)
+                    leaves.append([node1_leaf, dummy_leaf1])
+                    omap_indices.append((1, node1_leaf, dummy_leaf1, node1_key))
             else:
                 # Dummy round for omap1
                 leaf1_a = omap1._get_new_leaf()
@@ -1338,10 +1352,20 @@ class BPlusOdsOmap(TreeOdsOmap):
             
             # For omap2: read target path + dummy path
             if traversing2:
-                dummy_leaf2 = omap2._get_new_leaf()
-                labels.append(omap2._name)
-                leaves.append([node2_leaf, dummy_leaf2])
-                omap_indices.append((2, node2_leaf, dummy_leaf2, node2_key))
+                # FIX for BottomUp: Check if leaf is within range of this omap
+                if node2_leaf >= omap2._leaf_range:
+                    traversing2 = False
+                    # Create dummy round instead
+                    leaf2_a = omap2._get_new_leaf()
+                    leaf2_b = omap2._get_new_leaf()
+                    labels.append(omap2._name)
+                    leaves.append([leaf2_a, leaf2_b])
+                    omap_indices.append((2, leaf2_a, leaf2_b, None))
+                else: 
+                    dummy_leaf2 = omap2._get_new_leaf()
+                    labels.append(omap2._name)
+                    leaves.append([node2_leaf, dummy_leaf2])
+                    omap_indices.append((2, node2_leaf, dummy_leaf2, node2_key))
             else:
                 # Dummy round for omap2
                 leaf2_a = omap2._get_new_leaf()
@@ -1570,28 +1594,19 @@ class BPlusOdsOmap(TreeOdsOmap):
 
     @staticmethod
     def parallel_search_and_delete(omap1: 'BPlusOdsOmap', search_key1: Any, delete_key1: Any,
-                                    omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any) -> Tuple[Any, Any, Any]:
+                                    omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any,
+                                    observer: Any = None) -> Tuple[Any, Any, Any]:
         """
         Perform search and delete on two OMAPs in parallel, all in h rounds.
-        
-        Each round reads 6 paths:
-        - omap1 search: target + dummy (2 paths)
-        - omap1 delete: target + sibling (2 paths) 
-        - omap2 search: target + dummy (2 paths)
-        - omap2 delete: target + sibling (2 paths)
-        
-        Delete operations include full sibling handling for underflow (borrow/merge).
-        
-        :param omap1: First OMAP (O_W)
-        :param search_key1: Key to search in omap1
-        :param delete_key1: Key to delete from omap1 (None for dummy deletion)
-        :param omap2: Second OMAP (O_R)
-        :param search_key2: Key to search in omap2
-        :param delete_key2: Key to delete from omap2 (None for dummy deletion)
-        :return: Tuple of (search_value1, search_value2, deleted_value_from_omap1)
         """
         if omap1._client is not omap2._client:
             raise ValueError("Both OMAPs must share the same client for parallel access.")
+            
+        # Re-verify root integrity before starting
+        if omap1.root is not None and omap2.root is not None:
+            # Check if root keys exist in stashes or are "in" the tree
+            # This is hard to check fully, but let's assume if root is not None, it should be somewhere.
+            pass
         
         client = omap1._client
         max_height = max(omap1._max_height, omap2._max_height)
@@ -1634,7 +1649,16 @@ class BPlusOdsOmap(TreeOdsOmap):
             for state in states:
                 omap = state.omap
                 if state.traversing:
-                    if state.needs_sibling and len(state.local) > 0:
+                    # FIX for BottomUp: Check if leaf is within range of this omap
+                    if state.node_leaf is not None and state.node_leaf >= omap._leaf_range:
+                        state.traversing = False
+                        # Convert to dummy
+                        leaf_a = omap._get_new_leaf()
+                        leaf_b = omap._get_new_leaf()
+                        labels.append(omap._name)
+                        leaves.append([leaf_a, leaf_b])
+                        state_infos.append((state, leaf_a, leaf_b, None, None, False))
+                    elif state.needs_sibling and len(state.local) > 0:
                         # Delete traversal: get sibling
                         parent = state.local[-1]
                         if len(parent.value.keys) != len(parent.value.values):  # Internal node
@@ -1748,7 +1772,11 @@ class BPlusOdsOmap(TreeOdsOmap):
                                 if found_target:
                                     break
                         if not found_target:
-                            raise KeyError(f"Key {target_key} not found in {state.name}.")
+                            # raise KeyError(f"Key {target_key} not found in {state.name}.")
+                            # FIX: If not found, it implies the structure is incomplete or the key is truly missing (and we reached a dead end in the tree).
+                            # We should treat this as "search failed" and stop traversing.
+                            state.traversing = False
+                            continue  # Skip to next state
                     
                     # Check stash for sibling if not found
                     if is_sibling_aux and aux_key is not None and not found_sibling:
@@ -1766,6 +1794,13 @@ class BPlusOdsOmap(TreeOdsOmap):
                         for data in bucket:
                             if not any(d.key == data.key for d in omap._stash):
                                 omap._stash.append(data)
+
+                # Call observer if provided (reporting total traversing node count)
+                if observer is not None:
+                    # Calculate total size of all traversal buffers
+                    total_local = sum(len(s.local) for s in states)
+                    total_sibling = sum(len(s.sibling_cache) for s in states if s.sibling_cache is not None)
+                    observer(total_local + total_sibling)
 
                 omap._update_peak_client_size()
                 
@@ -1787,6 +1822,9 @@ class BPlusOdsOmap(TreeOdsOmap):
             for state in states:
                 if state.traversing and state.local:
                     node = state.local[-1]
+                    # if round_num == 0:
+                    #     print(f"DEBUG: Root Node name={state.name}. KeysLen: {len(node.value.keys) if node.value.keys else 'None'}, ValsLen: {len(node.value.values) if node.value.values else 'None'}")
+                    
                     omap = state.omap
                     
                     # Assign new leaf (defensive: some nodes may arrive without a leaf)

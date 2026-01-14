@@ -229,6 +229,34 @@ class StaticOram(PathOram):
         # Return value, leaf, and path for deferred write
         return result_value, leaf, evicted_path
 
+    def process_retrieved_path(self, op: str, key: int, path: Buckets, value: Any = None) -> Any:
+        """
+        Process a path retrieved from server (e.g. via batch query).
+        
+        This mimics the internal processing of operate_on_key but assumes the path
+        has already been fetched.
+        
+        :param op: Operation type.
+        :param key: Key to operate on.
+        :param path: The retrieved path (Buckets).
+        :param value: Value to write (if op is write).
+        :return: The read value (if op is read).
+        """
+        return self.__retrieve_block(op=op, key=key, path=path, value=value)
+
+    def prepare_eviction(self, leaf: int) -> Buckets:
+        """
+        Perform eviction for a given leaf and return the path to be written back.
+        
+        :param leaf: The leaf identifying the path.
+        :return: The encrypted path buckets ready for write-back.
+        """
+        return self._evict_stash(leaf=leaf)
+
+    def get_path_leaf(self, key: int) -> int:
+        """Get the leaf number for a given key without triggering access."""
+        return self._get_path_number(key)
+
     def _get_path_number(self, key: int) -> int:
         """
         generate a fixed path number for the given key.

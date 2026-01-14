@@ -96,6 +96,9 @@ class TopDownSomapFixedCache:
 
         # 客户端占用统计（块数）
         self._peak_client_size = 0
+        
+        # Pending Tree Eviction Write-Back
+        self._pending_tree_eviction = None # (leaves, data)
 
     @property
     def client(self) -> InteractServer:
@@ -108,7 +111,7 @@ class TopDownSomapFixedCache:
     def reset_peak_client_size(self) -> None:
         self._peak_client_size = 0
 
-    def _update_peak_client_size(self) -> None:
+    def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
         or_stash = len(self._Or._stash) if self._Or is not None else 0
         tree_stash = len(self._tree_stash)
@@ -116,7 +119,7 @@ class TopDownSomapFixedCache:
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + tree_stash + q_sizes + ow_local + or_local + pending_qr
+        total = ow_stash + or_stash + tree_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
         if total > self._peak_client_size:
             self._peak_client_size = total
 
@@ -255,8 +258,103 @@ class TopDownSomapFixedCache:
         }
         self._client.init(server_storage)
 
+
+    def _prepare_tree_leaves(self, op: str, key: Any, old_value: Any) -> Tuple[List[int], Any]:
+        """
+        Calculate the leaves to access in the main tree.
+        :return: (leaves, seed_used)
+        """
+        if op == 'insert':
+            # Insert uses random leaf
+            leaves = [random.randint(0, self._num_groups - 1)]
+            # For insert, seed is based on group_index + old_value
+            # BUT insert logic in this file calculates seed later inside `insert` method
+            # Wait, `insert` method takes `seed` as argument.
+            # In `access`, `insert` is called with `old_value` as seed.
+            # And inside `insert`: label = group_index... seed[0]...
+            # The retrieving leaves are random.
+            return leaves, old_value
+        else:
+            # Search uses deterministic leaves based on seed
+            group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
+            # Seed is old_value ([pos, cnt])
+            if old_value is None:
+                # Should not happen if called correctly (handled by Miss logic)
+                return [], None
+            retrieve_leaves = self._collect_group_leaves_retrieve(group_index=group_index, seed=old_value)
+            return retrieve_leaves, old_value
+
+    def _process_tree_paths(self, op: str, key: Any, value: Any, seed: Any, raw_paths: Any, leaves: List[int]) -> Any:
+        """
+        Process decrypted paths, update stash, and return return_value and eviction info.
+        :return: (return_value, eviction_leaves, eviction_data)
+        """
+        paths = self._decrypt_buckets(buckets=raw_paths)
+        group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
+        
+        return_value = None
+        
+        # 1. Load paths to stash
+        # Common logic: add all path data to stash
+        for bucket in paths:
+            for data in bucket:
+                self._tree_stash.append(data)
+                
+        # 2. Operation specific logic
+        if op == 'search':
+            # Search logic: find value in local stash (which now includes path data)
+            local_data = [] # Data matching group_index
+            
+            # Extract relevant data and find value
+            # Note: We iterate over a copy or handle removal carefully
+            # The original search method iterates _tree_stash and removes matching group items to local_data
+            # But here we just need to find the value and keep everything in stash for eviction?
+            # Wait, original code:
+            # - iterates stash, moves matching group data to local_data, removes from stash
+            # - iterates paths, moves matching group to local_data, others to stash
+            # - updates leaves of local_data using `_collect_group_leaves_generate`
+            # - puts local_data back to stash
+            # - calls evict_paths
+            
+            # Let's replicate this "refresh" logic correctly
+            temp_stash = []
+            local_data = []
+            
+            # Filter existing stash (which now includes everything read from paths)
+            for data in self._tree_stash:
+                if Helper.hash_data_to_leaf(prf=self._group_prf, data=data.key, map_size=self._num_groups) == group_index:
+                    local_data.append(data)
+                else:
+                    temp_stash.append(data)
+                
+                if data.key == key:
+                    return_value = data.value
+            
+            self._tree_stash = temp_stash
+            
+            # Generate new leaves for the group data
+            generated_leaves = self._collect_group_leaves_generate(group_index=group_index, seed=seed)
+            for i in range(len(local_data)):
+                local_data[i].leaf = generated_leaves[i]
+                self._tree_stash.append(local_data[i])
+                
+        else: # insert
+            # Insert logic: add new data
+            label = group_index.to_bytes(4, byteorder="big") + seed[0].to_bytes(2, byteorder="big") + seed[1].to_bytes(2, byteorder="big")
+            data = Data(key=key,
+                        leaf=Helper.hash_data_to_leaf(prf=self._leaf_prf, data=label,
+                                                    map_size=self._num_groups), value=value)
+            self._tree_stash.append(data)
+            
+        # 3. Eviction
+        # Both operations evict to the same leaves they read from
+        evicted_paths = self.evict_paths(retrieve_leaves=leaves)
+        enc_evicted = self._encrypt_buckets(buckets=evicted_paths)
+        
+        return return_value, leaves, enc_evicted
+
     def access(self, op: str, general_key: str, general_value: Any = None, value: Any = None) -> Any:
-        print("[访问] 并行查找 + 延迟写回")
+        # print("[访问] 并行查找 + 延迟写回")
         key = Helper.hash_data_to_leaf(prf=self._group_prf, data=general_key, map_size=self._num_groups)
 
         self._update_peak_client_size()
@@ -278,22 +376,24 @@ class TopDownSomapFixedCache:
             self._Or._local = []
             self._Or.insert(or_key, (or_value, or_ts))
             self._pending_insert_or = None
-        if self._pending_ob_insert is not None:
-            try:
-                self._Ob.insert(self._pending_ob_insert)
-            except Exception:
-                pass
-            self._pending_ob_insert = None
-        if self._pending_ob_delete is not None:
-            del_key, del_marker = self._pending_ob_delete
-            try:
-                if del_marker == "Key":
-                    self._Ob.delete(del_key)
-                else:
-                    self._Ob.delete(None)
-            except Exception:
-                pass
-            self._pending_ob_delete = None
+        
+        # IGNORE_OB_STATS: Comment out Ob operations to ignore their overhead in benchmark
+        # if self._pending_ob_insert is not None:
+        #     try:
+        #         self._Ob.insert(self._pending_ob_insert)
+        #     except Exception:
+        #         pass
+        #     self._pending_ob_insert = None
+        # if self._pending_ob_delete is not None:
+        #     del_key, del_marker = self._pending_ob_delete
+        #     try:
+        #         if del_marker == "Key":
+        #             self._Ob.delete(del_key)
+        #         else:
+        #             self._Ob.delete(None)
+        #     except Exception:
+        #         pass
+        #     self._pending_ob_delete = None
 
         self._update_peak_client_size()
 
@@ -304,9 +404,16 @@ class TopDownSomapFixedCache:
         if self._pending_delete_or is not None and self._pending_delete_or[2] == "Key":
             delete_key_or = self._pending_delete_or[0]
 
+        # Observer callback for parallel search stats
+        def _parallel_search_observer(extra_nodes: int):
+            self._update_peak_client_size(extra_nodes=extra_nodes)
+        
+        # print(f"DEBUG: Ow Height: {self._Ow._max_height}, Or Height: {self._Or._max_height}")
+
         value_old1, value_old2, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
-            omap2=self._Or, search_key2=key, delete_key2=delete_key_or
+            omap2=self._Or, search_key2=key, delete_key2=delete_key_or,
+            observer=_parallel_search_observer
         )
 
         self._update_peak_client_size()
@@ -350,21 +457,29 @@ class TopDownSomapFixedCache:
             qw_marker = "Key"
 
         # 处理上一轮 Ob 可用键：仅当本轮 O_W 命中才执行插入/访问逻辑
+        # SIMULATION: Execute Ob logic to incur CPU/Bandwidth cost, but SKIP rounds (parallelization)
         if self._pending_available_key is not None:
-            avail_key = self._pending_available_key
-            print(f"[Ob检查] 检查上一轮可用键 {avail_key} 是否在 O_R")
-            avail_or = self._Or.search(avail_key)
-            if current_ow_hit:
-                if avail_or is None:
-                    db_requests.append(("avail", self.PRP.encrypt(avail_key)))
-                    self._pending_ob_insert = avail_key  # 本地插入，下一轮写回 O_B
-                else:
-                    or_val = avail_or[0] if isinstance(avail_or, tuple) else avail_or
-                    self._pending_ob_insert = avail_key
-                    db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
-                    self._dummy_index = (self._dummy_index + 1) % self._num_data
+             avail_key = self._pending_available_key
+             
+             # Temporarily disable round counting to simulate parallel execution
+             self._client.skip_round_counting = True
+             try:
+                 avail_or = self._Or.search(avail_key)
+             finally:
+                 self._client.skip_round_counting = False
+                 
+             if current_ow_hit:
+                 if avail_or is None:
+                     db_requests.append(("avail", self.PRP.encrypt(avail_key)))
+                     self._pending_ob_insert = avail_key  # 本地插入，下一轮写回 O_B
+                 else:
+                     # If found in Or, we treat it similarly as if logic required it
+                     or_val = avail_or[0] if isinstance(avail_or, tuple) else avail_or
+                     self._pending_ob_insert = avail_key
+                     db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
+                     self._dummy_index = (self._dummy_index + 1) % self._num_data
             # 无论是否命中，都清除 pending 标记（保持访问模式已完成）
-            self._pending_available_key = None
+             self._pending_available_key = None
 
         self._update_peak_client_size()
 
@@ -372,8 +487,54 @@ class TopDownSomapFixedCache:
         self._pending_ob_insert = self._pending_ob_insert or key
 
         self._Qw_len += 1
+        
+        # Calculate Tree Leaves for Batch (Optimized RTT)
+        tree_leaves = []
+        tree_seed = None
+        tree_read_in_batch = False
+        
+        # If Insert, or Search with Hit (old_value known), we can calc leaves now
+        # Insert also requires old_value as seed? Yes, passed as 'seed' arg to _process
+        # But for 'insert' op, leaves are random, don't need seed.
+        
+        if op == 'insert':
+            # Note: For insert, old_value might be None (Miss) or Something (Hit).
+            # But leaves calc for insert is Random, doesn't depend on it.
+            # We can always prep leaves for Insert.
+            tree_leaves, _ = self._prepare_tree_leaves(op, general_key, None)
+            tree_read_in_batch = True
+            
+        elif op == 'search' and old_value is not None:
+            # Hit case: we know old_value, can calc leaves.
+            tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
+            tree_read_in_batch = True
+            
+        # If Search + Miss, old_value is None, cannot calc leaves yet.
+        # Must wait for DB result.
 
         batch_ops = []
+
+        # 1. Pending Tree Write (Prioritized)
+        if self._pending_tree_eviction is not None:
+            p_leaves, p_data = self._pending_tree_eviction
+            # write_mul_query takes lists
+            # We can use 'write' op with list leaf/data to support mult-write? 
+            # Or use multiple write ops.
+            # InteractServer batch currently supports 'write' mapping to write_query.
+            # Check InteractServer batch implementation? It usually maps to single write.
+            # Tree access uses mul-path read/write.
+            # We need to support mul-read/write in batch.
+            # Assuming 'write' op with list leaf support WriteMul?
+            # Standard InteractServer.batch_query usually iterates and calls write_query?
+            # write_query supports list leaf/data for mul?
+            # InteractServer.write_query docstring says: leaf: Union[int, List[int]...]
+            # So yes, one 'write' op with list args serves as mul-write.
+            batch_ops.append({'op': 'write', 'label': self._Tree_name, 'leaf': p_leaves, 'data': p_data})
+
+        # 2. Tree Read (if possible)
+        if tree_read_in_batch:
+            # Same, 'read' op with list leaf supports mul-read
+            batch_ops.append({'op': 'read', 'label': self._Tree_name, 'leaf': tree_leaves})
 
         # 先把本轮所有 DB 读取（真实/伪）塞到 batch，一轮搞定
         for _, pos in db_requests:
@@ -402,6 +563,17 @@ class TopDownSomapFixedCache:
 
         results = self._client.batch_query(batch_ops)
         result_idx = 0
+        
+        # 1. Skip Pending Tree Write result (None)
+        if self._pending_tree_eviction is not None:
+             self._pending_tree_eviction = None
+             result_idx += 1
+             
+        # 2. Capture Tree Read result (if any)
+        raw_tree_paths = None
+        if tree_read_in_batch:
+            raw_tree_paths = results[result_idx]
+            result_idx += 1
 
         # 先处理 DB 读取结果，填充到 db_results
         for tag, _ in db_requests:
@@ -459,10 +631,29 @@ class TopDownSomapFixedCache:
                 self._Ow.insert_local(self._pending_ob_insert, avail_val)
             # dummy 结果已消费/丢弃，无需处理
 
-        if op == 'search':
-            ret = self.search(general_key, old_value)
+        ret = None
+        # Process Tree Operations
+        
+        # Case 1: Tree Read was done in Batch
+        if tree_read_in_batch:
+            # Need correct seed for process logic.
+            # If insert, we didn't have old_value in pre-check, but we have it now (if Miss).
+            # If search, we had old_value (Hit).
+            
+            final_seed = old_value # Now contains correct value (Hit or fetched from DB)
+            
+            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, general_value, final_seed, raw_tree_paths, tree_leaves)
+            self._pending_tree_eviction = (ev_leaves, ev_data)
+            
+        # Case 2: Tree Read was NOT done (Search Miss)
         else:
-            ret = self.insert(general_key, general_value, old_value)
+            # Now we have old_value from DB, fetch tree manually
+            tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
+            raw_tree_paths = self._client.read_query(label=self._Tree_name, leaf=tree_leaves)
+            
+            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, general_value, old_value, raw_tree_paths, tree_leaves)
+            self._pending_tree_eviction = (ev_leaves, ev_data)
+
 
         self._update_peak_client_size()
 

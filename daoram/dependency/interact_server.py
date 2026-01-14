@@ -475,7 +475,10 @@ class InteractLocalServer(InteractServer):
         """Execute multiple operations in a single round trip."""
         results = []
         for op in operations:
-            if op['op'] == 'write':
+            if op['op'] == 'read':
+                result = self.read_query(label=op['label'], leaf=op['leaf'])
+                results.append(result)
+            elif op['op'] == 'write':
                 self.write_query(label=op['label'], leaf=op['leaf'], data=op['data'])
                 results.append(None)
             elif op['op'] == 'list_insert':
@@ -521,13 +524,29 @@ class RemoteServer(InteractLocalServer):
 
     def __process_query(self, query: Union[dict, List[dict]]) -> Union[str, Block, Buckets, List[Buckets]]:
         """Process client's queries based on their types."""
-        # print(f"Received query: {query}")
+        # Check if query is a list (for read_mul_query which sends [q1, q2...])
+        if isinstance(query, list):
+            # Check if it's a batch of read queries (rm)
+            # read_mul_query sends [{"type": "r", ...}, ...]
+            results = []
+            for sub_q in query:
+                if sub_q["type"] == "r":
+                    results.append(self.read_query(label=sub_q["label"], leaf=sub_q["leaf"]))
+                elif sub_q["type"] == "w":
+                    self.write_query(label=sub_q["label"], leaf=sub_q["leaf"], data=sub_q["data"])
+                # Add handling for other types if needed, or assume uniform list
+            if any(sub_q["type"] == "r" for sub_q in query):
+                return results
+            return SERVER_DEFAULT_RESPONSE
+
         if query["type"] == "i":
             self.init(storage=query["storage"])
         elif query["type"] == "r":
             return self.read_query(label=query["label"], leaf=query["leaf"])
+        # rm and rw branches below are likely dead/incorrect code for list wrapping, but keeping for reference logic
         elif query["type"] == "rm":
-            return [self.read_query(label=each_query["label"], leaf=each_query["leaf"]) for each_query in query]
+             # This branch is unreachable with current read_mul_query implementation
+             pass
         elif query["type"] == "w":
             self.write_query(label=query["label"], leaf=query["leaf"], data=query["data"])
         elif query["type"] == "rw":

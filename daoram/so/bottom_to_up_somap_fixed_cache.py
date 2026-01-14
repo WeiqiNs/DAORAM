@@ -98,6 +98,9 @@ class BottomUpSomapFixedCache:
 
         # Pending Q_R inserts (enqueue in next batch round with D_S/Q_W ops)
         self._pending_qr_inserts: list = []
+        
+        # Pending D_S eviction write-back (delayed to next access to merge with read)
+        self._pending_ds_eviction: Optional[Tuple[int, Any]] = None  # (leaf, encrypted_path)
 
         # 客户端占用统计（块数）
         self._peak_client_size = 0
@@ -136,7 +139,7 @@ class BottomUpSomapFixedCache:
     def reset_peak_client_size(self) -> None:
         self._peak_client_size = 0
 
-    def _update_peak_client_size(self) -> None:
+    def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
         or_stash = len(self._Or._stash) if self._Or is not None else 0
         ds_stash = len(getattr(self._Ds, "_stash", [])) if self._Ds is not None else 0
@@ -144,7 +147,7 @@ class BottomUpSomapFixedCache:
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + ds_stash + q_sizes + ow_local + or_local + pending_qr
+        total = ow_stash + or_stash + ds_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
         if total > self._peak_client_size:
             self._peak_client_size = total
     
@@ -174,7 +177,7 @@ class BottomUpSomapFixedCache:
         # Initialize OMAP caches
         # O_W and O_R each store at most cache_size + 1 entries
         self._Ow = BPlusOdsOmap(
-            order=5,
+            order=4,
             num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
@@ -189,7 +192,7 @@ class BottomUpSomapFixedCache:
         )
         
         self._Or = BPlusOdsOmap(
-            order=5,
+            order=4,
             num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
@@ -203,7 +206,7 @@ class BottomUpSomapFixedCache:
             use_encryption=self._use_encryption
         )
 
-        print(f"[DEBUG] O_W tree height: {self._Ow._max_height}, O_R tree height: {self._Or._max_height}")
+        # print(f"[DEBUG] O_W tree height: {self._Ow._max_height}, O_R tree height: {self._Or._max_height}")
         
         # Initialize OMAP storage
         st_ow = self._Ow._init_ods_storage([])
@@ -221,20 +224,20 @@ class BottomUpSomapFixedCache:
         self._client.init(server_storage)
 
     def access(self, key: Any, op: str, value: Any = None) -> Any:
-        """
-        Access phase: Process a single operation
+        # print("[访问] 并行查找 + 延迟写回")
+        # key = Helper.hash_data_to_leaf(prf=self._group_prf, data=general_key, map_size=self._num_groups)
         
-        Optimized flow:
-        1. Execute parallel_search on O_W and O_R, with pending deletions from last query
-        2. Process the access (update/insert based on where key was found)
-        3. Single batch round: D_S write + Q_W insert + pending Q_R inserts + Q_W pop + Q_R pop
-        4. Cache popped elements for next query's deletion (no Q_R expiry check, always pop one when available)
+        # DEBUG PRINTS
+        # print(f"DEBUG: Ow MaxHeight: {self._Ow._max_height}, Level: {self._Ow._level}, LeafRange: {self._Ow._leaf_range}")
+        # print(f"DEBUG: Or MaxHeight: {self._Or._max_height}, Level: {self._Or._level}, LeafRange: {self._Or._leaf_range}")
+
+        # The access needs to use hash?
+        # Note: The benchmark script calls access(key, op).
+        # In TopDown: access(op, general_key, value).
+        # In BottomUp: access(key, op, value).
+        # The key passed is int?
+        # Benchmark says: keys = zipf_keys... (ints).
         
-        :param key: Key to access
-        :param op: Operation type ('read' or 'write')
-        :param value: New value (for write operations)
-        :return: Previous value of the key
-        """
         old_value = None
 
         self._update_peak_client_size()
@@ -267,10 +270,15 @@ class BottomUpSomapFixedCache:
                 delete_key_or = pending_key
             # else: marker == "Dummy", do dummy deletion (key=None)
 
+        # Observer callback for parallel search stats
+        def _parallel_search_observer(extra_nodes: int):
+            self._update_peak_client_size(extra_nodes=extra_nodes)
+
         # Parallel search with pending deletions - all 4 operations in h rounds
         value_ow, value_or, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
-            omap2=self._Or, search_key2=key, delete_key2=delete_key_or
+            omap2=self._Or, search_key2=key, delete_key2=delete_key_or,
+            observer=_parallel_search_observer
         )
 
         self._update_peak_client_size()
@@ -288,51 +296,49 @@ class BottomUpSomapFixedCache:
         if self._pending_delete_or is not None:
             self._pending_delete_or = None
 
+        # Pre-calculated markers and keys for D_S batch access
+        ds_read_key = None
+        ds_read_needed = False
+        
         # Process the current access
         # Case a: Key is in write cache O_W
         if value_ow is not None:
             old_value = value_ow
-            # Dummy access D_S
-            _, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=None)
-            # update (𝑘,𝑣) in O_W locally
-            if op == 'read':
-                self._Ow.search_local(key)
-            else:
-                self._Ow.search_local(key, value)
+            ds_read_key = None # Dummy
             qw_marker = "Dummy"
                
         # Case b: Key is in read cache O_R
         elif value_or is not None:
             old_value, _ = value_or
-            # Dummy access D_S
-            _, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=None)
-            # insert (𝑘,𝑣) to O_W locally
-            if op == 'read':
-                self._Ow.insert_local(key, old_value)  
-            else:
-                self._Ow.insert_local(key, value)
+            ds_read_key = None # Dummy
             qw_marker = "Key"
               
         # Case c: Key is not in cache
         else:
-            # Retrieve from static ORAM tree
-            old_value, leaf, evicted_path = self._Ds.operate_on_key_deferred(op="r", key=key)
-            # insert (𝑘,𝑣) to O_W locally
-            if op == 'read':
-                self._Ow.insert_local(key, old_value)  
-            else:
-                self._Ow.insert_local(key, value)
+            ds_read_key = key
+            ds_read_needed = True
             qw_marker = "Key"
 
         self._Qw_len += 1
 
         self._update_peak_client_size()
         
+        # Calculate D_S leaf (random for dummy, hash for real)
+        ds_leaf = self._Ds.get_path_leaf(ds_read_key)
+
         # Build batch operations list
-        batch_ops = [
-            {'op': 'write', 'label': self._Ds_name, 'leaf': leaf, 'data': evicted_path},
-            {'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))}
-        ]
+        batch_ops = []
+        
+        # 1. Pending D_S Write from previous access (Must be first to handle path collisions)
+        if self._pending_ds_eviction is not None:
+            p_leaf, p_data = self._pending_ds_eviction
+            batch_ops.append({'op': 'write', 'label': self._Ds_name, 'leaf': p_leaf, 'data': p_data})
+            
+        # 2. Current D_S Read
+        batch_ops.append({'op': 'read', 'label': self._Ds_name, 'leaf': ds_leaf})
+
+        # 3. Q_W insert
+        batch_ops.append({'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))})
 
         # Flush pending Q_R inserts in this batch round以共享 WAN 轮次
         pending_qr_count = len(self._pending_qr_inserts)
@@ -360,11 +366,58 @@ class BottomUpSomapFixedCache:
         results = self._client.batch_query(batch_ops)
         
         # Process results
-        result_idx = 2 + pending_qr_count  # Skip write, Q_W insert, and pending Q_R inserts
+        result_idx = 0
+        
+        # 1. Check Pending Write result (None)
+        if self._pending_ds_eviction is not None:
+            result_idx += 1
+            self._pending_ds_eviction = None
+            
+        # 2. Process D_S Read
+        if result_idx < len(results):
+            encrypted_path = results[result_idx]
+            result_idx += 1
+            
+            # Decrypt and process path
+            path = self._Ds._decrypt_buckets(encrypted_path)
+            # Use 'r' op to retrieve value and put into stash
+            # If dummy read, ds_read_key is None, still valid
+            ds_val = self._Ds.process_retrieved_path('r', ds_read_key, path, None)
+            
+            # If this was real access (Case C), update O_W
+            if ds_read_needed:
+                old_value = ds_val
+                if op == 'read':
+                    self._Ow.insert_local(key, old_value)  
+                else:
+                    self._Ow.insert_local(key, value)
+            else:
+                # Case a/b post-batch logic
+                if value_ow is not None:
+                    if op == 'read':
+                        self._Ow.search_local(key)
+                    else:
+                        self._Ow.search_local(key, value)
+                elif value_or is not None:
+                    if op == 'read':
+                        self._Ow.insert_local(key, old_value)  
+                    else:
+                        self._Ow.insert_local(key, value)
+
+            # Prepare Eviction for next round
+            new_evicted_path = self._Ds.prepare_eviction(ds_leaf)
+            self._pending_ds_eviction = (ds_leaf, new_evicted_path)
+
+        # 3. Skip Q_W insert result
+        result_idx += 1
+
+        # 4. Skip Pending Q_R inserts results
+        result_idx += pending_qr_count
 
         self._update_peak_client_size()
         
         # Handle Q_W pop result
+
         if qw_pop_added:
             encrypted_qw_pop = results[result_idx]
             if encrypted_qw_pop is not None:
