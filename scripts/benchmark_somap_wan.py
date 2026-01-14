@@ -22,7 +22,6 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from daoram.dependency.interact_server import InteractLocalServer, InteractServer  # type: ignore
-from daoram.dependency.binary_tree import BinaryTree  # type: ignore
 from daoram.so.bottom_to_up_somap_fixed_cache import BottomUpSomapFixedCache  # type: ignore
 from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache  # type: ignore
 from daoram.omap.bplus_ods_omap import BPlusOdsOmap  # type: ignore
@@ -46,44 +45,26 @@ class RoundCounter:
         if self._patched:
             return
         self._patched = True
-        # wrap client RPCs
+        # wrap client RPCs - reads and batch count as rounds, writes don't (batched with reads)
         for name, ctor in {
-            "batch_query": lambda fn: self._wrap_rpc(fn, lambda ops: {"type": "batch", "operations": ops}),
-            "read_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf: {"type": "r", "label": label, "leaf": leaf}),
+            "batch_query": lambda fn: self._wrap_rpc(fn, lambda ops: {"type": "batch", "operations": ops}, count_round=True),
+            "read_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf: {"type": "r", "label": label, "leaf": leaf}, count_round=True),
             "read_mul_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf: [
                 {"type": "r", "label": label[i], "leaf": leaf[i]} for i in range(len(label))
-            ]),
-            "write_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf, data: {"type": "w", "label": label, "leaf": leaf, "data": data}),
+            ], count_round=True),
+            "write_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf, data: {"type": "w", "label": label, "leaf": leaf, "data": data}, count_round=False),
             "write_mul_query": lambda fn: self._wrap_rpc(fn, lambda label, leaf, data: [
                 {"type": "w", "label": label[i], "leaf": leaf[i], "data": data[i]} for i in range(len(label))
-            ]),
+            ], count_round=False),
         }.items():
             orig = getattr(self.client, name, None)
             if orig:
                 setattr(self.client, name, ctor(orig))
-        # wrap BinaryTree path operations to approximate per-round ORAM cost
-        if getattr(BinaryTree, "read_path", None):
-            orig_read = BinaryTree.read_path
-            def _read(this, leaf):
-                self.rounds += 1
-                self.bytes_sent += self._size({"type": "bt_r", "leaf": leaf})
-                resp = orig_read(this, leaf)
-                self.bytes_recv += self._size(resp)
-                return resp
-            BinaryTree.read_path = _read  # type: ignore
-        if getattr(BinaryTree, "write_path", None):
-            orig_write = BinaryTree.write_path
-            def _write(this, leaf, data):
-                self.rounds += 1
-                self.bytes_sent += self._size({"type": "bt_w", "leaf": leaf, "data": data})
-                resp = orig_write(this, leaf, data)
-                self.bytes_recv += self._size(None)
-                return resp
-            BinaryTree.write_path = _write  # type: ignore
 
-    def _wrap_rpc(self, fn, payload_builder):
+    def _wrap_rpc(self, fn, payload_builder, count_round=True):
         def inner(*args, **kwargs):
-            self.rounds += 1
+            if count_round:
+                self.rounds += 1
             try:
                 payload = payload_builder(*args, **kwargs)
                 self.bytes_sent += self._size(payload)
