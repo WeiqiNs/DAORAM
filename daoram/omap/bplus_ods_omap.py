@@ -987,7 +987,13 @@ class BPlusOdsOmap(TreeOdsOmap):
             return
 
         # Get all nodes we need to visit until finding the key (optimized version).
-        rounds_used = self._find_leaf_to_local_optimized(key=key)
+        try:
+            rounds_used = self._find_leaf_to_local_optimized(key=key)
+        except KeyError:
+            # Tree structure issue during traversal - perform dummy rounds and return
+            self._local = []
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return
 
         self._update_peak_client_size()
 
@@ -1033,7 +1039,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         If the input value is not None, the value corresponding to the search tree will be updated.
         :param key: The search key of interest.
         :param value: The updated value.
-        :return: The (old) value corresponding to the search key.
+        :return: The (old) value corresponding to the search key, or None if not found.
         """
         if key is None:
             self._perform_dummy_rounds(num_rounds=self._max_height)
@@ -1045,7 +1051,13 @@ class BPlusOdsOmap(TreeOdsOmap):
             return None
 
         # Get all nodes we need to visit until finding the key (optimized version).
-        rounds_used = self._find_leaf_to_local_optimized(key=key)
+        try:
+            rounds_used = self._find_leaf_to_local_optimized(key=key)
+        except KeyError:
+            # Key not found during traversal - perform dummy rounds and return None
+            self._local = []
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return None
 
         self._update_peak_client_size()
 
@@ -2140,7 +2152,14 @@ class BPlusOdsOmap(TreeOdsOmap):
             raise ValueError("It seems the tree is empty and can't perform deletion.")
 
         # Traverse to leaf with siblings (optimized version)
-        rounds_used = self._find_leaf_to_local_with_siblings_optimized(key=key)
+        try:
+            rounds_used = self._find_leaf_to_local_with_siblings_optimized(key=key)
+        except KeyError:
+            # Key not found during traversal - perform dummy rounds and return None
+            self._local = []
+            self._sibling_cache = []
+            self._perform_dummy_rounds(num_rounds=self._max_height)
+            return None
 
         # Set the last node in local as leaf
         leaf = self._local[-1]

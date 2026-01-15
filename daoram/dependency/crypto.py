@@ -81,7 +81,8 @@ class Aes:
                 # Simulate CPU cost
                 dummy_cipher = AES.new(self.__key, self.__aes_mode, iv)
                 dummy_cipher.decrypt(ciphertext) # Discard result
-                
+            
+            # ciphertext here is already stripped of IV (done above)
             return unpad(padded_data=ciphertext, block_size=self.__key_byte_length, style="pkcs7")
 
         # Create a new AES instance.

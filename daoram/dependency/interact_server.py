@@ -490,6 +490,9 @@ class InteractLocalServer(InteractServer):
             elif op['op'] == 'list_get':
                 result = self.list_get(label=op['label'], index=op['index'])
                 results.append(result)
+            elif op['op'] == 'list_update':
+                self.list_update(label=op['label'], index=op['index'], value=op['value'])
+                results.append(None)
         return results
     
 class RemoteServer(InteractLocalServer):

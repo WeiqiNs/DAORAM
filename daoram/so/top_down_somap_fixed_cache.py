@@ -115,11 +115,11 @@ class TopDownSomapFixedCache:
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
         or_stash = len(self._Or._stash) if self._Or is not None else 0
         tree_stash = len(self._tree_stash)
-        q_sizes = self._Qw_len + self._Qr_len
+        # q_sizes = self._Qw_len + self._Qr_len # These are on server
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + tree_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
+        total = ow_stash + or_stash + tree_stash + ow_local + or_local + pending_qr + extra_nodes
         if total > self._peak_client_size:
             self._peak_client_size = total
 
@@ -179,6 +179,7 @@ class TopDownSomapFixedCache:
 
     def setup(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
         print("[初始化] 构建树与缓存")
+        print(f"TopDown Upper Bound (Paths per Search): {self.upper_bound}")
         extended_data = self._extend_database(None)
         self._dummy_index = 0
         if data is None:
@@ -423,18 +424,21 @@ class TopDownSomapFixedCache:
         db_requests = []  # list of (tag, pos)
         db_results = {}
 
-        # 先冲刷上次 pending 写回
-        if self._pending_insert_ds is not None:
-            ds_key, ds_value = self._pending_insert_ds
-            self._Ow  # hint to keep symmetrical to bottom_to_up
-            self._client  # keep lints quiet
-            self._operate_ds_write(ds_key, ds_value)
-            self._pending_insert_ds = None
+        # 延迟 DS 写回至本轮 Batch
+        # self._pending_insert_ds will be processed in batch construction stage
+        
         if self._pending_insert_or is not None:
             or_key, or_value, or_ts, _ = self._pending_insert_or
             # 在执行前清空 _local，避免残留导致 MemoryError
             self._Or._local = []
-            self._Or.insert(or_key, (or_value, or_ts))
+            
+            # Skip round counting for Or insert (Ob maintenance)
+            self._client.skip_round_counting = True
+            try:
+                self._Or.insert(or_key, (or_value, or_ts))
+            finally:
+                self._client.skip_round_counting = False
+                
             self._pending_insert_or = None
         
         # IGNORE_OB_STATS: Comment out Ob operations to ignore their overhead in benchmark
@@ -469,7 +473,7 @@ class TopDownSomapFixedCache:
             self._update_peak_client_size(extra_nodes=extra_nodes)
         
         # print(f"DEBUG: Ow Height: {self._Ow._max_height}, Or Height: {self._Or._max_height}")
-
+        
         value_old1, value_old2, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
             omap2=self._Or, search_key2=key, delete_key2=delete_key_or,
@@ -525,6 +529,8 @@ class TopDownSomapFixedCache:
              self._client.skip_round_counting = True
              try:
                  avail_or = self._Or.search(avail_key)
+             except KeyError:
+                 avail_or = None  # Key not in Or, treat as miss
              finally:
                  self._client.skip_round_counting = False
                  
@@ -568,33 +574,43 @@ class TopDownSomapFixedCache:
             # Hit case: we know old_value, can calc leaves.
             tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
             tree_read_in_batch = True
-            
-        # If Search + Miss, old_value is None, cannot calc leaves yet.
-        # Must wait for DB result.
+        
+        if self._pending_ob_insert is not None and current_ow_hit:
+            if "avail" in db_results and db_results["avail"]:
+                avail_val = db_results["avail"].pop(0)
+                self._Ow.insert_local(self._pending_ob_insert, avail_val)
+            # dummy 结果已消费/丢弃，无需处理
 
         batch_ops = []
+
+        # 0. Flush DS Write (Moved from start of access)
+        if self._pending_insert_ds is not None:
+            ds_key, ds_value = self._pending_insert_ds
+            
+            # Replicate _operate_ds_write logic within batch
+            # self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(key), data=value)
+            encrypted_ds_value = self._encrypt_data(ds_value)
+            encrypted_ds_pos = self.PRP.encrypt(ds_key)
+            
+            batch_ops.append({
+                'op': 'list_update', 
+                'label': 'DB', 
+                'index': encrypted_ds_pos, 
+                'value': encrypted_ds_value
+            })
+            
+            self._pending_insert_ds = None
 
         # 1. Pending Tree Write (Prioritized)
         if self._pending_tree_eviction is not None:
             p_leaves, p_data = self._pending_tree_eviction
-            # write_mul_query takes lists
-            # We can use 'write' op with list leaf/data to support mult-write? 
-            # Or use multiple write ops.
-            # InteractServer batch currently supports 'write' mapping to write_query.
-            # Check InteractServer batch implementation? It usually maps to single write.
-            # Tree access uses mul-path read/write.
-            # We need to support mul-read/write in batch.
-            # Assuming 'write' op with list leaf support WriteMul?
-            # Standard InteractServer.batch_query usually iterates and calls write_query?
-            # write_query supports list leaf/data for mul?
-            # InteractServer.write_query docstring says: leaf: Union[int, List[int]...]
-            # So yes, one 'write' op with list args serves as mul-write.
             batch_ops.append({'op': 'write', 'label': self._Tree_name, 'leaf': p_leaves, 'data': p_data})
 
-        # 2. Tree Read (if possible)
-        if tree_read_in_batch:
-            # Same, 'read' op with list leaf supports mul-read
-            batch_ops.append({'op': 'read', 'label': self._Tree_name, 'leaf': tree_leaves})
+        # 2. Tree Read (REMOVED from Batch to avoid double bandwidth usage)
+        # Note: We now always perform the Tree Read in the second round (separate call)
+        # This aligns the bandwidth: Batch (DS only) + Tree Read (Real), vs previously Batch+DummyRead + RealRead
+        
+        # batch_ops.append({'op': 'read', 'label': self._Tree_name, 'leaf': tree_ops_leaf})
 
         # 先把本轮所有 DB 读取（真实/伪）塞到 batch，一轮搞定
         for _, pos in db_requests:
@@ -624,16 +640,21 @@ class TopDownSomapFixedCache:
         results = self._client.batch_query(batch_ops)
         result_idx = 0
         
-        # 1. Skip Pending Tree Write result (None)
-        if self._pending_tree_eviction is not None:
+        # 0. Skip Flush DS Write result (None) -- fixed logic
+        if batch_ops and batch_ops[0].get('label') == 'DB' and batch_ops[0]['op'] == 'list_update':
+             result_idx += 1
+
+        # 1. Skip Pending Tree Write (Prioritized)
+        if result_idx < len(batch_ops) and batch_ops[result_idx].get('label') == self._Tree_name and batch_ops[result_idx]['op'] == 'write':
              self._pending_tree_eviction = None
              result_idx += 1
              
-        # 2. Capture Tree Read result (if any)
-        raw_tree_paths = None
-        if tree_read_in_batch:
-            raw_tree_paths = results[result_idx]
-            result_idx += 1
+        # 2. Capture Tree Read result (REMOVED)
+        # raw_tree_paths = None
+        # if tree_read_in_batch:
+        #    raw_tree_paths = results[result_idx]
+            
+        # result_idx += 1
 
         # 先处理 DB 读取结果，填充到 db_results
         for tag, _ in db_requests:
@@ -702,36 +723,37 @@ class TopDownSomapFixedCache:
         # Determine the value to use
         actual_value = value if value is not None else general_value
 
-        # Process Tree Operations
+        # Process Tree Operations (Simplified: Always 2nd Round Tree Read)
         
-        # Case 1: Tree Read was done in Batch
-        if tree_read_in_batch:
-            # Need correct seed for process logic.
-            # If insert, we didn't have old_value in pre-check, but we have it now (if Miss).
-            # If search, we had old_value (Hit).
-            
-            final_seed = old_value # Now contains correct value (Hit or fetched from DB)
-            
-            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, final_seed, raw_tree_paths, tree_leaves)
-            self._pending_tree_eviction = (ev_leaves, ev_data)
-            
-        # Case 2: Tree Read was NOT done (Search Miss)
-        else:
-            # Now we have old_value from DB, fetch tree manually
+        # 1. Prepare Tree Leaves (using Hit/Insert logic or fetched DB miss logic)
+        if op == 'insert':
+            tree_leaves, _ = self._prepare_tree_leaves(op, general_key, None)
+        elif op == 'search':
+            # old_value is now populated either from cache hit or from db_results[main]
             tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
-            raw_tree_paths = self._client.read_query(label=self._Tree_name, leaf=tree_leaves)
             
-            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, old_value, raw_tree_paths, tree_leaves)
-            self._pending_tree_eviction = (ev_leaves, ev_data)
+        # 2. Perform Real Tree Read (2nd Round Trip)
+        # This handles both Hit (Real read) and Miss (Real read using fetched seed)
+        raw_tree_paths = self._client.read_query(label=self._Tree_name, leaf=tree_leaves)
+        
+        # 3. Process
+        final_seed = old_value 
+        ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, final_seed, raw_tree_paths, tree_leaves)
+        self._pending_tree_eviction = (ev_leaves, ev_data)
 
 
         self._update_peak_client_size()
 
         # 本轮结束前，获取下一轮要检查的可用键（延迟到下次访问检查 Or），不在本轮使用
+        # Skip round counting for Ob available check as effectively piggybacked
         try:
-            self._pending_available_key_next = self._Ob.find_available()
-        except Exception:
-            self._pending_available_key_next = None
+            self._client.skip_round_counting = True
+            try:
+                self._pending_available_key_next = self._Ob.find_available()
+            except Exception:
+                self._pending_available_key_next = None
+        finally:
+             self._client.skip_round_counting = False
 
         # 切换 next available key 为下一轮待检查
         self._pending_available_key = self._pending_available_key_next

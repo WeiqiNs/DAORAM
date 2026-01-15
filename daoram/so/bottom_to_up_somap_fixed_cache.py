@@ -1,6 +1,7 @@
 import os
 from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.dependency.crypto import Aes
+from daoram.dependency.helper import Data
 from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 from daoram.oram.static_oram import StaticOram
 from typing import Any, Dict, Tuple, Optional
@@ -101,6 +102,7 @@ class BottomUpSomapFixedCache:
         
         # Pending D_S eviction write-back (delayed to next access to merge with read)
         self._pending_ds_eviction: Optional[Tuple[int, Any]] = None  # (leaf, encrypted_path)
+        self._pending_ds_eviction_secondary: Optional[Tuple[int, Any]] = None  # Secondary pending write
 
         # 客户端占用统计（块数）
         self._peak_client_size = 0
@@ -225,28 +227,19 @@ class BottomUpSomapFixedCache:
 
     def access(self, key: Any, op: str, value: Any = None) -> Any:
         # print("[访问] 并行查找 + 延迟写回")
-        # key = Helper.hash_data_to_leaf(prf=self._group_prf, data=general_key, map_size=self._num_groups)
-        
-        # DEBUG PRINTS
-        # print(f"DEBUG: Ow MaxHeight: {self._Ow._max_height}, Level: {self._Ow._level}, LeafRange: {self._Ow._leaf_range}")
-        # print(f"DEBUG: Or MaxHeight: {self._Or._max_height}, Level: {self._Or._level}, LeafRange: {self._Or._leaf_range}")
-
-        # The access needs to use hash?
-        # Note: The benchmark script calls access(key, op).
-        # In TopDown: access(op, general_key, value).
-        # In BottomUp: access(key, op, value).
-        # The key passed is int?
-        # Benchmark says: keys = zipf_keys... (ints).
         
         old_value = None
 
         self._update_peak_client_size()
 
-        # 先处理上一次删除留下的待写回（O_R 插入 + D_S 写回），使用完整 h 轮保证路径正确
+        # 记录 pending D_S insert 信息，稍后在 batch 中处理
+        pending_ds_insert_key = None
+        pending_ds_insert_value = None
         if self._pending_insert_ds is not None:
-            ds_key, ds_value = self._pending_insert_ds
-            self._Ds.operate_on_key(op="w", key=ds_key, value=ds_value)
+            pending_ds_insert_key, pending_ds_insert_value = self._pending_insert_ds
             self._pending_insert_ds = None
+        
+        # O_R insert 仍需完整 h 轮（因为需要遍历 B+ 树），无法合并到 batch
         if self._pending_insert_or is not None:
             or_key, or_value, or_ts, _ = self._pending_insert_or
             self._Or.insert(or_key, (or_value, or_ts))
@@ -325,19 +318,35 @@ class BottomUpSomapFixedCache:
         
         # Calculate D_S leaf (random for dummy, hash for real)
         ds_leaf = self._Ds.get_path_leaf(ds_read_key)
+        
+        # Calculate pending D_S insert leaf (if any)
+        pending_ds_insert_leaf = None
+        if pending_ds_insert_key is not None:
+            pending_ds_insert_leaf = self._Ds.get_path_leaf(pending_ds_insert_key)
 
         # Build batch operations list
         batch_ops = []
         
-        # 1. Pending D_S Write from previous access (Must be first to handle path collisions)
+        # 1. Pending D_S Eviction Write from previous access (Must be first)
         if self._pending_ds_eviction is not None:
             p_leaf, p_data = self._pending_ds_eviction
             batch_ops.append({'op': 'write', 'label': self._Ds_name, 'leaf': p_leaf, 'data': p_data})
+        
+        # 1b. Secondary Pending D_S Eviction Write (from pending insert)
+        if self._pending_ds_eviction_secondary is not None:
+            p_leaf2, p_data2 = self._pending_ds_eviction_secondary
+            batch_ops.append({'op': 'write', 'label': self._Ds_name, 'leaf': p_leaf2, 'data': p_data2})
+        
+        # 2. Pending D_S Insert Read (if any) - read path to update with new value
+        pending_ds_insert_read_added = False
+        if pending_ds_insert_key is not None:
+            batch_ops.append({'op': 'read', 'label': self._Ds_name, 'leaf': pending_ds_insert_leaf})
+            pending_ds_insert_read_added = True
             
-        # 2. Current D_S Read
+        # 3. Current D_S Read
         batch_ops.append({'op': 'read', 'label': self._Ds_name, 'leaf': ds_leaf})
 
-        # 3. Q_W insert
+        # 4. Q_W insert
         batch_ops.append({'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))})
 
         # Flush pending Q_R inserts in this batch round以共享 WAN 轮次
@@ -368,21 +377,70 @@ class BottomUpSomapFixedCache:
         # Process results
         result_idx = 0
         
-        # 1. Check Pending Write result (None)
+        # 1. Check Pending Eviction Write result (None)
         if self._pending_ds_eviction is not None:
             result_idx += 1
             self._pending_ds_eviction = None
+        
+        # 1b. Check Secondary Pending Eviction Write result (None)
+        if self._pending_ds_eviction_secondary is not None:
+            result_idx += 1
+            self._pending_ds_eviction_secondary = None
+        
+        # 2. Process Pending D_S Insert Read (if any)
+        if pending_ds_insert_read_added and result_idx < len(results):
+            pending_insert_path = results[result_idx]
+            result_idx += 1
+            # Process the path and update with pending value
+            is_decrypted = False
+            if pending_insert_path and isinstance(pending_insert_path, list) and len(pending_insert_path) > 0:
+                if isinstance(pending_insert_path[0], list) and len(pending_insert_path[0]) > 0:
+                    if isinstance(pending_insert_path[0][0], Data):
+                        is_decrypted = True
+            if is_decrypted:
+                original_enc = self._Ds._use_encryption
+                self._Ds._use_encryption = False
+                try:
+                    self._Ds.process_retrieved_path('w', pending_ds_insert_key, pending_insert_path, pending_ds_insert_value)
+                finally:
+                    self._Ds._use_encryption = original_enc
+            else:
+                self._Ds.process_retrieved_path('w', pending_ds_insert_key, pending_insert_path, pending_ds_insert_value)
+            # Prepare eviction for this path - will be written in next batch
+            pending_insert_evicted = self._Ds.prepare_eviction(pending_ds_insert_leaf)
+            # Store as secondary pending eviction for next batch
+            self._pending_ds_eviction_secondary = (pending_ds_insert_leaf, pending_insert_evicted)
             
-        # 2. Process D_S Read
+        # 3. Process Current D_S Read
         if result_idx < len(results):
             encrypted_path = results[result_idx]
             result_idx += 1
             
-            # Decrypt and process path
-            path = self._Ds._decrypt_buckets(encrypted_path)
-            # Use 'r' op to retrieve value and put into stash
-            # If dummy read, ds_read_key is None, still valid
-            ds_val = self._Ds.process_retrieved_path('r', ds_read_key, path, None)
+            # Correct logic:
+            # 1. Check if path_raw is already Data objects.
+            # 2. If so, call process_retrieved_path with encryption disabled (to skip 2nd dec).
+            # 3. If not (bytes), call process_retrieved_path normally (it will decrypt).
+            
+            path_for_oram = encrypted_path # results[result_idx]
+            
+            is_decrypted = False
+            if path_for_oram and isinstance(path_for_oram, list) and len(path_for_oram) > 0:
+                 if isinstance(path_for_oram[0], list) and len(path_for_oram[0]) > 0:
+                      if isinstance(path_for_oram[0][0], Data):
+                           is_decrypted = True
+                           
+            if is_decrypted:
+                 original_enc = self._Ds._use_encryption
+                 self._Ds._use_encryption = False
+                 try:
+                      ds_val = self._Ds.process_retrieved_path('r', ds_read_key, path_for_oram, None)
+                 finally:
+                      self._Ds._use_encryption = original_enc
+            else:
+                 # Standard encrypted path, let ORAM decrypt it
+                 ds_val = self._Ds.process_retrieved_path('r', ds_read_key, path_for_oram, None)
+            
+
             
             # If this was real access (Case C), update O_W
             if ds_read_needed:
