@@ -13,7 +13,7 @@ from daoram.dependency import RemoteServer
 
 def simulate():
     # Create the server socket and run it.
-    server = RemoteServer()
+    server = RemoteServer(ip="0.0.0.0")
     server.run()
 
 
