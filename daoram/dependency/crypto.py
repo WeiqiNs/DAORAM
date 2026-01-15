@@ -4,6 +4,10 @@ from Cryptodome.Cipher import AES
 from Cryptodome.Random import get_random_bytes
 from Cryptodome.Util.Padding import pad, unpad
 
+# Global flag to enable Mock Encryption for benchmarking
+MOCK_ENCRYPTION = False
+# Global flag to simulate CPU cost during Mock Encryption (by encrypting dummy data)
+SIMULATE_CPU_COST = False
 
 class Aes:
     def __init__(self, aes_mode=AES.MODE_CBC, key: Optional[bytes] = None, key_byte_length: int = 16):
@@ -23,6 +27,9 @@ class Aes:
         # Save other AES configurations.
         self.__key_byte_length = key_byte_length
         self.__aes_mode = aes_mode
+        
+        # Pre-allocate a dummy cipher for simulation to avoid initialization overhead?
+        # No, initialization is part of the cost.
 
     @property
     def key(self) -> bytes:
@@ -36,6 +43,20 @@ class Aes:
 
     def enc(self, plaintext: bytes) -> bytes:
         """Perform AES encryption on the provided plaintext."""
+        # MOCK MODE: Skip actual AES for speed, but keep padding/size logic
+        if MOCK_ENCRYPTION:
+            iv = b'\x00' * self.__key_byte_length
+            padded = pad(data_to_pad=plaintext, block_size=self.__key_byte_length, style="pkcs7")
+            
+            if SIMULATE_CPU_COST:
+                # Simulate the CPU cost by encrypting the padded data with a real cipher
+                # We use a static key/iv to avoid randomness cost if desired, or random if we want full emulation.
+                # To be fair, we should include cipher create cost.
+                dummy_cipher = AES.new(self.__key, self.__aes_mode, iv)
+                dummy_cipher.encrypt(padded) # Discard result
+
+            return iv + padded
+
         # Sample a new IV to use.
         iv = get_random_bytes(self.__key_byte_length)
 
@@ -53,6 +74,15 @@ class Aes:
         # Separate the IV and the ciphertext.
         iv = ciphertext[:self.__key_byte_length]
         ciphertext = ciphertext[self.__key_byte_length:]
+
+        # MOCK MODE: Just unpad
+        if MOCK_ENCRYPTION:
+            if SIMULATE_CPU_COST:
+                # Simulate CPU cost
+                dummy_cipher = AES.new(self.__key, self.__aes_mode, iv)
+                dummy_cipher.decrypt(ciphertext) # Discard result
+                
+            return unpad(padded_data=ciphertext, block_size=self.__key_byte_length, style="pkcs7")
 
         # Create a new AES instance.
         cipher = AES.new(self.__key, self.__aes_mode, iv)

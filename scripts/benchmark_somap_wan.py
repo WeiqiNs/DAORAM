@@ -20,6 +20,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from daoram.dependency import crypto
 from daoram.dependency.interact_server import InteractRemoteServer, InteractServer
 from daoram.so.bottom_to_up_somap_fixed_cache import BottomUpSomapFixedCache
 from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache
@@ -136,6 +137,11 @@ def run_bottom_up(num_data: int, cache_size: int, data_size: int, keys: List[int
     proto.setup(build_data(num_data))
     proto.reset_peak_client_size()
     
+    # Enable CPU Simulation if Mock Crypto is on
+    if crypto.MOCK_ENCRYPTION:
+        print("Enabling Simulated CPU Cost for operations...")
+        crypto.SIMULATE_CPU_COST = True
+
     start = time.time()
     print("Start Operations...")
     for i, (key, op) in enumerate(zip(keys, ops)):
@@ -148,6 +154,10 @@ def run_bottom_up(num_data: int, cache_size: int, data_size: int, keys: List[int
         else:
             proto.access(key, 'write', [key, key + 1])
     print("")
+
+    # Reset CPU Simulation flag
+    if crypto.MOCK_ENCRYPTION:
+        crypto.SIMULATE_CPU_COST = False
             
     client.close_connection()
             
@@ -179,6 +189,11 @@ def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int]
     proto.setup([(k, [k, k]) for k in range(num_data)])
     proto.reset_peak_client_size()
     
+    # Enable CPU Simulation if Mock Crypto is on
+    if crypto.MOCK_ENCRYPTION:
+        print("Enabling Simulated CPU Cost for operations...")
+        crypto.SIMULATE_CPU_COST = True
+
     start = time.time()
     print("Start Operations...")
     for i, (key, op) in enumerate(zip(keys, ops)):
@@ -194,6 +209,10 @@ def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int]
         except (KeyError, MemoryError):
              continue
     print("")
+
+    # Reset CPU Simulation flag
+    if crypto.MOCK_ENCRYPTION:
+        crypto.SIMULATE_CPU_COST = False
 
     client.close_connection()
     return {
@@ -225,6 +244,11 @@ def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[
     client.init({omap._name: storage})
     omap.reset_peak_client_size()
 
+    # Enable CPU Simulation if Mock Crypto is on
+    if crypto.MOCK_ENCRYPTION:
+        print("Enabling Simulated CPU Cost for operations...")
+        crypto.SIMULATE_CPU_COST = True
+
     start = time.time()
     print("Start Operations...")
     for i, (key, op) in enumerate(zip(keys, ops)):
@@ -236,6 +260,10 @@ def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[
         else:
             omap.insert(key, [key, key + 1])
     print("")
+
+    # Reset CPU Simulation flag
+    if crypto.MOCK_ENCRYPTION:
+        crypto.SIMULATE_CPU_COST = False
 
     client.close_connection()
     return {
@@ -250,7 +278,12 @@ def main():
     parser.add_argument("--latency", type=float, default=0.00, help="Simulated Network Latency (one-way? No, Round Trip Delay approx) per round in seconds.")
     parser.add_argument("--ops", type=int, default=20, help="Number of operations")
     parser.add_argument("--protocol", type=str, default="all", choices=["all", "bottom_up", "top_down", "baseline"], help="Which protocol to benchmark")
+    parser.add_argument("--mock-crypto", action="store_true", help="Enable fast mock encryption for initialization (preserves size, skips CPU cost)")
     args = parser.parse_args()
+
+    if args.mock_crypto:
+        print("[Using Mock Encryption] Fast init enabled. CPU cost for encryption is removed, but bandwidth overhead is preserved.")
+        crypto.MOCK_ENCRYPTION = True
 
     num_data = (2 ** 14)-1  # 16383
     cache_size = (2 ** 10)-1 # 1023

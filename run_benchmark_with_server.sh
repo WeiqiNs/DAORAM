@@ -6,6 +6,9 @@
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
+# Capture all script arguments
+SCRIPT_ARGS="$@"
+
 echo "[INFO] Cleaning up ports..."
 lsof -ti:10000 | xargs kill -9 2>/dev/null
 
@@ -23,7 +26,8 @@ run_protocol() {
     
     # Run Benchmark
     echo "[INFO] Running client..."
-    PYTHONPATH=. python scripts/benchmark_somap_wan.py --ops 20 --latency 0.02 --protocol $PROTO
+    # Pass global SCRIPT_ARGS
+    PYTHONPATH=. python scripts/benchmark_somap_wan.py --ops 20 --latency 0.02 --protocol $PROTO $SCRIPT_ARGS
     
     # Kill Server
     echo "[INFO] Killing server..."
