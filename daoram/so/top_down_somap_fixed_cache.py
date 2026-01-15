@@ -29,7 +29,8 @@ class TopDownSomapFixedCache:
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True,
-                 key_size: int = 16):
+                 key_size: int = 16,
+                 order: int = 4):
         self._num_data = num_data
         self._num_groups = num_data
         self._cache_size = cache_size
@@ -43,6 +44,7 @@ class TopDownSomapFixedCache:
         self._aes_key = aes_key
         self._num_key_bytes = num_key_bytes
         self._use_encryption = use_encryption
+        self._order = order
         self._extended_size = 3 * self._num_data
 
         self._group_prf = Prf()
@@ -239,17 +241,17 @@ class TopDownSomapFixedCache:
 
         keys_list = dummy_keys
 
-        self._Ow = BPlusOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Ow_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or = BPlusOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Or_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Ob = BPlusSubsetOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
                                       data_size=self._data_size, client=self._client, name=self._Ob_name,
                                       filename=self._filename, bucket_size=self._bucket_size,
                                       stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,

@@ -32,7 +32,8 @@ class BottomUpSomapFixedCache:
                  stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 use_encryption: bool = True,
+                 order: int = 4):
         """
         Initialize Bottom-to-Up SOMAP with Fixed Cache
         
@@ -58,6 +59,7 @@ class BottomUpSomapFixedCache:
         self._stash_scale = stash_scale
         self._aes_key = aes_key
         self._num_key_bytes = num_key_bytes
+        self._order = order
         self._use_encryption = use_encryption
         
         # Initialize encryption for list data
@@ -179,7 +181,7 @@ class BottomUpSomapFixedCache:
         # Initialize OMAP caches
         # O_W and O_R each store at most cache_size + 1 entries
         self._Ow = BPlusOdsOmap(
-            order=4,
+            order=self._order,
             num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
@@ -194,7 +196,7 @@ class BottomUpSomapFixedCache:
         )
         
         self._Or = BPlusOdsOmap(
-            order=4,
+            order=self._order,
             num_data=self._cache_size + 1,
             key_size=self._num_key_bytes,
             data_size=self._data_size,

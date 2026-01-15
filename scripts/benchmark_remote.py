@@ -112,12 +112,25 @@ def zipf_keys(n, size, alpha=1.0):
     return random.choices(range(n), weights=probs, k=size)
 
 
-def build_data(num_data: int) -> Dict[int, Any]:
-    return {i: [i, i] for i in range(num_data)}
+def build_data(num_data: int, value_size: int = 16) -> Dict[int, Any]:
+    """Build initial data with specified value size.
+    
+    :param num_data: Number of data entries
+    :param value_size: Size of each value in bytes
+    :return: Dictionary mapping keys to values
+    """
+    # Create value as bytes of specified size
+    return {i: bytes(value_size) for i in range(num_data)}
+
+
+def make_value(key: int, value_size: int = 16) -> bytes:
+    """Create a value of specified size for a given key."""
+    return bytes(value_size)
 
 
 def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int, 
-                  data_size: int, keys: List[int], ops: List[str]):
+                  data_size: int, keys: List[int], ops: List[str], order: int = 4,
+                  key_size: int = 16, value_size: int = 16, mode: str = "mix"):
     """Run Bottom-Up protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -127,12 +140,13 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
     
     proto = BottomUpSomapFixedCache(
         num_data=num_data, cache_size=cache_size, data_size=data_size,
-        client=client, use_encryption=True, aes_key=b'0'*16
+        client=client, use_encryption=True, aes_key=b'0'*16, order=order,
+        num_key_bytes=key_size
     )
     
     print("  Uploading initial data to server...")
     setup_start = time.time()
-    proto.setup(build_data(num_data))
+    proto.setup(build_data(num_data, value_size))
     setup_time = time.time() - setup_start
     print(f"  Setup complete in {setup_time:.2f}s")
     
@@ -143,18 +157,32 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
     start = time.time()
     success = 0
     
-    for i, (key, op) in enumerate(zip(keys, ops)):
-        if i % 10 == 0:
-            sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
-            sys.stdout.flush()
-        try:
-            if op == 'read':
-                proto.access(key, 'read')
-            else:
-                proto.access(key, 'write', [key, key + 1])
-            success += 1
-        except Exception as e:
-            print(f"\n  Error on op {i}: {e}")
+    if mode == "insert_only":
+        # Insert new keys that don't exist in initial data
+        base_new_key = num_data + 100000
+        for i in range(len(keys)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                new_key = base_new_key + i
+                proto.access(new_key, 'write', make_value(new_key, value_size))
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
+    else:
+        for i, (key, op) in enumerate(zip(keys, ops)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                if op == 'read':
+                    proto.access(key, 'read')
+                else:
+                    proto.access(key, 'write', make_value(key, value_size))
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
             
     print(f"\r  Progress: {len(keys)}/{len(keys)} - Done!")
     
@@ -172,7 +200,8 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
 
 
 def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
-                 data_size: int, keys: List[int], ops: List[str]):
+                 data_size: int, keys: List[int], ops: List[str], order: int = 4,
+                 key_size: int = 16, value_size: int = 16, mode: str = "mix"):
     """Run Top-Down protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -182,12 +211,13 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
     
     proto = TopDownSomapFixedCache(
         num_data=num_data, cache_size=cache_size, data_size=data_size,
-        client=client, use_encryption=True, aes_key=b'0'*16
+        client=client, use_encryption=True, aes_key=b'0'*16, order=order,
+        num_key_bytes=key_size, key_size=key_size
     )
     
     print("  Uploading initial data to server...")
     setup_start = time.time()
-    proto.setup([(str(k), [k, k]) for k in range(num_data)])
+    proto.setup([(str(k), make_value(k, value_size)) for k in range(num_data)])
     setup_time = time.time() - setup_start
     print(f"  Setup complete in {setup_time:.2f}s")
     
@@ -198,16 +228,30 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
     start = time.time()
     success = 0
     
-    for i, (key, op) in enumerate(zip(keys, ops)):
-        if i % 10 == 0:
-            sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
-            sys.stdout.flush()
-        try:
-            gk = str(key)
-            proto.access('search', gk)
-            success += 1
-        except Exception as e:
-            print(f"\n  Error on op {i}: {e}")
+    if mode == "insert_only":
+        # Insert new keys
+        base_new_key = num_data + 100000
+        for i in range(len(keys)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                new_key = base_new_key + i
+                proto.access('insert', str(new_key), value=make_value(new_key, value_size))
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
+    else:
+        for i, (key, op) in enumerate(zip(keys, ops)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                gk = str(key)
+                proto.access('search', gk)
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
             
     print(f"\r  Progress: {len(keys)}/{len(keys)} - Done!")
     
@@ -225,7 +269,8 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
 
 
 def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
-                 keys: List[int], ops: List[str]):
+                 keys: List[int], ops: List[str], order: int = 4,
+                 key_size: int = 16, value_size: int = 16, mode: str = "mix"):
     """Run Baseline BPlus OMAP benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -234,13 +279,14 @@ def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
     counter.wrap()
     
     omap = BPlusOdsOmap(
-        order=4, num_data=num_data, key_size=16, data_size=data_size,
-        client=client, name="baseline", use_encryption=True, aes_key=b'0'*16
+        order=order, num_data=num_data, key_size=key_size, data_size=data_size,
+        client=client, name="baseline", use_encryption=True, aes_key=b'0'*16,
+        num_key_bytes=key_size
     )
     
     print("  Uploading initial data to server...")
     setup_start = time.time()
-    storage = omap._init_ods_storage([(k, [k, k]) for k in range(num_data)])
+    storage = omap._init_ods_storage([(k, make_value(k, value_size)) for k in range(num_data)])
     client.init({omap._name: storage})
     setup_time = time.time() - setup_start
     print(f"  Setup complete in {setup_time:.2f}s")
@@ -252,18 +298,32 @@ def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
     start = time.time()
     success = 0
     
-    for i, (key, op) in enumerate(zip(keys, ops)):
-        if i % 10 == 0:
-            sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
-            sys.stdout.flush()
-        try:
-            if op == 'read':
-                omap.search(key)
-            else:
-                omap.insert(key, [key, key + 1])
-            success += 1
-        except Exception as e:
-            print(f"\n  Error on op {i}: {e}")
+    if mode == "insert_only":
+        # Insert new keys
+        base_new_key = num_data + 100000
+        for i in range(len(keys)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                new_key = base_new_key + i
+                omap.insert(new_key, make_value(new_key, value_size))
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
+    else:
+        for i, (key, op) in enumerate(zip(keys, ops)):
+            if i % 10 == 0:
+                sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
+                sys.stdout.flush()
+            try:
+                if op == 'read':
+                    omap.search(key)
+                else:
+                    omap.insert(key, make_value(key, value_size))
+                success += 1
+            except Exception as e:
+                print(f"\n  Error on op {i}: {e}")
             
     print(f"\r  Progress: {len(keys)}/{len(keys)} - Done!")
     
@@ -304,6 +364,11 @@ def main():
     parser.add_argument("--read-ratio", type=float, default=0.7, help="Ratio of read operations")
     parser.add_argument("--num-data", type=int, default=16383, help="Initial data size (default: 2^14-1)")
     parser.add_argument("--cache-size", type=int, default=1023, help="Cache size (default: 2^10-1)")
+    parser.add_argument("--order", type=int, default=4, help="B+ tree order (default: 4)")
+    parser.add_argument("--key-size", type=int, default=16, help="Key size in bytes (default: 16)")
+    parser.add_argument("--value-size", type=int, default=16, help="Value size in bytes (default: 16)")
+    parser.add_argument("--mode", type=str, default="mix", choices=["mix", "insert_only"],
+                        help="Operation mode: mix (read/write) or insert_only (new keys)")
     parser.add_argument("--mock-crypto", action="store_true", help="Use mock encryption")
     args = parser.parse_args()
 
@@ -313,7 +378,9 @@ def main():
 
     num_data = args.num_data
     cache_size = args.cache_size
-    data_size = 16
+    key_size = args.key_size
+    value_size = args.value_size
+    data_size = value_size  # data_size is the value size for ORAM
     total_ops = args.ops
 
     keys = zipf_keys(num_data, total_ops, alpha=0.8)
@@ -325,8 +392,13 @@ def main():
     print(f"  Server:     {args.server_ip}:{args.port}")
     print(f"  N:          {num_data}")
     print(f"  Cache:      {cache_size}")
+    print(f"  Order:      {args.order}")
+    print(f"  Key Size:   {key_size} bytes")
+    print(f"  Value Size: {value_size} bytes")
+    print(f"  Mode:       {args.mode}")
     print(f"  Operations: {total_ops}")
-    print(f"  Read Ratio: {args.read_ratio}")
+    if args.mode == "mix":
+        print(f"  Read Ratio: {args.read_ratio}")
     print("="*60)
 
     results = {}
@@ -335,7 +407,8 @@ def main():
         print("\n[Bottom-Up SOMAP]")
         results['bottom_up'] = run_bottom_up(
             args.server_ip, args.port, num_data, cache_size, 
-            data_size, keys, ops_list
+            data_size, keys, ops_list, order=args.order,
+            key_size=key_size, value_size=value_size, mode=args.mode
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
 
@@ -343,7 +416,8 @@ def main():
         print("\n[Top-Down SOMAP]")
         results['top_down'] = run_top_down(
             args.server_ip, args.port, num_data, cache_size,
-            data_size, keys, ops_list
+            data_size, keys, ops_list, order=args.order,
+            key_size=key_size, value_size=value_size, mode=args.mode
         )
         print_results("Top-Down", results['top_down'], total_ops)
 
@@ -351,7 +425,8 @@ def main():
         print("\n[Baseline BPlus OMAP]")
         results['baseline'] = run_baseline(
             args.server_ip, args.port, num_data, data_size,
-            keys, ops_list
+            keys, ops_list, order=args.order,
+            key_size=key_size, value_size=value_size, mode=args.mode
         )
         print_results("Baseline", results['baseline'], total_ops)
 
