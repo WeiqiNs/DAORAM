@@ -35,6 +35,7 @@ class RoundCounter:
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
+        self.comm_time = 0.0
 
     def wrap(self):
         self._orig_batch = getattr(self.client, "batch_query", None)
@@ -54,7 +55,9 @@ class RoundCounter:
             def _batch(ops):
                 self.rounds += 1  # batch is 1 RTT
                 self.bytes_sent += _size(ops)
+                start = time.time()
                 res = self._orig_batch(ops)
+                self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
                 return res
             self.client.batch_query = _batch
@@ -64,7 +67,9 @@ class RoundCounter:
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf})
+                start = time.time()
                 res = self._orig_read(label, leaf)
+                self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
                 return res
             self.client.read_query = _read
@@ -74,7 +79,9 @@ class RoundCounter:
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf})
+                start = time.time()
                 res = self._orig_read_mul(label, leaf)
+                self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
                 return res
             self.client.read_mul_query = _read_mul
@@ -84,7 +91,9 @@ class RoundCounter:
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
+                start = time.time()
                 res = self._orig_write(label, leaf, data)
+                self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
                 return res
             self.client.write_query = _write
@@ -94,7 +103,9 @@ class RoundCounter:
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
+                start = time.time()
                 res = self._orig_write_mul(label, leaf, data)
+                self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
                 return res
             self.client.write_mul_query = _write_mul
@@ -438,6 +449,7 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
         'elapsed_sec': elapsed,
+        'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': proto._peak_client_size,
         'client_storage': client_storage,
@@ -516,6 +528,7 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
         'elapsed_sec': elapsed,
+        'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': proto._peak_client_size,
         'client_storage': client_storage,
@@ -597,6 +610,7 @@ def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
         'elapsed_sec': elapsed,
+        'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': omap._peak_client_size,
         'client_storage': client_storage,
@@ -611,7 +625,15 @@ def print_results(name: str, result: dict, num_ops: int):
     print(f"{'='*60}")
     print(f"  Operations:     {result['success']}/{num_ops}")
     print(f"  Total Rounds:   {result['rounds']} ({result['rounds']/num_ops:.2f}/op)")
-    print(f"  Total Time:     {result['elapsed_sec']:.2f}s ({result['elapsed_sec']*1000/num_ops:.2f}ms/op)")
+    
+    total_ms = result['elapsed_sec']*1000/num_ops
+    comm_ms = result['comm_time']*1000/num_ops
+    proc_ms = total_ms - comm_ms
+    
+    print(f"  Total Time:     {result['elapsed_sec']:.2f}s ({total_ms:.2f}ms/op)")
+    print(f"    - Processing: {proc_ms:.2f}ms/op ({(proc_ms/total_ms)*100:.1f}%)")
+    print(f"    - Commun.:    {comm_ms:.2f}ms/op ({(comm_ms/total_ms)*100:.1f}%)")
+    
     print(f"  Bandwidth Sent: {result['bytes_sent']/1024:.2f} KB ({result['bytes_sent']/1024/num_ops:.2f} KB/op)")
     print(f"  Bandwidth Recv: {result['bytes_recv']/1024:.2f} KB ({result['bytes_recv']/1024/num_ops:.2f} KB/op)")
     
