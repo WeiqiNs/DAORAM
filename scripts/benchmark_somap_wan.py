@@ -165,7 +165,8 @@ def run_bottom_up(num_data: int, cache_size: int, data_size: int, keys: List[int
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': time.time() - start
+        'elapsed_sec': time.time() - start,
+        'max_client_size': proto._peak_client_size
     }
 
 def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int], ops: List[str], latency: float = 0.0):
@@ -219,7 +220,8 @@ def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int]
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': time.time() - start
+        'elapsed_sec': time.time() - start,
+        'max_client_size': proto._peak_client_size
     }
 
 def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[str], latency: float = 0.0):
@@ -270,7 +272,8 @@ def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': time.time() - start
+        'elapsed_sec': time.time() - start,
+        'max_client_size': omap._peak_client_size
     }
 
 def main():
@@ -302,6 +305,7 @@ def main():
         print(f"Result BottomUp: {r1}")
         print(f"BU Avg Time per Op: {r1['elapsed_sec']/total_ops:.4f}s")
         print(f"BU Avg Rounds per Op: {r1['rounds']/total_ops:.2f}")
+        print(f"BU Peak Client Size: {r1.get('max_client_size', 'N/A')}")
 
     if args.protocol == "all" or args.protocol == "top_down":
         print("\n[运行] Top-Down (WAN Mode)")
@@ -309,6 +313,7 @@ def main():
         print(f"Result TopDown: {r2}")
         print(f"TD Avg Time per Op: {r2['elapsed_sec']/total_ops:.4f}s")
         print(f"TD Avg Rounds per Op: {r2['rounds']/total_ops:.2f}")
+        print(f"TD Peak Client Size: {r2.get('max_client_size', 'N/A')}")
 
     if args.protocol == "all" or args.protocol == "baseline":
         print("\n[运行] Baseline BPlusOdsOmap (WAN Mode)")
@@ -316,6 +321,7 @@ def main():
         print(f"Result Baseline: {r3}")
         print(f"Baseline Avg Time per Op: {r3['elapsed_sec']/total_ops:.4f}s")
         print(f"Baseline Avg Rounds per Op: {r3['rounds']/total_ops:.2f}")
+        print(f"Baseline Peak Client Size: {r3.get('max_client_size', 'N/A')}")
 
 if __name__ == "__main__":
     main()

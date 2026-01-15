@@ -115,11 +115,11 @@ class TopDownSomapFixedCache:
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
         or_stash = len(self._Or._stash) if self._Or is not None else 0
         tree_stash = len(self._tree_stash)
-        q_sizes = self._Qw_len + self._Qr_len
+        # Qw and Qr are stored on the Server, so they don't count towards Client storage
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + tree_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
+        total = ow_stash + or_stash + tree_stash + ow_local + or_local + pending_qr + extra_nodes
         if total > self._peak_client_size:
             self._peak_client_size = total
 
@@ -258,6 +258,16 @@ class TopDownSomapFixedCache:
         }
         self._client.init(server_storage)
 
+        # Clear local large data structures to ensure Client is thin
+        # These are now managed by the Server
+        self._Qw = None
+        self._Qr = None
+        self._main_storage = None
+        # We keep self._tree because we need metadata like self._tree.level, 
+        # but self._tree structure itself might be lightweight if storage is external.
+        # However, BinaryTree usually holds storage. 
+        # To be safe, we don't clear self._tree yet without checking BinaryTree implementation,
+        # but Qw/Qr/DB are definitely safe to clear.
 
     def _prepare_tree_leaves(self, op: str, key: Any, old_value: Any) -> Tuple[List[int], Any]:
         """
