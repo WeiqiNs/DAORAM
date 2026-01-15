@@ -115,11 +115,11 @@ class TopDownSomapFixedCache:
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
         or_stash = len(self._Or._stash) if self._Or is not None else 0
         tree_stash = len(self._tree_stash)
-        # Qw and Qr are stored on the Server, so they don't count towards Client storage
+        q_sizes = self._Qw_len + self._Qr_len
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + tree_stash + ow_local + or_local + pending_qr + extra_nodes
+        total = ow_stash + or_stash + tree_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
         if total > self._peak_client_size:
             self._peak_client_size = total
 
@@ -183,20 +183,28 @@ class TopDownSomapFixedCache:
         self._dummy_index = 0
         if data is None:
             data = []
-        data_map = Helper.hash_data_to_map(prf=self._group_prf, data=data, map_size=self._num_groups)
+        
+        # Helper.hash_data_to_map expects (prf, map_size, data)
+        data_map = Helper.hash_data_to_map(prf=self._group_prf, map_size=self._num_groups, data=data)
         self._group_map = {i: [kv[0] for kv in data_map[i]] for i in range(self._num_groups)}
 
         max_block = self._compute_max_block_size()
         tree = BinaryTree(num_data=self._num_groups, bucket_size=self._bucket_size, data_size=max_block,
                           filename=None, enc_key_size=self._num_key_bytes if self._use_encryption else None)
 
+        group_init_state = {}
+
         for group_index in range(self._num_groups):
+            count = len(data_map[group_index])
+            group_init_state[group_index] = [0, count]
+
             tmp = 0
             for kv in data_map[group_index]:
                 key, value = kv
                 seed = group_index.to_bytes(4, byteorder="big") + (0).to_bytes(2, byteorder="big") + tmp.to_bytes(2, byteorder="big")
+                
                 tmp += 1
-                leaf = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=seed, map_size=self._num_groups)
+                leaf = Helper.hash_data_to_leaf(prf=self._leaf_prf, map_size=self._num_groups, data=seed)
                 data_block = Data(key=key, leaf=leaf, value=value)
                 inserted = tree.fill_data_to_storage_leaf(data=data_block)
                 if not inserted:
@@ -214,8 +222,21 @@ class TopDownSomapFixedCache:
         for key, value in self._extend_database({}).items():
             self._main_storage[self.PRP.encrypt(key)] = self._encrypt_data(value)
 
-        extended_data_list = list(self._extend_database({}).items())
-        keys_list = list(self._extend_database({}).keys())
+        # Update _main_storage with initial state [0, count]
+        for g_idx, init_val in group_init_state.items():
+             self._main_storage[self.PRP.encrypt(g_idx)] = self._encrypt_data(init_val)
+
+        extended_data_map = self._extend_database({})
+        all_keys = sorted(extended_data_map.keys())
+        # Use keys >= num_data to avoid collision with real group indices
+        dummy_keys = [k for k in all_keys if k >= self._num_data]
+        
+        if len(dummy_keys) < 2 * self._cache_size:
+             # If obscure case where cache is huge relative to data
+             # Fallback to collision (shouldn't happen with standard config)
+             dummy_keys = all_keys 
+
+        keys_list = dummy_keys
 
         self._Ow = BPlusOdsOmap(order=4, num_data=self._cache_size, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Ow_name,
@@ -233,8 +254,17 @@ class TopDownSomapFixedCache:
                                       stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                       num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
 
+        extended_data_list = [(k, extended_data_map[k]) for k in keys_list]
         st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
         st3 = self._Ob._init_ods_storage([])
+        
+        # Or initialization: use [0,0] as value for dummy items
+        # extended_data_map[k] returns [0,0] for dummy items
+        # Or expects (count, count, timestamp, dummy) ???
+        # No, Or stores [ (pos, cnt), timestamp ]
+        # extended_data_map stores [0, 0] as default (pos=0, cnt=0) for extended items
+        # So storing (value, 0) means ( (0,0), 0 ) which is correct ((pos, cnt), ts)
+        
         or_data_list = [(key, (value, 0)) for key, value in extended_data_list[self._cache_size: 2 * self._cache_size]]
         st2 = self._Or._init_ods_storage(or_data_list)
 
@@ -244,6 +274,7 @@ class TopDownSomapFixedCache:
         else:
             self._Qw = [(key, "Key") for key in keys_list[:self._cache_size]]
             self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size:  2 * self._cache_size]]
+        
         self._Qw_len = len(self._Qw)
         self._Qr_len = len(self._Qr)
 
@@ -258,16 +289,6 @@ class TopDownSomapFixedCache:
         }
         self._client.init(server_storage)
 
-        # Clear local large data structures to ensure Client is thin
-        # These are now managed by the Server
-        self._Qw = None
-        self._Qr = None
-        self._main_storage = None
-        # We keep self._tree because we need metadata like self._tree.level, 
-        # but self._tree structure itself might be lightweight if storage is external.
-        # However, BinaryTree usually holds storage. 
-        # To be safe, we don't clear self._tree yet without checking BinaryTree implementation,
-        # but Qw/Qr/DB are definitely safe to clear.
 
     def _prepare_tree_leaves(self, op: str, key: Any, old_value: Any) -> Tuple[List[int], Any]:
         """
@@ -316,17 +337,6 @@ class TopDownSomapFixedCache:
             local_data = [] # Data matching group_index
             
             # Extract relevant data and find value
-            # Note: We iterate over a copy or handle removal carefully
-            # The original search method iterates _tree_stash and removes matching group items to local_data
-            # But here we just need to find the value and keep everything in stash for eviction?
-            # Wait, original code:
-            # - iterates stash, moves matching group data to local_data, removes from stash
-            # - iterates paths, moves matching group to local_data, others to stash
-            # - updates leaves of local_data using `_collect_group_leaves_generate`
-            # - puts local_data back to stash
-            # - calls evict_paths
-            
-            # Let's replicate this "refresh" logic correctly
             temp_stash = []
             local_data = []
             
@@ -342,18 +352,58 @@ class TopDownSomapFixedCache:
             
             self._tree_stash = temp_stash
             
-            # Generate new leaves for the group data
-            generated_leaves = self._collect_group_leaves_generate(group_index=group_index, seed=seed)
+            # Update leaf ONLY for the accessed key and siblings in group
+            # Note: We re-assign indices 0..N to items found in stash
+            current_idx = 0
+            
+            # Use updated POS from search (pos+1)
+            # Seed passed to process is old_seed [pos, count]
+            current_pos = 0
+            if isinstance(seed, (list, tuple)) and len(seed) >= 1:
+                current_pos = seed[0]
+            new_pos = current_pos + 1
+            
             for i in range(len(local_data)):
-                local_data[i].leaf = generated_leaves[i]
+                # Assign sequential indices to items in group
+                # This matches setup logic and ensures all items get unique leaves in the new pos version
+                item_idx = current_idx
+                current_idx += 1
+                
+                idx_bytes = item_idx.to_bytes(2, byteorder="big")
+                label = group_index.to_bytes(4, byteorder="big") + new_pos.to_bytes(2, byteorder="big") + idx_bytes
+                
+                new_leaf = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=label, map_size=self._num_groups)
+                local_data[i].leaf = new_leaf
                 self._tree_stash.append(local_data[i])
                 
         else: # insert
             # Insert logic: add new data
-            label = group_index.to_bytes(4, byteorder="big") + seed[0].to_bytes(2, byteorder="big") + seed[1].to_bytes(2, byteorder="big")
-            data = Data(key=key,
-                        leaf=Helper.hash_data_to_leaf(prf=self._leaf_prf, data=label,
-                                                    map_size=self._num_groups), value=value)
+            # Use OLD POS (pos) and UPDATED COUNT (count)
+            # Actually, seed passed is OLD seed [pos, count].
+            # The new item should be at index `count`.
+            
+            if seed is None:
+                seed = [0, 0] # Should not happen if old_value is managed correctly
+            
+            # Defines position of the group
+            if isinstance(seed, (list, tuple)) and len(seed) >= 1:
+                current_pos = seed[0]
+            else:
+                 current_pos = 0
+
+            # Defines index of the new item (appended)
+            if isinstance(seed, (list, tuple)) and len(seed) >= 2:
+                 item_idx = seed[1] # Use count as index
+            else:
+                 item_idx = 0
+            
+            idx_bytes = item_idx.to_bytes(2, byteorder="big")
+
+            # Use current_pos (not +1) because we are appending to existing group version
+            label = group_index.to_bytes(4, byteorder="big") + current_pos.to_bytes(2, byteorder="big") + idx_bytes
+            leaf = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=label, map_size=self._num_groups)
+
+            data = Data(key=key, leaf=leaf, value=value)
             self._tree_stash.append(data)
             
         # 3. Eviction
@@ -592,6 +642,14 @@ class TopDownSomapFixedCache:
             result_idx += 1
 
         self._update_peak_client_size()
+        
+        # Skip Qw insert result (None)
+        if result_idx < len(results):
+            result_idx += 1
+            
+        # Skip Qr insert results (None)
+        if result_idx + pending_qr_count <= len(results):
+            result_idx += pending_qr_count
 
         if qw_pop_added and result_idx < len(results):
             encrypted_qw_pop = results[result_idx]
@@ -641,7 +699,9 @@ class TopDownSomapFixedCache:
                 self._Ow.insert_local(self._pending_ob_insert, avail_val)
             # dummy 结果已消费/丢弃，无需处理
 
-        ret = None
+        # Determine the value to use
+        actual_value = value if value is not None else general_value
+
         # Process Tree Operations
         
         # Case 1: Tree Read was done in Batch
@@ -652,7 +712,7 @@ class TopDownSomapFixedCache:
             
             final_seed = old_value # Now contains correct value (Hit or fetched from DB)
             
-            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, general_value, final_seed, raw_tree_paths, tree_leaves)
+            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, final_seed, raw_tree_paths, tree_leaves)
             self._pending_tree_eviction = (ev_leaves, ev_data)
             
         # Case 2: Tree Read was NOT done (Search Miss)
@@ -661,7 +721,7 @@ class TopDownSomapFixedCache:
             tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
             raw_tree_paths = self._client.read_query(label=self._Tree_name, leaf=tree_leaves)
             
-            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, general_value, old_value, raw_tree_paths, tree_leaves)
+            ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, old_value, raw_tree_paths, tree_leaves)
             self._pending_tree_eviction = (ev_leaves, ev_data)
 
 
@@ -676,6 +736,12 @@ class TopDownSomapFixedCache:
         # 切换 next available key 为下一轮待检查
         self._pending_available_key = self._pending_available_key_next
         self._pending_available_key_next = None
+
+        if op == 'search' and ret is None and old_value is not None:
+            if isinstance(old_value, (list, tuple)) and len(old_value) > 1:
+                ret = old_value[1]
+            else:
+                ret = old_value
 
         self._timestamp += 1
         self._update_peak_client_size()

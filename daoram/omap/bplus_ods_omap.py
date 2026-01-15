@@ -1803,20 +1803,29 @@ class BPlusOdsOmap(TreeOdsOmap):
                     observer(total_local + total_sibling)
 
                 omap._update_peak_client_size()
-                
-                # Evict and prepare write-back
-                evicted = omap._evict_stash_mul_path(leaves=[real_leaf, aux_leaf])
+            
+            # Group leaves by OMAP for unified eviction
+            # This prevents overwriting shared buckets (like root) when multiple operations target the same OMAP
+            omap_leaves_map = {} 
+            for i, (state, real_leaf, aux_leaf, _, _, _) in enumerate(state_infos):
+                omap = state.omap
+                if omap not in omap_leaves_map:
+                    omap_leaves_map[omap] = []
+                omap_leaves_map[omap].extend([real_leaf, aux_leaf])
+
+            for omap, leaves in omap_leaves_map.items():
+                evicted = omap._evict_stash_mul_path(leaves=leaves)
                 evicted_data.append(evicted)
                 write_labels.append(omap._name)
-                write_leaves.append([real_leaf, aux_leaf])
+                write_leaves.append(leaves)
                 
                 if len(omap._stash) > omap._stash_size:
                     raise MemoryError("Stash overflow!")
-
                 omap._update_peak_client_size()
             
             # Batch write all paths
-            client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
+            if write_labels:
+                client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
             
             # Update traversal state for each operation
             for state in states:
