@@ -386,6 +386,11 @@ def main():
     keys = zipf_keys(num_data, total_ops, alpha=0.8)
     ops_list = ['read' if random.random() < args.read_ratio else 'write' for _ in range(total_ops)]
 
+    # Calculate block size (same as ORAM internal calculation)
+    from daoram.dependency.helper import Data
+    sample_block = Data(key=b'k' * key_size, leaf=0, value=b'v' * value_size)
+    block_size = len(sample_block.dump())
+
     print("="*60)
     print("Remote Client-Server Benchmark")
     print("="*60)
@@ -395,6 +400,7 @@ def main():
     print(f"  Order:      {args.order}")
     print(f"  Key Size:   {key_size} bytes")
     print(f"  Value Size: {value_size} bytes")
+    print(f"  Block Size: {block_size} bytes")
     print(f"  Mode:       {args.mode}")
     print(f"  Operations: {total_ops}")
     if args.mode == "mix":
