@@ -13,8 +13,16 @@ from daoram.dependency import RemoteServer
 
 def simulate():
     # Create the server socket and run it.
-    server = RemoteServer(ip="0.0.0.0")
-    server.run()
+    while True:
+        try:
+            print("Server starting/restarting...")
+            server = RemoteServer(ip="0.0.0.0")
+            server.run()
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"Server error: {e}")
+            pass
 
 
 if __name__ == '__main__':

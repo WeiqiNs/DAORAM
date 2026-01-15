@@ -696,6 +696,7 @@ def main():
             key_size=key_size, value_size=value_size, mode=args.mode
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
+        time.sleep(1)
 
     if args.protocol in ["all", "top_down"]:
         print("\n[Top-Down SOMAP]")
@@ -705,6 +706,7 @@ def main():
             key_size=key_size, value_size=value_size, mode=args.mode
         )
         print_results("Top-Down", results['top_down'], total_ops)
+        time.sleep(1)
 
     if args.protocol in ["all", "baseline"]:
         print("\n[Baseline BPlus OMAP]")

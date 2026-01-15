@@ -20,6 +20,7 @@ class Socket(object):
         """
         if is_server:
             self.__socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.__socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.__socket.bind((ip, port))
             self.__socket.listen()
             self.__connected_socket, _ = self.__socket.accept()
@@ -61,4 +62,12 @@ class Socket(object):
 
     def close(self):
         """Close the socket."""
-        self.__connected_socket.close()
+        try:
+            self.__connected_socket.close()
+        except:
+            pass
+        if hasattr(self, '_Socket__socket'):
+            try:
+                self.__socket.close()
+            except:
+                pass
