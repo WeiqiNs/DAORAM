@@ -227,6 +227,100 @@ class BottomUpSomapFixedCache:
         
         self._client.init(server_storage)
 
+    def restore_client_state(self, force_reset_caches: bool = False) -> None:
+        """
+        Restore the client-side objects (O_W, O_R, D_S) mirroring a completed setup(),
+        without uploading any data to the server, EXCEPT if force_reset_caches is True.
+        
+        Use this when the server has already loaded a pre-built storage.
+
+        :param force_reset_caches: If True, it will RE-INITIALIZE the cache components
+               (O_W, O_R, Q_W, Q_R) on the server side using the current cache_size/order
+               parameters, while keeping D_S intact. This is useful if the loaded storage
+               file has a different cache_size than the one we want to use now.
+        """
+        # Initialize D_S (Static ORAM)
+        self._Ds = StaticOram(
+            num_data=self._num_data,
+            data_size=self._data_size,
+            client=self._client,
+            name=self._Ds_name,
+            filename=self._filename,
+            bucket_size=self._bucket_size,
+            stash_scale=self._stash_scale,
+            aes_key=self._aes_key,
+            num_key_bytes=self._num_key_bytes,
+            use_encryption=self._use_encryption
+        )
+        
+        # Initialize O_W (B+ ODS OMAP)
+        self._Ow = BPlusOdsOmap(
+            order=self._order,
+            num_data=self._cache_size + 1,
+            key_size=self._num_key_bytes,
+            data_size=self._data_size,
+            client=self._client,
+            name=self._Ow_name,
+            filename=self._filename,
+            bucket_size=self._bucket_size,
+            stash_scale=self._stash_scale,
+            aes_key=self._aes_key,
+            num_key_bytes=self._num_key_bytes,
+            use_encryption=self._use_encryption
+        )
+
+        # Initialize O_R (B+ ODS OMAP)
+        self._Or = BPlusOdsOmap(
+            order=self._order,
+            num_data=self._cache_size + 1,
+            key_size=self._num_key_bytes,
+            data_size=self._data_size,
+            client=self._client,
+            name=self._Or_name,
+            filename=self._filename,
+            bucket_size=self._bucket_size,
+            stash_scale=self._stash_scale,
+            aes_key=self._aes_key,
+            num_key_bytes=self._num_key_bytes,
+            use_encryption=self._use_encryption
+        )
+        
+        # Initialize queues (empty)
+        self._Qw = []
+        self._Qr = []
+        self._Qw_len = 0
+        self._Qr_len = 0
+        
+        if force_reset_caches:
+            # We need to tell the server to replace the current O_W, O_R, Q_W, Q_R
+            # with EMPTY, FRESHLY initialized versions matching our current config.
+            # D_S is kept as is.
+            print(f"  [restore_client_state] Forcing reset of caches: {self._Ow_name}, {self._Or_name}")
+            
+            st_ow = self._Ow._init_ods_storage([])
+            st_or = self._Or._init_ods_storage([])
+            
+            # We send an helper 'update' or 'init' query.
+            # Using 'init' merges/updates the storage dict on server side.
+            # So if we send new objects for existing keys, they will be overwritten.
+            partial_storage = {
+                self._Ow_name: st_ow,
+                self._Or_name: st_or,
+                self._Qw_name: self._Qw,
+                self._Qr_name: self._Qr,
+                # Do NOT include self._Ds_name here, so it remains touched on server
+            }
+            self._client.init(partial_storage)
+
+        # Ensure stashes are empty (or consistent with initial state)
+        # BPlusOdsOmap and StaticOram init with empty stash by default.
+        # Queues are already empty lists [] in __init__.
+        
+        # Re-assign client reference just in case
+        self._Ow._client = self._client
+        self._Or._client = self._client
+        self._Ds._client = self._client
+
     def access(self, key: Any, op: str, value: Any = None) -> Any:
         # print("[访问] 并行查找 + 延迟写回")
         

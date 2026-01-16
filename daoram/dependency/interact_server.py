@@ -68,27 +68,18 @@ class InteractServer(ABC):
     
     @abstractmethod
     def batch_query(self, operations: List[dict]) -> List[Any]:
-        """Execute multiple operations in a single round trip.
-        
-        Each operation is a dict with 'op' key and operation-specific parameters:
-        - {'op': 'write', 'label': str, 'leaf': int/list, 'data': Buckets}
-        - {'op': 'list_insert', 'label': str, 'index': int, 'value': Any}
-        
-        :param operations: List of operations to execute
-        :return: List of results (None for write operations)
-        """
-        raise NotImplementedError   
-    # @abstractmethod
-    # def add_query(self, query: Query) -> None:
-    #     raise NotImplementedError
+        """Execute multiple operations in a single round trip."""
+        raise NotImplementedError 
 
-    # @abstractmethod
-    # def merge_and_sort_query(self) -> None:
-    #     raise NotImplementedError
+    @abstractmethod
+    def save_storage(self, filename: str) -> None:
+        """Tell server to save current storage to disk."""
+        raise NotImplementedError
 
-    # @abstractmethod
-    # def execute_query(self) -> None:
-    #     raise NotImplementedError
+    @abstractmethod
+    def load_storage(self, filename: str) -> None:
+        """Tell server to load storage from disk."""
+        raise NotImplementedError
     
 class InteractRemoteServer(InteractServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
@@ -103,7 +94,19 @@ class InteractRemoteServer(InteractServer):
         self.__port = port
         self.__client = None
         
-        
+    def save_storage(self, filename: str) -> None:
+        """Issue a save storage query."""
+        self.__check_client()
+        query = {"type": "save", "filename": filename}
+        self.__client.send(query)
+        self.__check_response()
+
+    def load_storage(self, filename: str) -> None:
+        """Issue a load storage query."""
+        self.__check_client()
+        query = {"type": "load", "filename": filename}
+        self.__client.send(query)
+        self.__check_response()
 
     def update_ip(self, ip: str) -> None:
         """Updates the ip address of the server."""
@@ -494,7 +497,32 @@ class InteractLocalServer(InteractServer):
                 self.list_update(label=op['label'], index=op['index'], value=op['value'])
                 results.append(None)
         return results
-    
+
+    def save_storage(self, filename: str) -> None:
+        """Save current storage to a pickle file."""
+        import pickle
+        with open(filename, 'wb') as f:
+            pickle.dump(self.__storage, f)
+
+    def load_storage(self, filename: str) -> None:
+        """
+        Load storage from a pickle file.
+        Now supports merging: updates existing storage with loaded data.
+        """
+        import pickle
+        import os
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"Storage file {filename} not found on server.")
+        with open(filename, 'rb') as f:
+            new_data = pickle.load(f)
+            if isinstance(new_data, dict):
+                self.__storage.update(new_data)
+                print(f"Server: Loaded and merged storage from {filename}", flush=True)
+            else:
+                # Fallback for legacy files or non-dict storage if any
+                self.__storage = new_data
+                print(f"Server: Replaced storage from {filename}", flush=True)
+
 class RemoteServer(InteractLocalServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):
         """Creates a remote server instance that will answer client's queries.
@@ -586,6 +614,10 @@ class RemoteServer(InteractLocalServer):
                 return self.list_all(label=query["label"])
         elif query["type"] == "batch":
                 return self.batch_query(operations=query["operations"])
+        elif query["type"] == "save":
+                self.save_storage(filename=query["filename"])
+        elif query["type"] == "load":
+                self.load_storage(filename=query["filename"])
         else:
             raise ValueError("Invalid query type was given.")
         return SERVER_DEFAULT_RESPONSE

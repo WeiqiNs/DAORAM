@@ -378,7 +378,8 @@ def make_value(key: int, value_size: int = 16) -> bytes:
 
 def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int, 
                   data_size: int, keys: List[int], ops: List[str], order: int = 4,
-                  key_size: int = 16, value_size: int = 16, mode: str = "mix"):
+                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
+                  load_storage: str = None):
     """Run Bottom-Up protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -392,11 +393,46 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
         num_key_bytes=key_size
     )
     
-    print("  Uploading initial data to server...")
-    setup_start = time.time()
-    proto.setup(build_data(num_data, value_size))
-    setup_time = time.time() - setup_start
-    print(f"  Setup complete in {setup_time:.2f}s")
+    if load_storage:
+        # Load one or multiple files
+        files = [f.strip() for f in load_storage.split(',')]
+        print(f"  Loading pre-built storage from server file(s): {files}")
+        setup_start = time.time()
+        for i, filename in enumerate(files):
+            # For the first file, we might assume it replaces storage.
+            # But our updated server load_storage always UPDATES/MERGES.
+            # So if we want clean slate, we depend on server restart or user logic.
+            # Usually the first file is the big D_S base.
+            print(f"    - Loading {filename} ...")
+            client.load_storage(filename)
+        
+        # BottomUpSomap structure:
+        # - D_S (StaticOram): stateless on client (except params)
+        # - O_W, O_R: initially empty
+        # - Q_W, Q_R: initially empty
+        # So we just need to ensure the server side is loaded. 
+        # CAUTION: The server file must have been built with SAME num_data/value_size
+        
+        # NOTE: If we loaded cache structures from file (target=cache_only),
+        # we don't need 'force_reset_caches=True' (which wipes them).
+        # We assume the user is smart: 
+        #   If they loaded a 'cache config' file, they want THAT config.
+        #   So we just do local hydration.
+        # However, we must ensure the local params (cache_size) match what was loaded.
+        proto.restore_client_state(force_reset_caches=False)
+        print(f"  Storage loaded in {time.time() - setup_start:.2f}s")
+        
+        # When loading a pre-built storage which contains a FULL structure,
+        # but we want to simulate starting with EMPTY cache (O_W/O_R) but FULL D_S.
+        # Actually prebuild_server.py generates a structure with D_S full and O_W/O_R empty.
+        # So loading it brings us exactly to the state "after setup() completes".
+        # This is perfect.
+    else:
+        print("  Uploading initial data to server...")
+        setup_start = time.time()
+        proto.setup(build_data(num_data, value_size))
+        setup_time = time.time() - setup_start
+        print(f"  Setup complete in {setup_time:.2f}s")
     
     proto.reset_peak_client_size()
     counter.reset()  # Reset after setup
@@ -672,6 +708,7 @@ def main():
     parser.add_argument("--mode", type=str, default="mix", choices=["mix", "insert_only"],
                         help="Operation mode: mix (read/write) or insert_only (new keys)")
     parser.add_argument("--mock-crypto", action="store_true", help="Use mock encryption")
+    parser.add_argument("--load-storage", type=str, default=None, help="Path to pre-built storage on server to load")
     args = parser.parse_args()
 
     if args.mock_crypto:
@@ -684,6 +721,10 @@ def main():
     value_size = args.value_size
     data_size = value_size  # data_size is the value size for ORAM
     total_ops = args.ops
+    
+    # Load storage mode check
+    if args.load_storage and args.protocol not in ['bottom_up', 'all']:
+        print("[Warning] --load-storage is optimized for bottom_up currently. Other protocols may need fresh init.")
 
     keys = zipf_keys(num_data, total_ops, alpha=0.8)
     ops_list = ['read' if random.random() < args.read_ratio else 'write' for _ in range(total_ops)]
@@ -715,7 +756,8 @@ def main():
         results['bottom_up'] = run_bottom_up(
             args.server_ip, args.port, num_data, cache_size, 
             data_size, keys, ops_list, order=args.order,
-            key_size=key_size, value_size=value_size, mode=args.mode
+            key_size=key_size, value_size=value_size, mode=args.mode,
+            load_storage=args.load_storage
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
         time.sleep(1)

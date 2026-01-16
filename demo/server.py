@@ -15,13 +15,15 @@ def simulate():
     # Create the server socket and run it.
     while True:
         try:
-            print("Server starting/restarting...")
+            print("Server starting/restarting...", flush=True)
             server = RemoteServer(ip="0.0.0.0")
             server.run()
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"Server error: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"Server error: {e}", flush=True)
             pass
 
 
