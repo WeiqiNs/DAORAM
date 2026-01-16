@@ -467,11 +467,11 @@ class TopDownSomap:
                     self.operate_on_list(label=self._Qr_name, op='insert', data=(key, self._timestamp, "Dummy"))
 
                 else:
+                    # Dummy round: 强制执行真实write，确保理论与实际轮次一致
                     value = self._Ow.delete(None)
-                    # Update the main storage
-                    # todo: @weiqi, check if the encryption works if value is none here
+                    # 写回Dummy到主存（不能省略write）
                     self.operate_on_list('DB', 'update', pos=self.PRP.encrypt(self._dummy_index), data=value)
-                    # For dummy, keep a structured placeholder in Or
+                    # 也插入Dummy到O_R
                     self._Or.insert(None, (None, self._timestamp))
                     self.operate_on_list(label=self._Qr_name, op='insert', data=(key, self._timestamp, "Dummy"))
 

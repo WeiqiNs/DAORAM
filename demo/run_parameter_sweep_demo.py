@@ -7,8 +7,8 @@ import argparse
 import signal
 
 """
-Parameter Sweep Benchmark Demo
-------------------------------
+Parameter Sweep Benchmark Demo (Extended Metrics)
+-------------------------------------------------
 This script runs a comparative benchmark across different configurations of:
 - Cache Size
 - B+ Tree Order
@@ -17,15 +17,22 @@ Protocols tested:
 1. Bottom-Up SOMAP
 2. Top-Down SOMAP
 3. Baseline B+ OMAP
+
+Metrics collected:
+- Total Latency per Op
+- Calculation Time (CPU) vs Network Transfer Time
+- Interaction Rounds (RTT) per Op
+- Bandwidth
+- Peak Client Memory (Stash Usage)
 """
 
 NUM_DATA = 16383  # 2^14 - 1
 VALUE_SIZE = 64
 OPS = 100
+LATENCY_MS = 0  # WAN latency simulation in ms (0 = no simulation, 50 = typical WAN)
 
 # Configurations to test
 # Format: (Cache Size, Tree Order)
-# User requested: Cache=[2^10, 2^11], Order=[8, 16]
 CONFIGS = [
     (1024, 8),
     (1024, 16),
@@ -50,27 +57,89 @@ def run_command(cmd, description):
         print(f" [Error] {e}")
         return None
 
-def extract_metric(output, metric_name):
-    if not output: return "N/A"
-    for line in output.split('\n'):
-        if metric_name in line:
-            return line.strip()
-    return "N/A"
+def parse_benchmark_output(output):
+    """Parse detailed metrics from benchmark_remote.py output."""
+    metrics = {
+        "Latency": "N/A",
+        "Calc": "N/A", 
+        "Net": "N/A",
+        "Rounds": "N/A",
+        "BW": "N/A",
+        "Mem": "N/A",
+        "ServerStorage": "N/A"
+    }
+    
+    if not output: return metrics
 
-def extract_bandwidth(output):
-    if not output: return "N/A"
-    sent = "0"
-    recv = "0"
+    sent_kb = 0.0
+    recv_kb = 0.0
+    
     for line in output.split('\n'):
+        line = line.strip()
+        
+        # Latency (Total Time)
+        # format: Total Time:     5.23s (52.30ms/op)
+        if "Total Time:" in line and "ms/op" in line:
+            try:
+                metrics["Latency"] = line.split('(')[1].split(')')[0]
+            except: pass
+            
+        # Calc Time (Processing)
+        # format: - Processing: 1.23ms/op (10.0%)
+        if "- Processing:" in line:
+            try:
+                metrics["Calc"] = line.split(':')[1].split('(')[0].strip()
+            except: pass
+            
+        # Net Time (Commun.)
+        # format: - Commun.:    1.23ms/op (10.0%)
+        if "- Commun.:" in line:
+            try:
+                metrics["Net"] = line.split(':')[1].split('(')[0].strip()
+            except: pass
+            
+        # Rounds
+        # format: Total Rounds:   1400 (14.00/op)
+        if "Total Rounds:" in line:
+            try:
+                metrics["Rounds"] = line.split(':')[1].split('(')[0].strip()
+            except: pass
+            
+        # Memory
+        # format: Peak Stash Entries: 123
+        if "Peak Stash Entries:" in line:
+            try:
+                metrics["Mem"] = line.split(':')[1].strip() + " entries"
+            except: pass
+            
+        # Server Storage
+        # format: Total Server:   123.45 MB
+        if "Total Server:" in line:
+            try:
+                metrics["ServerStorage"] = line.split(':')[1].strip()
+            except: pass
+            
+        # Bandwidth accumulation
         if "Bandwidth Sent:" in line:
-            sent = line.split(':')[1].strip().split(' ')[0]
+            try:
+                # 123.45 KB
+                val = line.split(':')[1].strip().split(' ')[0]
+                sent_kb = float(val)
+            except: pass
         if "Bandwidth Recv:" in line:
-            recv = line.split(':')[1].strip().split(' ')[0]
-    try:
-        total_kb = float(sent) + float(recv)
-        return f"{total_kb/1024:.2f} MB"
-    except:
-        return "N/A"
+            try:
+                val = line.split(':')[1].strip().split(' ')[0]
+                recv_kb = float(val)
+            except: pass
+            
+    if sent_kb > 0 or recv_kb > 0:
+        total = sent_kb + recv_kb
+        if total > 1024:
+            metrics["BW"] = f"{total/1024:.2f} MB"
+        else:
+            metrics["BW"] = f"{total:.2f} KB"
+            
+    return metrics
 
 def main():
     python_cmd = get_python_cmd()
@@ -79,11 +148,11 @@ def main():
     
     results = []
     
-    print("="*80)
-    print("PARAMETER SWEEP BENCHMARK")
-    print(f"N={NUM_DATA}, Ops={OPS}")
+    print("="*120)
+    print("PARAMETER SWEEP BENCHMARK (EXTENDED METRICS)")
+    print(f"N={NUM_DATA}, Ops={OPS}, Latency={LATENCY_MS}ms")
     print("Configs (Cache, Order):", CONFIGS)
-    print("="*80)
+    print("="*120)
 
     # Base port to avoid conflicts if run repeatedly quickly
     base_port = 30000
@@ -167,7 +236,8 @@ def main():
                     "--value-size", str(VALUE_SIZE),
                     "--ops", str(OPS),
                     "--order", str(order),
-                    "--mode", "mix"
+                    "--mode", "mix",
+                    "--latency", str(LATENCY_MS)
                 ]
                 if proto != "baseline":
                     client_cmd.extend(["--cache-size", str(cache)])
@@ -175,21 +245,18 @@ def main():
                 stdout = run_command(client_cmd, f"Running {name}")
                 
                 # Parse
-                time_str = extract_metric(stdout, "Total Time:")
-                if "Total Time:" in time_str:
-                     clean_time = time_str.replace("Total Time:", "").strip().split('(')[0].strip()
-                     latency = time_str.split('(')[1].strip(')') if '(' in time_str else "N/A"
-                else:
-                     clean_time, latency = "Error", "Error"
-
-                bw = extract_bandwidth(stdout)
+                metrics = parse_benchmark_output(stdout)
                 
                 results.append({
                     "Config": f"C={cache}, O={order}",
                     "Protocol": name,
-                    "Time": clean_time,
-                    "Latency": latency,
-                    "Bandwidth": bw
+                    "Total Time": metrics["Latency"],
+                    "Calc Time": metrics["Calc"],
+                    "Net Time": metrics["Net"],
+                    "Rounds": metrics["Rounds"],
+                    "Bandwidth": metrics["BW"],
+                    "Memory": metrics["Mem"],
+                    "ServerStorage": metrics["ServerStorage"]
                 })
 
             finally:
@@ -202,13 +269,58 @@ def main():
             if os.path.exists(filename) and not is_base_ds:
                 os.remove(filename)
 
-    # 3. Summary
-    print("\n" + "="*95)
-    print(f"{'CONFIG':<15} | {'PROTOCOL':<12} | {'TIME':<10} | {'LATENCY':<15} | {'BANDWIDTH':<12}")
-    print("-" * 95)
-    for res in results:
-        print(f"{res['Config']:<15} | {res['Protocol']:<12} | {res['Time']:<10} | {res['Latency']:<15} | {res['Bandwidth']:<12}")
-    print("="*95)
+    # 3. Report
+    print("\n" + "="*140)
+    print("FINAL RESULTS SUMMARY")
+    print("="*140)
+    
+    # Headers
+    headers = [
+        "Config", "Protocol", "Total/op", "Calc/op", "Net/op", 
+        "Rounds", "Bandwidth", "Peak Mem", "Server"
+    ]
+    
+    # Format string (fixed width)
+    row_fmt = "{:<16}  {:<12}  {:<12}  {:<12}  {:<12}  {:<8}  {:<12}  {:<14}  {:<12}"
+    
+    print(row_fmt.format(*headers))
+    print("-" * 140)
+    
+    for r in results:
+        print(row_fmt.format(
+            r["Config"],
+            r["Protocol"],
+            r["Total Time"],
+            r["Calc Time"],
+            r["Net Time"],
+            r["Rounds"],
+            r["Bandwidth"],
+            r["Memory"],
+            r["ServerStorage"]
+        ))
+    
+    print("-" * 140)
+    print("\nNote: 'Calc/op' is CPU processing time, 'Net/op' is Network transmission time.")
+    print("Peak Mem is client-side storage (stash + local + pending ops). Server is total server storage.")
+
+    # Save to file
+    with open("sweep_results_extended.txt", "w") as f:
+        f.write(f"Parameter Sweep Results - {time.ctime()}\n")
+        f.write("-" * 140 + "\n")
+        f.write(row_fmt.format(*headers) + "\n")
+        f.write("-" * 140 + "\n")
+        for r in results:
+            f.write(row_fmt.format(
+                r["Config"],
+                r["Protocol"],
+                r["Total Time"],
+                r["Calc Time"],
+                r["Net Time"],
+                r["Rounds"],
+                r["Bandwidth"],
+                r["Memory"],
+                r["ServerStorage"]
+            ) + "\n")
 
 if __name__ == "__main__":
     main()

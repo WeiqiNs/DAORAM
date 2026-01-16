@@ -143,6 +143,12 @@ def run_bottom_up(num_data: int, cache_size: int, data_size: int, keys: List[int
         crypto.SIMULATE_CPU_COST = True
 
     start = time.time()
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
     print("Start Operations...")
     
     if mode == "insert_only":
@@ -202,6 +208,12 @@ def run_top_down(num_data: int, cache_size: int, data_size: int, keys: List[int]
         crypto.SIMULATE_CPU_COST = True
 
     start = time.time()
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
     print("Start Operations...")
     
     if mode == "insert_only":
@@ -267,6 +279,12 @@ def run_baseline_omap(num_data: int, data_size: int, keys: List[int], ops: List[
         crypto.SIMULATE_CPU_COST = True
 
     start = time.time()
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
+    counter.rounds = 0
+    counter.bytes_sent = 0
+    counter.bytes_recv = 0
     print("Start Operations...")
     
     if mode == "insert_only":

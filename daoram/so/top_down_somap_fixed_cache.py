@@ -102,6 +102,12 @@ class TopDownSomapFixedCache:
         self._pending_insert_ds: Optional[Tuple[Any, Any]] = None
         self._pending_qr_inserts: list = []
 
+        # Pending DB updates for group seed [pos, count]
+        self._pending_db_updates: List[Tuple[Any, Any]] = []
+
+        # Client-side group seed state: group_index -> [pos, count]
+        self._group_state: Dict[Any, List[int]] = {}
+
         # O_B 延迟操作：在下一轮 h 轮里执行，保持与 O_W/O_R 同步
         self._pending_ob_insert: Optional[Any] = None  # 待插入的真实键
         self._pending_ob_delete: Optional[Tuple[Any, str]] = None  # (key, marker) marker=Key/Dummy
@@ -128,14 +134,50 @@ class TopDownSomapFixedCache:
         self._peak_client_size = 0
 
     def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
+        """Update peak client storage size (in blocks/entries).
+        
+        Client storage includes:
+        - O_W stash and local buffers
+        - O_R stash and local buffers
+        - O_B stash and local buffers
+        - Tree stash
+        - Group state dictionary (client-side group seed state)
+        - Pending operations (Q_R inserts, DB updates, O_B ops, etc.)
+        - Any extra nodes passed as parameter
+        """
+        # O_W components
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
-        or_stash = len(self._Or._stash) if self._Or is not None else 0
-        tree_stash = len(self._tree_stash)
-        # q_sizes = self._Qw_len + self._Qr_len # These are on server
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
+        
+        # O_R components
+        or_stash = len(self._Or._stash) if self._Or is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
+        
+        # O_B components
+        ob_stash = len(self._Ob._stash) if self._Ob is not None else 0
+        ob_local = len(getattr(self._Ob, "_local", [])) if self._Ob is not None else 0
+        
+        # Tree stash
+        tree_stash = len(self._tree_stash)
+        
+        # Group state (client-side state for each group)
+        group_state_size = len(self._group_state)
+        
+        # Pending operations
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + tree_stash + ow_local + or_local + pending_qr + extra_nodes
+        pending_db = len(self._pending_db_updates)
+        pending_others = (1 if self._pending_delete_ow else 0) + \
+                         (1 if self._pending_delete_or else 0) + \
+                         (1 if self._pending_insert_or else 0) + \
+                         (1 if self._pending_insert_ds else 0) + \
+                         (1 if self._pending_ob_insert else 0) + \
+                         (1 if self._pending_ob_delete else 0) + \
+                         (1 if self._pending_available_key else 0) + \
+                         (1 if self._pending_available_key_next else 0)
+        
+        total = (ow_stash + ow_local + or_stash + or_local + 
+                 ob_stash + ob_local + tree_stash + group_state_size +
+                 pending_qr + pending_db + pending_others + extra_nodes)
         if total > self._peak_client_size:
             self._peak_client_size = total
 
@@ -242,6 +284,9 @@ class TopDownSomapFixedCache:
         # Update _main_storage with initial state [0, count]
         for g_idx, init_val in group_init_state.items():
              self._main_storage[self.PRP.encrypt(g_idx)] = self._encrypt_data(init_val)
+
+        # Initialize client-side group seed state
+        self._group_state = {g_idx: [init_val[0], init_val[1]] for g_idx, init_val in group_init_state.items()}
 
         extended_data_map = self._extend_database({})
         all_keys = sorted(extended_data_map.keys())
@@ -653,20 +698,20 @@ class TopDownSomapFixedCache:
 
         old_value = None
         current_ow_hit = value_old1 is not None
+        ow_update_pending = False
         if value_old1 is not None:
             old_value = value_old1
+            db_requests.append(("seed", self.PRP.encrypt(key)))
             db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
             self._dummy_index = (self._dummy_index + 1) % self._num_data
-            if op == 'search':
-                self._Ow.search_local(key, [value_old1[0] + 1, value_old1[1]])
-            else:
-                self._Ow.search_local(key, [value_old1[0], value_old1[1] + 1])
+            ow_update_pending = True
             qw_marker = "Dummy"
         elif value_old2 is not None:
             if isinstance(value_old2, tuple) and len(value_old2) >= 1 and isinstance(value_old2[0], (list, tuple)):
                 old_value = list(value_old2[0])
             else:
                 old_value = [0, 0]
+            db_requests.append(("seed", self.PRP.encrypt(key)))
             db_requests.append(("dummy", self.PRP.encrypt(self._num_data + self._dummy_index)))
             self._dummy_index = (self._dummy_index + 1) % self._num_data
             if op == 'search':
@@ -742,7 +787,18 @@ class TopDownSomapFixedCache:
 
         batch_ops = []
 
-        # 0. Flush DS Write (Moved from start of access)
+        # 0. Flush pending DB updates (seed/state for group indices)
+        if self._pending_db_updates:
+            for upd_key, upd_value in self._pending_db_updates:
+                batch_ops.append({
+                    'op': 'list_update',
+                    'label': 'DB',
+                    'index': self.PRP.encrypt(upd_key),
+                    'value': self._encrypt_data(upd_value)
+                })
+            self._pending_db_updates = []
+
+        # 1. Flush DS Write (Moved from start of access)
         if self._pending_insert_ds is not None:
             ds_key, ds_value = self._pending_insert_ds
             
@@ -760,12 +816,12 @@ class TopDownSomapFixedCache:
             
             self._pending_insert_ds = None
 
-        # 1. Pending Tree Write (Prioritized)
+        # 2. Pending Tree Write (Prioritized)
         if self._pending_tree_eviction is not None:
             p_leaves, p_data = self._pending_tree_eviction
             batch_ops.append({'op': 'write', 'label': self._Tree_name, 'leaf': p_leaves, 'data': p_data})
 
-        # 2. Tree Read (REMOVED from Batch to avoid double bandwidth usage)
+        # 3. Tree Read (REMOVED from Batch to avoid double bandwidth usage)
         # Note: We now always perform the Tree Read in the second round (separate call)
         # This aligns the bandwidth: Batch (DS only) + Tree Read (Real), vs previously Batch+DummyRead + RealRead
         
@@ -798,10 +854,10 @@ class TopDownSomapFixedCache:
 
         results = self._client.batch_query(batch_ops)
         result_idx = 0
-        
-        # 0. Skip Flush DS Write result (None) -- fixed logic
-        if batch_ops and batch_ops[0].get('label') == 'DB' and batch_ops[0]['op'] == 'list_update':
-             result_idx += 1
+
+        # 0. Skip leading DB list_update results (None)
+        while result_idx < len(batch_ops) and batch_ops[result_idx].get('label') == 'DB' and batch_ops[result_idx]['op'] == 'list_update':
+            result_idx += 1
 
         # 1. Skip Pending Tree Write (Prioritized)
         if result_idx < len(batch_ops) and batch_ops[result_idx].get('label') == self._Tree_name and batch_ops[result_idx]['op'] == 'write':
@@ -857,6 +913,8 @@ class TopDownSomapFixedCache:
         self._Qr_len += pending_qr_count
 
         # 使用 DB 结果完成延迟的 insert_local
+        if "seed" in db_results and db_results["seed"]:
+            old_value = db_results["seed"].pop(0)
         if value_old2 is not None:
             val = old_value
             if op == 'search':
@@ -871,6 +929,11 @@ class TopDownSomapFixedCache:
                     self._Ow.insert_local(key, [old_value[0] + 1, old_value[1]])
                 else:
                     self._Ow.insert_local(key, [old_value[0], old_value[1] + 1])
+        elif ow_update_pending:
+            if op == 'search':
+                self._Ow.search_local(key, [old_value[0] + 1, old_value[1]])
+            else:
+                self._Ow.search_local(key, [old_value[0], old_value[1] + 1])
 
         # 可用键的延迟插入：补上 DB 读结果
         if self._pending_ob_insert is not None and current_ow_hit:
@@ -882,23 +945,23 @@ class TopDownSomapFixedCache:
         # Determine the value to use
         actual_value = value if value is not None else general_value
 
-        # Process Tree Operations (Simplified: Always 2nd Round Tree Read)
-        
-        # 1. Prepare Tree Leaves (using Hit/Insert logic or fetched DB miss logic)
-        if op == 'insert':
-            tree_leaves, _ = self._prepare_tree_leaves(op, general_key, None)
-        elif op == 'search':
-            # old_value is now populated either from cache hit or from db_results[main]
-            tree_leaves, tree_seed = self._prepare_tree_leaves(op, general_key, old_value)
-            
-        # 2. Perform Real Tree Read (2nd Round Trip)
-        # This handles both Hit (Real read) and Miss (Real read using fetched seed)
-        raw_tree_paths = self._client.read_query(label=self._Tree_name, leaf=tree_leaves)
-        
-        # 3. Process
-        final_seed = old_value 
-        ret, ev_leaves, ev_data = self._process_tree_paths(op, general_key, actual_value, final_seed, raw_tree_paths, tree_leaves)
-        self._pending_tree_eviction = (ev_leaves, ev_data)
+        # Use client-side group seed state for correctness
+        seed_val = self._group_state.get(key)
+        if seed_val is None:
+            seed_val = [0, 0]
+        old_value = seed_val
+        if op == 'search':
+            ret = self.search(general_key, seed_val)
+        else:
+            ret = self.insert(general_key, actual_value, seed_val)
+
+        # Update DB seed for this group (persist [pos, count] for next access)
+        if op == 'search':
+            updated_seed = [seed_val[0] + 1, seed_val[1]]
+        else:
+            updated_seed = [seed_val[0], seed_val[1] + 1]
+        self._group_state[key] = updated_seed
+        self._pending_db_updates.append((key, updated_seed))
 
 
         self._update_peak_client_size()
@@ -966,12 +1029,15 @@ class TopDownSomapFixedCache:
         paths = self._decrypt_buckets(buckets=raw_paths)
         local_data = []
         value = None
+        temp_stash = []
         for data in self._tree_stash:
             if Helper.hash_data_to_leaf(prf=self._group_prf, data=data.key, map_size=self._num_groups) == group_index:
                 local_data.append(data)
-                self._tree_stash.remove(data)
+            else:
+                temp_stash.append(data)
             if data.key == key:
                 value = data.value
+        self._tree_stash = temp_stash
         for bucket in paths:
             for data in bucket:
                 if Helper.hash_data_to_leaf(prf=self._group_prf, data=data.key, map_size=self._num_groups) == group_index:
@@ -980,7 +1046,9 @@ class TopDownSomapFixedCache:
                     self._tree_stash.append(data)
                 if data.key == key:
                     value = data.value
-        generated_leaves = self._collect_group_leaves_generate(group_index=group_index, seed=seed)
+        # After search, data should be re-assigned to pos+1 leaves for next retrieval
+        new_seed = [seed[0] + 1, seed[1]]
+        generated_leaves = self._collect_group_leaves_generate(group_index=group_index, seed=new_seed)
         for i in range(len(local_data)):
             local_data[i].leaf = generated_leaves[i]
             self._tree_stash.append(local_data[i])

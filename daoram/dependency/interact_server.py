@@ -121,17 +121,25 @@ class InteractRemoteServer(InteractServer):
         if self.__client:
             self.__client.bytes_sent = 0
             self.__client.bytes_received = 0
+        self.rounds = 0
 
     def get_bandwidth(self) -> Tuple[int, int]:
         """Get the current bandwidth usage (sent, received)."""
         if self.__client:
             return self.__client.bytes_sent, self.__client.bytes_received
         return 0, 0
+        
+    def get_rounds(self) -> int:
+        return getattr(self, 'rounds', 0)
 
     def __check_client(self) -> None:
         """Check if the client is connected to the server."""
         if self.__client is None:
             raise ValueError("Client has not been initialized; call init_connection() first.")
+        
+        if not getattr(self, "skip_round_counting", False):
+             if not hasattr(self, 'rounds'): self.rounds = 0
+             self.rounds += 1
 
     def __check_response(self) -> None:
         """Check whether the server successfully executes the request."""

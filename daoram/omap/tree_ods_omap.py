@@ -84,11 +84,20 @@ class TreeOdsOmap(ABC):
         self._peak_client_size = 0
 
     def _update_peak_client_size(self) -> None:
-        """Update client peak usage with current local buffers and stash."""
+        """Update peak client storage size (in blocks/entries).
+        
+        Client storage includes:
+        - Stash: blocks evicted from ORAM but not yet written back
+        - Local: blocks currently being processed in traversal
+        - Sibling cache: sibling nodes cached during operations
+        - Root pointer: constant O(1) overhead
+        """
         stash_len = len(self._stash)
         local_len = len(self._local)
         sibling_len = len(getattr(self, "_sibling_cache", []))
-        total = stash_len + local_len + sibling_len
+        # Root pointer is O(1), but count as 1 entry for completeness
+        root_size = 1 if self._root is not None else 0
+        total = stash_len + local_len + sibling_len + root_size
         if total > self._peak_client_size:
             self._peak_client_size = total
 

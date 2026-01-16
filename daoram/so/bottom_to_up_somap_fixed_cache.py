@@ -144,14 +144,41 @@ class BottomUpSomapFixedCache:
         self._peak_client_size = 0
 
     def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
+        """Update peak client storage size (in blocks/entries).
+        
+        Client storage includes:
+        - O_W stash and local buffers
+        - O_R stash and local buffers
+        - D_S (StaticOram) stash
+        - Q_W and Q_R queue lengths (client-side tracking)
+        - Pending Q_R inserts
+        - Any extra nodes passed as parameter
+        """
+        # O_W components
         ow_stash = len(self._Ow._stash) if self._Ow is not None else 0
-        or_stash = len(self._Or._stash) if self._Or is not None else 0
-        ds_stash = len(getattr(self._Ds, "_stash", [])) if self._Ds is not None else 0
-        q_sizes = self._Qw_len + self._Qr_len
         ow_local = len(getattr(self._Ow, "_local", [])) if self._Ow is not None else 0
+        
+        # O_R components
+        or_stash = len(self._Or._stash) if self._Or is not None else 0
         or_local = len(getattr(self._Or, "_local", [])) if self._Or is not None else 0
+        
+        # D_S (StaticOram) stash
+        ds_stash = len(getattr(self._Ds, "_stash", [])) if self._Ds is not None else 0
+        
+        # Queue lengths (client tracks lengths, actual data is on server)
+        q_sizes = self._Qw_len + self._Qr_len
+        
+        # Pending operations
         pending_qr = len(self._pending_qr_inserts)
-        total = ow_stash + or_stash + ds_stash + q_sizes + ow_local + or_local + pending_qr + extra_nodes
+        pending_others = (1 if self._pending_delete_ow else 0) + \
+                         (1 if self._pending_delete_or else 0) + \
+                         (1 if self._pending_insert_or else 0) + \
+                         (1 if self._pending_insert_ds else 0) + \
+                         (1 if self._pending_ds_eviction else 0) + \
+                         (1 if self._pending_ds_eviction_secondary else 0)
+        
+        total = (ow_stash + ow_local + or_stash + or_local + 
+                 ds_stash + q_sizes + pending_qr + pending_others + extra_nodes)
         if total > self._peak_client_size:
             self._peak_client_size = total
     
@@ -394,10 +421,13 @@ class BottomUpSomapFixedCache:
             pending_ds_insert_key, pending_ds_insert_value = self._pending_insert_ds
             self._pending_insert_ds = None
         
-        # O_R insert 仍需完整 h 轮（因为需要遍历 B+ 树），无法合并到 batch
+        # O_R insert merged into parallel batch (h rounds)
+        insert_key_or = None
+        insert_val_or = None
         if self._pending_insert_or is not None:
             or_key, or_value, or_ts, _ = self._pending_insert_or
-            self._Or.insert(or_key, (or_value, or_ts))
+            insert_key_or = or_key
+            insert_val_or = (or_value, or_ts)
             self._pending_insert_or = None
 
         self._update_peak_client_size()
@@ -422,10 +452,11 @@ class BottomUpSomapFixedCache:
         def _parallel_search_observer(extra_nodes: int):
             self._update_peak_client_size(extra_nodes=extra_nodes)
 
-        # Parallel search with pending deletions - all 4 operations in h rounds
+        # Parallel search with pending deletions & insertions - all 5 operations in h rounds
         value_ow, value_or, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
             omap2=self._Or, search_key2=key, delete_key2=delete_key_or,
+            insert_key2=insert_key_or, insert_value2=insert_val_or,
             observer=_parallel_search_observer
         )
 

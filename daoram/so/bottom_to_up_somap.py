@@ -307,8 +307,11 @@ class BottomUpSomap:
                     self._Qr_len += 1
         
                 else:
-                    self._Ow.delete(None)
-                    self._Ds.operate_on_key(op="r", key = None)
+                    # Dummy round: 强制执行真实write/read，确保理论与实际轮次一致
+                    value = self._Ow.delete(None)
+                    # 写回Dummy到静态ORAM（不能省略write）
+                    self._Ds.operate_on_key(op="w", key=None, value=value)
+                    # 也插入Dummy到O_R
                     self._Or.insert(None)
                     self.operate_on_list(label=self._Qr_name, op="insert", data=(key, self._timestamp, "Dummy"))
                     self._Qr_len += 1

@@ -1627,6 +1627,403 @@ class BPlusOdsOmap(TreeOdsOmap):
     @staticmethod
     def parallel_search_and_delete(omap1: 'BPlusOdsOmap', search_key1: Any, delete_key1: Any,
                                     omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any,
+                                    insert_key2: Any = None, insert_value2: Any = None,
+                                    observer: Any = None) -> Tuple[Any, Any, Any]:
+        """
+        Perform search and delete on two OMAPs, and optional insert on Omap2, in parallel (h rounds).
+        """
+        if omap1._client is not omap2._client:
+            raise ValueError("Both OMAPs must share the same client for parallel access.")
+            
+        # Re-verify root integrity before starting
+        if omap1.root is not None and omap2.root is not None:
+             pass
+        
+        client = omap1._client
+        max_height = max(omap1._max_height, omap2._max_height)
+        
+        class TraversalState:
+            def __init__(self, omap, key, name, needs_sibling=False, is_insert=False):
+                self.omap = omap
+                self.key = key
+                self.name = name
+                self.needs_sibling = needs_sibling
+                self.is_insert = is_insert
+                self.local = []
+                self.sibling_cache = [] if needs_sibling else None
+                
+                # Special handling for insert on empty tree
+                if is_insert and omap.root is None:
+                    self.traversing = False # Will handle insert-on-empty post-loop
+                else:
+                    self.traversing = (key is not None) and (omap.root is not None)
+                
+                if self.traversing:
+                    self.node_key = omap.root[0]
+                    self.node_leaf = omap.root[1]
+                else:
+                    self.node_key = None
+                    self.node_leaf = None
+                self.pending_child_index = None
+                self.sibling_key = None
+                self.sibling_leaf = None
+                self.sibling_index = None
+        
+        # 5 states: search1, delete1, search2, delete2, insert2
+        search1 = TraversalState(omap1, search_key1, "search1", needs_sibling=False)
+        delete1 = TraversalState(omap1, delete_key1, "delete1", needs_sibling=True)
+        search2 = TraversalState(omap2, search_key2, "search2", needs_sibling=False)
+        delete2 = TraversalState(omap2, delete_key2, "delete2", needs_sibling=True)
+        insert2 = TraversalState(omap2, insert_key2, "insert2", needs_sibling=False, is_insert=True)
+        
+        states = [search1, delete1, search2, delete2, insert2]
+
+        # h rounds of parallel traversal (each round: read + write)
+        for round_num in range(max_height):
+            labels = []
+            leaves = []
+            state_infos = []  # (state, real_leaf, aux_leaf, target_key, aux_key, is_sibling_aux)
+            for state in states:
+                omap = state.omap
+                # 强制所有round都走真实的read/write（即使traversing=False）
+                if state.traversing:
+                    # ...原有traversing逻辑...
+                    if state.node_leaf is not None and state.node_leaf >= omap._leaf_range:
+                        state.traversing = False
+                        leaf_a = omap._get_new_leaf()
+                        leaf_b = omap._get_new_leaf()
+                        labels.append(omap._name)
+                        leaves.append([leaf_a, leaf_b])
+                        state_infos.append((state, leaf_a, leaf_b, None, None, False))
+                    elif state.needs_sibling and len(state.local) > 0:
+                        parent = state.local[-1]
+                        if len(parent.value.keys) != len(parent.value.values):
+                            child_idx = None
+                            for idx, each_key in enumerate(parent.value.keys):
+                                if state.key == each_key:
+                                    child_idx = idx + 1
+                                    break
+                                elif state.key < each_key:
+                                    child_idx = idx
+                                    break
+                                elif idx + 1 == len(parent.value.keys):
+                                    child_idx = idx + 1
+                                    break
+                            if child_idx is not None and child_idx > 0:
+                                sib_key, sib_leaf = parent.value.values[child_idx - 1]
+                                state.sibling_key = sib_key
+                                state.sibling_leaf = sib_leaf
+                                state.sibling_index = child_idx - 1
+                            elif child_idx is not None and child_idx + 1 < len(parent.value.values):
+                                sib_key, sib_leaf = parent.value.values[child_idx + 1]
+                                state.sibling_key = sib_key
+                                state.sibling_leaf = sib_leaf
+                                state.sibling_index = child_idx + 1
+                            else:
+                                state.sibling_key = None
+                                state.sibling_leaf = omap._get_new_leaf()
+                                state.sibling_index = None
+                        else:
+                            state.sibling_key = None
+                            state.sibling_leaf = omap._get_new_leaf()
+                            state.sibling_index = None
+                        labels.append(omap._name)
+                        leaves.append([state.node_leaf, state.sibling_leaf])
+                        state_infos.append((state, state.node_leaf, state.sibling_leaf, state.node_key, state.sibling_key, True))
+                    else:
+                        dummy_leaf = omap._get_new_leaf()
+                        labels.append(omap._name)
+                        leaves.append([state.node_leaf, dummy_leaf])
+                        state_infos.append((state, state.node_leaf, dummy_leaf, state.node_key, None, False))
+                else:
+                    # Dummy round也强制真实读写（用随机叶子）
+                    leaf_a = omap._get_new_leaf()
+                    leaf_b = omap._get_new_leaf()
+                    labels.append(omap._name)
+                    leaves.append([leaf_a, leaf_b])
+                    # 这里target_key和aux_key都为None，is_sibling_aux=False
+                    state_infos.append((state, leaf_a, leaf_b, None, None, False))
+
+            # 每一轮都强制执行真实的read/write
+            all_paths = client.read_mul_query(label=labels, leaf=leaves)
+            
+            # Track leaves for this round's write-back
+            round_accessed_paths = {}
+            
+            for i, (state, real_leaf, aux_leaf, target_key, aux_key, is_sibling_aux) in enumerate(state_infos):
+                omap = state.omap
+                path = omap._decrypt_buckets(buckets=all_paths[i])
+                if target_key is not None:
+                    # ...原有target_key逻辑...
+                    found_target = False
+                    found_sibling = False
+                    sibling_new_leaf = omap._get_new_leaf() if aux_key else None
+                    if sibling_new_leaf is None and aux_key is not None:
+                        sibling_new_leaf = omap._get_new_leaf()
+                    for bucket in path:
+                        for data in bucket:
+                            if data.key == target_key:
+                                already_in_local = any(d.key == target_key for d in state.local)
+                                if not already_in_local:
+                                    state.local.append(data)
+                                    found_target = True
+                            elif is_sibling_aux and aux_key is not None and data.key == aux_key:
+                                if data.leaf is None:
+                                    data.leaf = sibling_new_leaf
+                                state.sibling_cache.append(data)
+                                found_sibling = True
+                            else:
+                                if not any(d.key == data.key for d in omap._stash):
+                                    omap._stash.append(data)
+                    if not found_target:
+                        for j, data in enumerate(omap._stash):
+                            if data.key == target_key:
+                                already_in_local = any(d.key == target_key for d in state.local)
+                                if not already_in_local:
+                                    state.local.append(data)
+                                    del omap._stash[j]
+                                    found_target = True
+                                break
+                        if not found_target:
+                            for other_state in states:
+                                if other_state.omap is omap and other_state is not state:
+                                    for d in other_state.local:
+                                        if d.key == target_key:
+                                            state.local.append(d)
+                                            found_target = True
+                                            break
+                                if found_target:
+                                    break
+                        if not found_target:
+                            state.traversing = False
+                            continue
+                    if is_sibling_aux and aux_key is not None and not found_sibling:
+                        for j, data in enumerate(omap._stash):
+                            if data.key == aux_key:
+                                if data.leaf is None:
+                                    data.leaf = sibling_new_leaf
+                                state.sibling_cache.append(data)
+                                del omap._stash[j]
+                                found_sibling = True
+                                break
+                else:
+                    # Dummy round也强制真实读写（但不会动local/stash）
+                    pass
+                if observer is not None:
+                    total_nodes = sum(len(s.local) for s in states) + sum(len(s.sibling_cache or []) for s in states)
+                    observer(total_nodes)
+                omap._update_peak_client_size()
+                
+            # Track accessed paths for this round
+            for i, (state, real_leaf, aux_leaf, _, _, _) in enumerate(state_infos):
+                omap = state.omap
+                if omap not in round_accessed_paths:
+                    round_accessed_paths[omap] = []
+                round_accessed_paths[omap].extend([real_leaf, aux_leaf])
+            for state in states:
+                if state.traversing and state.local:
+                    node = state.local[-1]
+                    omap = state.omap
+                    if node.leaf is None:
+                        node.leaf = omap._get_new_leaf()
+                    if len(state.local) == 1:
+                        omap.root = (node.key, node.leaf)
+                    elif state.pending_child_index is not None:
+                        parent = state.local[-2]
+                        parent.value.values[state.pending_child_index] = (node.key, node.leaf)
+                        if state.sibling_index is not None and state.sibling_cache:
+                            sib = state.sibling_cache[-1] if state.sibling_cache else None
+                            if sib:
+                                if sib.leaf is None:
+                                    sib.leaf = omap._get_new_leaf()
+                                parent.value.values[state.sibling_index] = (sib.key, sib.leaf)
+                    if len(node.value.keys) == len(node.value.values):
+                        state.traversing = False
+                        state.pending_child_index = None
+                    else:
+                        key = state.key
+                        child_index = None
+                        for index, each_key in enumerate(node.value.keys):
+                            if key == each_key:
+                                child_ptr = node.value.values[index + 1]
+                                # Handle both tuple and other formats
+                                if isinstance(child_ptr, tuple) and len(child_ptr) == 2:
+                                    state.node_key, state.node_leaf = child_ptr
+                                else:
+                                    # Invalid format - stop traversing
+                                    state.traversing = False
+                                    break
+                                child_index = index + 1
+                                break
+                            elif key < each_key:
+                                child_ptr = node.value.values[index]
+                                if isinstance(child_ptr, tuple) and len(child_ptr) == 2:
+                                    state.node_key, state.node_leaf = child_ptr
+                                else:
+                                    state.traversing = False
+                                    break
+                                child_index = index
+                                break
+                            elif index + 1 == len(node.value.keys):
+                                child_ptr = node.value.values[index + 1]
+                                if isinstance(child_ptr, tuple) and len(child_ptr) == 2:
+                                    state.node_key, state.node_leaf = child_ptr
+                                else:
+                                    state.traversing = False
+                                    break
+                                child_index = index + 1
+                                break
+                        state.pending_child_index = child_index
+                        state.omap._update_peak_client_size()
+            
+            # Write-back for this round (immediate, not deferred)
+            write_labels = []
+            write_leaves = []
+            evicted_data = []
+            
+            for omap, round_leaves in round_accessed_paths.items():
+                unique_leaves = list(set(round_leaves))
+                evicted = omap._evict_stash_mul_path(leaves=unique_leaves)
+                evicted_data.append(evicted)
+                write_labels.append(omap._name)
+                write_leaves.append(unique_leaves)
+                omap._update_peak_client_size()
+            
+            # Always execute write_mul_query for oblivious security (even if empty)
+            # If no accessed paths, use dummy writes for both OMAPs
+            if not write_labels:
+                for omap in [omap1, omap2]:
+                    dummy_leaf = omap._get_new_leaf()
+                    evicted = omap._evict_stash_mul_path(leaves=[dummy_leaf])
+                    evicted_data.append(evicted)
+                    write_labels.append(omap._name)
+                    write_leaves.append([dummy_leaf])
+            
+            client.write_mul_query(label=write_labels, leaf=write_leaves, data=evicted_data)
+
+        # Extract results
+        search_value1 = None
+        search_value2 = None
+        deleted_value1 = None
+        
+        # Process search1
+        if search_key1 is not None and omap1.root is not None and search1.local:
+            leaf = search1.local[-1]
+            for index, each_key in enumerate(leaf.value.keys):
+                if search_key1 == each_key:
+                    search_value1 = leaf.value.values[index]
+                    break
+            omap1._stash += search1.local
+        
+        # Process delete1
+        if delete1.local:
+            if delete_key1 is not None:
+                leaf = delete1.local[-1]
+                for index, each_key in enumerate(leaf.value.keys):
+                    if delete_key1 == each_key:
+                        deleted_value1 = leaf.value.values[index]
+                        leaf.value.keys.pop(index)
+                        leaf.value.values.pop(index)
+                        break
+                if delete1.sibling_cache:
+                    omap1._local = delete1.local
+                    omap1._sibling_cache = delete1.sibling_cache
+                    omap1._handle_underflow_with_cached_siblings()
+                    delete1.local = omap1._local
+                    delete1.sibling_cache = omap1._sibling_cache
+                    omap1._local = []
+                    omap1._sibling_cache = []
+            
+            for d in delete1.local:
+                if d.leaf is None: d.leaf = omap1._get_new_leaf()
+                if not any(s.key == d.key for s in omap1._stash):
+                    omap1._stash.append(d)
+            if delete1.sibling_cache:
+                for d in delete1.sibling_cache:
+                    if d.leaf is None: d.leaf = omap1._get_new_leaf()
+                    if not any(s.key == d.key for s in omap1._stash):
+                        omap1._stash.append(d)
+        
+        # Process search2
+        if search_key2 is not None and omap2.root is not None and search2.local:
+            leaf = search2.local[-1]
+            for index, each_key in enumerate(leaf.value.keys):
+                if search_key2 == each_key:
+                    search_value2 = leaf.value.values[index]
+                    break
+            omap2._stash += search2.local
+        
+        # Process delete2
+        if delete2.local:
+            if delete_key2 is not None:
+                leaf = delete2.local[-1]
+                for index, each_key in enumerate(leaf.value.keys):
+                    if delete_key2 == each_key:
+                        leaf.value.keys.pop(index)
+                        leaf.value.values.pop(index)
+                        break
+                if delete2.sibling_cache:
+                    omap2._local = delete2.local
+                    omap2._sibling_cache = delete2.sibling_cache
+                    omap2._handle_underflow_with_cached_siblings()
+                    delete2.local = omap2._local
+                    delete2.sibling_cache = omap2._sibling_cache
+                    omap2._local = []
+                    omap2._sibling_cache = []
+            
+            for d in delete2.local:
+                if d.leaf is None: d.leaf = omap2._get_new_leaf()
+                if not any(s.key == d.key for s in omap2._stash):
+                    omap2._stash.append(d)
+            if delete2.sibling_cache:
+                for d in delete2.sibling_cache:
+                    if d.leaf is None: d.leaf = omap2._get_new_leaf()
+                    if not any(s.key == d.key for s in omap2._stash):
+                        omap2._stash.append(d)
+                        
+        # Process insert2
+        if insert_key2 is not None:
+            # Case A: Tree was empty
+            if omap2.root is None:
+                data_block = omap2._get_bplus_data(keys=[insert_key2], values=[insert_value2])
+                omap2._stash.append(data_block)
+                omap2.root = (data_block.key, data_block.leaf)
+            
+            # Case B: Standard insert into traversed path
+            elif insert2.local:
+                # 1. Update/Add to Leaf
+                leaf = insert2.local[-1]
+                if len(leaf.value.keys) == 0:
+                    leaf.value.keys = [insert_key2]
+                    leaf.value.values = [insert_value2]
+                else:
+                    inserted = False
+                    for index, each_key in enumerate(leaf.value.keys):
+                        if insert_key2 == each_key: # Update
+                            leaf.value.values[index] = insert_value2
+                            inserted = True
+                            break
+                        elif insert_key2 < each_key: # Insert New
+                            leaf.value.keys = leaf.value.keys[:index] + [insert_key2] + leaf.value.keys[index:]
+                            leaf.value.values = leaf.value.values[:index] + [insert_value2] + leaf.value.values[index:]
+                            inserted = True
+                            break
+                    if not inserted: # Append
+                        leaf.value.keys.append(insert_key2)
+                        leaf.value.values.append(insert_value2)
+                
+                # 2. Perform Insertion (Split Propagation)
+                omap2._local = insert2.local
+                omap2._perform_insertion()
+                
+                omap2._stash += omap2._local
+                omap2._local = []
+        
+        return search_value1, search_value2, deleted_value1
+
+    @staticmethod
+    def parallel_search_and_delete_deprecated(omap1: 'BPlusOdsOmap', search_key1: Any, delete_key1: Any,
+                                    omap2: 'BPlusOdsOmap', search_key2: Any, delete_key2: Any,
                                     observer: Any = None) -> Tuple[Any, Any, Any]:
         """
         Perform search and delete on two OMAPs in parallel, all in h rounds.

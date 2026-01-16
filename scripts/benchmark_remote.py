@@ -30,12 +30,13 @@ from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 
 class RoundCounter:
     """Wraps client to count rounds and measure bandwidth."""
-    def __init__(self, client: InteractServer):
+    def __init__(self, client: InteractServer, sim_latency_ms: float = 0.0):
         self.client = client
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
         self.comm_time = 0.0
+        self.sim_latency_sec = (sim_latency_ms * 2) / 1000.0 if sim_latency_ms > 0 else 0.0
 
     def wrap(self):
         self._orig_batch = getattr(self.client, "batch_query", None)
@@ -56,6 +57,8 @@ class RoundCounter:
                 self.rounds += 1  # batch is 1 RTT
                 self.bytes_sent += _size(ops)
                 start = time.time()
+                if self.sim_latency_sec > 0:
+                    time.sleep(self.sim_latency_sec)
                 res = self._orig_batch(ops)
                 self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
@@ -68,6 +71,8 @@ class RoundCounter:
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf})
                 start = time.time()
+                if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
+                     time.sleep(self.sim_latency_sec)
                 res = self._orig_read(label, leaf)
                 self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
@@ -80,6 +85,8 @@ class RoundCounter:
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf})
                 start = time.time()
+                if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False): 
+                    time.sleep(self.sim_latency_sec)
                 res = self._orig_read_mul(label, leaf)
                 self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
@@ -92,6 +99,8 @@ class RoundCounter:
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
                 start = time.time()
+                if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
+                    time.sleep(self.sim_latency_sec)
                 res = self._orig_write(label, leaf, data)
                 self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
@@ -104,6 +113,8 @@ class RoundCounter:
                     self.rounds += 1
                 self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
                 start = time.time()
+                if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
+                    time.sleep(self.sim_latency_sec)
                 res = self._orig_write_mul(label, leaf, data)
                 self.comm_time += (time.time() - start)
                 self.bytes_recv += _size(res)
@@ -379,12 +390,12 @@ def make_value(key: int, value_size: int = 16) -> bytes:
 def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int, 
                   data_size: int, keys: List[int], ops: List[str], order: int = 4,
                   key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                  load_storage: str = None):
+                  load_storage: str = None, latency_ms: float = 0.0):
     """Run Bottom-Up protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client)
+    counter = RoundCounter(client, sim_latency_ms=latency_ms)
     counter.wrap()
     
     proto = BottomUpSomapFixedCache(
@@ -496,12 +507,12 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
 def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                  data_size: int, keys: List[int], ops: List[str], order: int = 4,
                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                 load_storage: str = None):
+                 load_storage: str = None, latency_ms: float = 0.0):
     """Run Top-Down protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client)
+    counter = RoundCounter(client, sim_latency_ms=latency_ms)
     counter.wrap()
     
     proto = TopDownSomapFixedCache(
@@ -642,12 +653,12 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
 def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
                  keys: List[int], ops: List[str], order: int = 4,
                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                 load_storage: str = None):
+                 load_storage: str = None, latency_ms: float = 0.0):
     """Run Baseline BPlus OMAP benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client)
+    counter = RoundCounter(client, sim_latency_ms=latency_ms)
     counter.wrap()
     
     omap = BPlusOdsOmap(
@@ -785,6 +796,7 @@ def main():
                         help="Operation mode: mix (read/write) or insert_only (new keys)")
     parser.add_argument("--mock-crypto", action="store_true", help="Use mock encryption")
     parser.add_argument("--load-storage", type=str, default=None, help="Path to pre-built storage on server to load")
+    parser.add_argument("--latency", type=float, default=0.0, help="Simulated network latency (one-way) in ms")
     args = parser.parse_args()
 
     if args.mock_crypto:
@@ -833,7 +845,7 @@ def main():
             args.server_ip, args.port, num_data, cache_size, 
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage
+            load_storage=args.load_storage, latency_ms=args.latency
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
         time.sleep(1)
@@ -844,7 +856,7 @@ def main():
             args.server_ip, args.port, num_data, cache_size,
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage
+            load_storage=args.load_storage, latency_ms=args.latency
         )
         print_results("Top-Down", results['top_down'], total_ops)
         time.sleep(1)
@@ -855,7 +867,7 @@ def main():
             args.server_ip, args.port, num_data, data_size,
             keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage
+            load_storage=args.load_storage, latency_ms=args.latency
         )
         print_results("Baseline", results['baseline'], total_ops)
 
