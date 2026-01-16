@@ -45,18 +45,18 @@ class Socket(object):
         """Send a message to the connected socket."""
         # Dump the message to some bytes.
         msg_pack = pickle.dumps(msg)
-        # Prefix each message with a 4-byte length (network byte order).
-        msg = struct.pack('>I', len(msg_pack)) + msg_pack
+        # Prefix each message with a 8-byte length (network byte order).
+        msg = struct.pack('>Q', len(msg_pack)) + msg_pack
         # Send the message to the connected socket.
         self.__connected_socket.sendall(msg)
 
     def recv(self) -> Any:
         """Receive a message from the connected socket."""
         # Read the message length and unpack it into an integer
-        raw_msg_len = self.__recv_all(4)
+        raw_msg_len = self.__recv_all(8)
         if not raw_msg_len:
             return None
-        msg_len = struct.unpack('>I', raw_msg_len)[0]
+        msg_len = struct.unpack('>Q', raw_msg_len)[0]
         # Read the message data
         return pickle.loads(self.__recv_all(msg_len))
 
