@@ -290,7 +290,7 @@ class TopDownSomapFixedCache:
             self._Qr = [self._encrypt_data((key, 0, "Key")) for key in keys_list[self._cache_size: 2 * self._cache_size]]
         else:
             self._Qw = [(key, "Key") for key in keys_list[:self._cache_size]]
-            self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size:  2 * self._cache_size]]
+            self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size: 2 * self._cache_size]]
         
         self._Qw_len = len(self._Qw)
         self._Qr_len = len(self._Qr)
@@ -341,6 +341,12 @@ class TopDownSomapFixedCache:
         max_block = self._compute_max_block_size()
         self._tree = BinaryTree(num_data=self._num_groups, bucket_size=self._bucket_size, data_size=max_block,
                                 filename=None, enc_key_size=self._num_key_bytes if self._use_encryption else None)
+
+        if not force_reset_caches:
+             # Restore roots from server metadata
+             self._Ow.restore_client_state()
+             self._Or.restore_client_state()
+             self._Ob.restore_client_state()
 
         if force_reset_caches:
             print(f"  [restore_client_state] Forcing reset of caches: {self._Ow_name}, {self._Or_name}, {self._Ob_name}")
