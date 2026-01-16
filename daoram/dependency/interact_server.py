@@ -116,6 +116,18 @@ class InteractRemoteServer(InteractServer):
         """Updates the port of the server."""
         self.__port = port
 
+    def reset_bandwidth(self) -> None:
+        """Reset the bandwidth counters."""
+        if self.__client:
+            self.__client.bytes_sent = 0
+            self.__client.bytes_received = 0
+
+    def get_bandwidth(self) -> Tuple[int, int]:
+        """Get the current bandwidth usage (sent, received)."""
+        if self.__client:
+            return self.__client.bytes_sent, self.__client.bytes_received
+        return 0, 0
+
     def __check_client(self) -> None:
         """Check if the client is connected to the server."""
         if self.__client is None:

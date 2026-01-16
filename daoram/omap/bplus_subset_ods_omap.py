@@ -79,6 +79,20 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         self._n: int = n if n is not None else num_data
         self._subset_n: int = self._n
 
+    def restore_client_state(self, force_reset_caches: bool = False) -> None:
+        """
+        Restore client state (root pointer) from server metadata if available.
+        """
+        try:
+            root_key = f"{self._name}_root"
+            stored_root = self._client.list_all(label=root_key)
+            if stored_root:
+                self._root = stored_root
+                print(f"  [BPlusSubsetOdsOmap] Restored root for {self._name}: {self._root}")
+        except Exception:
+            if not force_reset_caches:
+                 print(f"  [BPlusSubsetOdsOmap] Warning: Could not restore root for {self._name} from server.")
+
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
 

@@ -27,6 +27,10 @@ class Socket(object):
         else:
             self.__connected_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__connected_socket.connect((ip, port))
+        
+        # Bandwidth trackers
+        self.bytes_sent = 0
+        self.bytes_received = 0
 
     def __recv_all(self, length: int) -> Optional[bytes]:
         """Receive all bytes from the connected socket."""
@@ -46,6 +50,9 @@ class Socket(object):
         # Dump the message to some bytes.
         msg_pack = pickle.dumps(msg)
         # Prefix each message with a 8-byte length (network byte order).
+        # Update bytes sent
+        self.bytes_sent += (8 + len(msg_pack))
+        
         msg = struct.pack('>Q', len(msg_pack)) + msg_pack
         # Send the message to the connected socket.
         self.__connected_socket.sendall(msg)
@@ -56,9 +63,14 @@ class Socket(object):
         raw_msg_len = self.__recv_all(8)
         if not raw_msg_len:
             return None
+        self.bytes_received += 8
+            
         msg_len = struct.unpack('>Q', raw_msg_len)[0]
         # Read the message data
-        return pickle.loads(self.__recv_all(msg_len))
+        data = self.__recv_all(msg_len)
+        if data:
+            self.bytes_received += len(data)
+        return pickle.loads(data)
 
     def close(self):
         """Close the socket."""
