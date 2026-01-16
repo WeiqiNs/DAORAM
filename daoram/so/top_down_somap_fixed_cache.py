@@ -306,6 +306,59 @@ class TopDownSomapFixedCache:
         }
         self._client.init(server_storage)
 
+    def setup_caches_only(self) -> Dict[str, Any]:
+        """
+        Initialize only the OMAP caches (O_W, O_R, O_B, Q_W, Q_R) and return server storage dict.
+        Assumes Tree/DB is already valid on server.
+        """
+        extended_data_map = self._extend_database({})
+        all_keys = sorted(extended_data_map.keys())
+        dummy_keys = [k for k in all_keys if k >= self._num_data]
+        if len(dummy_keys) < 2 * self._cache_size:
+             dummy_keys = all_keys 
+        keys_list = dummy_keys
+
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                data_size=self._data_size, client=self._client, name=self._Ow_name,
+                                filename=self._filename, bucket_size=self._bucket_size,
+                                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                data_size=self._data_size, client=self._client, name=self._Or_name,
+                                filename=self._filename, bucket_size=self._bucket_size,
+                                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                      data_size=self._data_size, client=self._client, name=self._Ob_name,
+                                      filename=self._filename, bucket_size=self._bucket_size,
+                                      stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                      num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+
+        extended_data_list = [(k, extended_data_map[k]) for k in keys_list]
+        st1 = self._Ow._init_ods_storage(extended_data_list[:self._cache_size])
+        st3 = self._Ob._init_ods_storage([])
+        
+        or_data_list = [(key, (value, 0)) for key, value in extended_data_list[self._cache_size: 2 * self._cache_size]]
+        st2 = self._Or._init_ods_storage(or_data_list)
+
+        if self._use_encryption:
+            self._Qw = [self._encrypt_data((key, "Key")) for key in keys_list[:self._cache_size]]
+            self._Qr = [self._encrypt_data((key, 0, "Key")) for key in keys_list[self._cache_size: 2 * self._cache_size]]
+        else:
+            self._Qw = [(key, "Key") for key in keys_list[:self._cache_size]]
+            self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size: 2 * self._cache_size]]
+        
+        self._Qw_len = len(self._Qw)
+        self._Qr_len = len(self._Qr)
+
+        return {
+            self._Ow_name: st1,
+            self._Or_name: st2,
+            self._Ob_name: st3,
+            self._Qw_name: self._Qw,
+            self._Qr_name: self._Qr,
+        }
+
     def restore_client_state(self, force_reset_caches: bool = False) -> None:
         """
         Restore client local state for TopDownSomap when storage is loaded from file.

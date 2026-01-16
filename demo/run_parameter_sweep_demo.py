@@ -88,6 +88,9 @@ def main():
     # Base port to avoid conflicts if run repeatedly quickly
     base_port = 30000
 
+    # Track generated DS files: key=(protocol, order) -> filename
+    generated_ds_files = {}
+
     for idx, (cache, order) in enumerate(CONFIGS):
         print(f"\n>>> CONFIGURATION {idx+1}/{len(CONFIGS)}: Cache={cache}, Order={order}")
         
@@ -101,7 +104,27 @@ def main():
 
         # 1. Pre-build
         print("  [Phase 1] Pre-building Storage")
-        for name, proto, filename, _ in current_protocols:
+        
+        # We might modify the filename for Baseline if reusing
+        updated_protocols = []
+
+        for name, proto, filename, port in current_protocols:
+            # Check for reuse source
+            reuse_src = None
+            if proto in ["bottom_up", "top_down"]:
+                ds_key = (proto, order)
+                if ds_key in generated_ds_files:
+                    reuse_src = generated_ds_files[ds_key]
+            
+            # Special case for Baseline: Reuse logic
+            if proto == "baseline":
+                ds_key = (proto, order)
+                if ds_key in generated_ds_files:
+                    print(f"    [*] Skipping build for {name} (Reusing {generated_ds_files[ds_key]})")
+                    updated_protocols.append((name, proto, generated_ds_files[ds_key], port))
+                    continue
+            
+            # Construct build command
             cmd = [
                 python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
                 "--protocol", proto,
@@ -112,8 +135,18 @@ def main():
             ]
             if proto != "baseline":
                 cmd.extend(["--cache-size", str(cache)])
+                if reuse_src:
+                    cmd.extend(["--reuse-ds", reuse_src])
                 
-            run_command(cmd, f"Building {name}")
+            run_command(cmd, f"Building {name}" + (f" (Reusing DS from {reuse_src})" if reuse_src else ""))
+            
+            # Register this file as a future source if it's the first for this Order
+            if (proto, order) not in generated_ds_files:
+                 generated_ds_files[(proto, order)] = filename
+            
+            updated_protocols.append((name, proto, filename, port))
+
+        current_protocols = updated_protocols
 
         # 2. Benchmark
         print("  [Phase 2] Executing Benchmarks")
@@ -164,7 +197,9 @@ def main():
                 server_proc.wait()
                 
             # Cleanup file immediately to save space
-            if os.path.exists(filename):
+            # Optimization: Don't delete files that are reused as Base DS
+            is_base_ds = filename in generated_ds_files.values()
+            if os.path.exists(filename) and not is_base_ds:
                 os.remove(filename)
 
     # 3. Summary

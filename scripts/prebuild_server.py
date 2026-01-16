@@ -36,6 +36,7 @@ def main():
                         help="What components to save: full (all), ds_only (StaticORAM), cache_only (OW/OR/Queues)")
     parser.add_argument("--protocol", type=str, default="bottom_up", choices=["bottom_up", "top_down", "baseline"],
                         help="Protocol to build storage for")
+    parser.add_argument("--reuse-ds", type=str, default=None, help="Reuse DS/Tree from this storage file and only build caches")
     
     args = parser.parse_args()
 
@@ -53,9 +54,32 @@ def main():
     
     # Initialize initial data
     initial_data = {i: make_value(data_size) for i in range(num_data)}
+
+    # Optional: Load reuse DS
+    if args.reuse_ds:
+        print(f"Loading DS from {args.reuse_ds}...")
+        with open(args.reuse_ds, 'rb') as f:
+            full_storage = pickle.load(f)
+        
+        ds_components = {}
+        for k, v in full_storage.items():
+            # Identify DS components: _D_S, _Tree, DB
+            # Exclude Cache components: _O_W, _O_R, _O_B, _Q_W, _Q_R
+            is_cache = any(p in k for p in ["_O_W", "_O_R", "_O_B", "_Q_W", "_Q_R"])
+            is_ds = False
+            if "DB" == k: 
+                is_ds = True
+            elif "_D_S" in k or "_Tree" in k:
+                is_ds = True
+            
+            if is_ds and not is_cache:
+                ds_components[k] = v
+        
+        print(f"  Reusing {len(ds_components)} DS components.")
+        server_side.init(ds_components)
     
     # 1. Initialize Protocol Structure
-    print(f"Initializing {args.protocol} (generating trees)...")
+    print(f"Initializing {args.protocol} (generating caches)..." if args.reuse_ds else f"Initializing {args.protocol} (generating trees)...")
     start = time.time()
     
     if args.protocol == "bottom_up":
@@ -69,8 +93,11 @@ def main():
             order=args.order,
             num_key_bytes=args.key_size
         )
-        # Setup triggers the heavy lifting
-        proto.setup(initial_data)
+        if args.reuse_ds:
+            new_comps = proto.setup_caches_only()
+            server_side.init(new_comps)
+        else:
+            proto.setup(initial_data)
         
     elif args.protocol == "top_down":
         from daoram.so.top_down_somap_fixed_cache import TopDownSomapFixedCache
@@ -85,7 +112,11 @@ def main():
             order=args.order,
             num_key_bytes=args.key_size
         )
-        proto.setup([(k, v) for k, v in initial_data.items()])
+        if args.reuse_ds:
+            new_comps = proto.setup_caches_only()
+            server_side.init(new_comps)
+        else:
+            proto.setup([(k, v) for k, v in initial_data.items()])
         
     elif args.protocol == "baseline":
         from daoram.omap.bplus_ods_omap import BPlusOdsOmap

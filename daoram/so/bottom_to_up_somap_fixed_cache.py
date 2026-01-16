@@ -227,6 +227,59 @@ class BottomUpSomapFixedCache:
         
         self._client.init(server_storage)
 
+    def setup_caches_only(self) -> Dict[str, Any]:
+        """
+        Initialize only the OMAP caches (O_W, O_R, Q_W, Q_R) and return their storage.
+        Assumes D_S is already valid on server.
+        """
+        # Initialize O_W (B+ ODS OMAP)
+        self._Ow = BPlusOdsOmap(
+            order=self._order,
+            num_data=self._cache_size + 1,
+            key_size=self._num_key_bytes,
+            data_size=self._data_size,
+            client=self._client,
+            name=self._Ow_name,
+            filename=self._filename,
+            bucket_size=self._bucket_size,
+            stash_scale=self._stash_scale,
+            aes_key=self._aes_key,
+            num_key_bytes=self._num_key_bytes,
+            use_encryption=self._use_encryption
+        )
+        
+        # Initialize O_R (B+ ODS OMAP)
+        self._Or = BPlusOdsOmap(
+            order=self._order,
+            num_data=self._cache_size + 1,
+            key_size=self._num_key_bytes,
+            data_size=self._data_size,
+            client=self._client,
+            name=self._Or_name,
+            filename=self._filename,
+            bucket_size=self._bucket_size,
+            stash_scale=self._stash_scale,
+            aes_key=self._aes_key,
+            num_key_bytes=self._num_key_bytes,
+            use_encryption=self._use_encryption
+        )
+        
+        # Initialize OMAP storage
+        st_ow = self._Ow._init_ods_storage([])
+        st_or = self._Or._init_ods_storage([])
+        
+        # Initialize queues (empty)
+        self._Qw = []
+        self._Qr = []
+        
+        # Return components to be merged into server storage
+        return {
+            self._Ow_name: st_ow,
+            self._Or_name: st_or,
+            self._Qw_name: self._Qw,
+            self._Qr_name: self._Qr
+        }
+
     def restore_client_state(self, force_reset_caches: bool = False) -> None:
         """
         Restore the client-side objects (O_W, O_R, D_S) mirroring a completed setup(),
