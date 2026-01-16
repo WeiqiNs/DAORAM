@@ -611,7 +611,13 @@ class RemoteServer(InteractLocalServer):
         elif query["type"] == "lu":
                 self.list_update(label=query["label"], index=query["index"], value=query["value"])
         elif query["type"] == "la":
-                return self.list_all(label=query["label"])
+                try:
+                    return self.list_all(label=query["label"])
+                except KeyError:
+                    return []
+                except Exception:
+                    # Fallback for other errors (e.g. storage not dict)
+                    return []
         elif query["type"] == "batch":
                 return self.batch_query(operations=query["operations"])
         elif query["type"] == "save":

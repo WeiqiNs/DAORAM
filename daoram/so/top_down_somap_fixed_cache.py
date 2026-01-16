@@ -47,10 +47,24 @@ class TopDownSomapFixedCache:
         self._order = order
         self._extended_size = 3 * self._num_data
 
-        self._group_prf = Prf()
-        self._leaf_prf = Prf()
-        self._tree_stash: List[Data] = []
+        # Ensure deterministic PRFs by deriving keys from the master aes_key
+        # If aes_key is None (mock), we use a default mock key for determinism
+        master_key = aes_key if aes_key else b'0'*16
+        # Derive sub-keys improperly but deterministically for now (slicing or modifying)
+        # In production, use HKDF. Here we just tweak bytes.
+        
+        # Key for Group PRF
+        group_prf_key = bytearray(master_key)
+        group_prf_key[0] = (group_prf_key[0] + 1) % 256
+        self._group_prf = Prf(key=bytes(group_prf_key))
+        
+        # Key for Leaf PRF
+        leaf_prf_key = bytearray(master_key)
+        leaf_prf_key[0] = (leaf_prf_key[0] + 2) % 256
+        self._leaf_prf = Prf(key=bytes(leaf_prf_key))
 
+        self._tree_stash: List[Data] = []
+        
         self._cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         self.PRP = PRP(key=aes_key, n=self._extended_size)
@@ -291,6 +305,90 @@ class TopDownSomapFixedCache:
             self._Tree_name: self._tree
         }
         self._client.init(server_storage)
+
+    def restore_client_state(self, force_reset_caches: bool = False) -> None:
+        """
+        Restore client local state for TopDownSomap when storage is loaded from file.
+        
+        :param force_reset_caches: If True, reset O_W, O_R, O_B, Q_W, Q_R on server.
+        """
+        # 1. Initialize empty Cache maps (O_W, O_R, O_B)
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                data_size=self._data_size, client=self._client, name=self._Ow_name,
+                                filename=self._filename, bucket_size=self._bucket_size,
+                                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                data_size=self._data_size, client=self._client, name=self._Or_name,
+                                filename=self._filename, bucket_size=self._bucket_size,
+                                stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+                                      data_size=self._data_size, client=self._client, name=self._Ob_name,
+                                      filename=self._filename, bucket_size=self._bucket_size,
+                                      stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
+                                      num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
+
+        # 2. Initialize Queues
+        self._Qw = []
+        self._Qr = []
+        self._Qw_len = 0
+        self._Qr_len = 0
+        
+        # 3. Initialize Tree (Shell)
+        # We need the tree object for 'level' property and path calculations.
+        # But we don't need to fill its storage since that's on server.
+        max_block = self._compute_max_block_size()
+        self._tree = BinaryTree(num_data=self._num_groups, bucket_size=self._bucket_size, data_size=max_block,
+                                filename=None, enc_key_size=self._num_key_bytes if self._use_encryption else None)
+
+        if force_reset_caches:
+            print(f"  [restore_client_state] Forcing reset of caches: {self._Ow_name}, {self._Or_name}, {self._Ob_name}")
+            
+            # Since init_ods_storage uses keys from data, we need dummy keys.
+            extended_data_map = self._extend_database({})
+            all_keys = sorted(extended_data_map.keys())
+            dummy_keys = [k for k in all_keys if k >= self._num_data]
+            if len(dummy_keys) < 2 * self._cache_size:
+                 dummy_keys = all_keys 
+            keys_list = dummy_keys
+            
+            # Re-generate cache init data
+            # Ow: first cache_size dummies
+            st1 = self._Ow._init_ods_storage([(k, [0,0]) for k in keys_list[:self._cache_size]])
+            
+            # Or: next cache_size dummies as ( (pos, cnt), timestamp ) -> ((0,0), 0)
+            or_data_list = [(key, ([0,0], 0)) for key in keys_list[self._cache_size: 2 * self._cache_size]]
+            st2 = self._Or._init_ods_storage(or_data_list)
+            
+            # Ob: empty
+            st3 = self._Ob._init_ods_storage([])
+            
+            # Queues
+            if self._use_encryption:
+                self._Qw = [self._encrypt_data((key, "Key")) for key in keys_list[:self._cache_size]]
+                self._Qr = [self._encrypt_data((key, 0, "Key")) for key in keys_list[self._cache_size: 2 * self._cache_size]]
+            else:
+                self._Qw = [(key, "Key") for key in keys_list[:self._cache_size]]
+                self._Qr = [(key, 0, "Key") for key in keys_list[self._cache_size: 2 * self._cache_size]]
+            
+            self._Qw_len = len(self._Qw)
+            self._Qr_len = len(self._Qr)
+
+            partial_storage = {
+                self._Ow_name: st1,
+                self._Or_name: st2,
+                self._Ob_name: st3,
+                self._Qw_name: self._Qw,
+                self._Qr_name: self._Qr,
+                # DB and Tree are NOT reset
+            }
+            self._client.init(partial_storage)
+
+        # Re-assign client reference
+        self._Ow._client = self._client
+        self._Or._client = self._client
+        self._Ob._client = self._client
 
 
     def _prepare_tree_leaves(self, op: str, key: Any, old_value: Any) -> Tuple[List[int], Any]:

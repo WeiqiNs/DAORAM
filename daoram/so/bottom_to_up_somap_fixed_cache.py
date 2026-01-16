@@ -291,6 +291,12 @@ class BottomUpSomapFixedCache:
         self._Qw_len = 0
         self._Qr_len = 0
         
+        # If not forcing reset, we must restore the caches' client state (Root pointers)
+        # from the server metadata, otherwise the client is disconnected from the loaded B+ trees.
+        if not force_reset_caches:
+             self._Ow.restore_client_state()
+             self._Or.restore_client_state()
+        
         if force_reset_caches:
             # We need to tell the server to replace the current O_W, O_R, Q_W, Q_R
             # with EMPTY, FRESHLY initialized versions matching our current config.

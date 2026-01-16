@@ -66,6 +66,26 @@ class BPlusOdsOmap(TreeOdsOmap):
         # so worst-case tree height is 1 level higher than the ideal formula.
         self._max_height: int = math.ceil(math.log(num_data, math.ceil(order / 2))) + 1
 
+    def restore_client_state(self, force_reset_caches: bool = False) -> None:
+        """
+        Restore client state (root pointer) from server metadata if available.
+        """
+        # Try to fetch root from server
+        try:
+            root_key = f"{self._name}_root"
+            # InteractServer.list_all returns the value directly for memory storage
+            # Assuming server stores simple values (like root tuple) directly in storage dict
+            # InteractRemoteServer usage is trickier: list_all sends 'la' query.
+            # LocalServer sends back self.__storage[label]
+            stored_root = self._client.list_all(label=root_key)
+            if stored_root:
+                self._root = stored_root
+                print(f"  [BPlusOdsOmap] Restored root for {self._name}: {self._root}")
+        except Exception:
+            # Metadata might not exist if using old storage file or fresh init
+            if not force_reset_caches:
+                 print(f"  [BPlusOdsOmap] Warning: Could not restore root for {self._name} from server.")
+
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
 

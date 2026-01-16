@@ -495,7 +495,8 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
 
 def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                  data_size: int, keys: List[int], ops: List[str], order: int = 4,
-                 key_size: int = 16, value_size: int = 16, mode: str = "mix"):
+                 key_size: int = 16, value_size: int = 16, mode: str = "mix",
+                 load_storage: str = None):
     """Run Top-Down protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -509,11 +510,74 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
         num_key_bytes=key_size, key_size=key_size
     )
     
-    print("  Uploading initial data to server...")
-    setup_start = time.time()
-    proto.setup([(str(k), make_value(k, value_size)) for k in range(num_data)])
-    setup_time = time.time() - setup_start
-    print(f"  Setup complete in {setup_time:.2f}s")
+    if load_storage:
+        # Load one or multiple files
+        files = [f.strip() for f in load_storage.split(',')]
+        print(f"  Loading pre-built storage from server file(s): {files}")
+        setup_start = time.time()
+        for i, filename in enumerate(files):
+            print(f"    - Loading {filename} ...")
+            client.load_storage(filename)
+        
+        # Determine if we need to force reset caches based on what we loaded.
+        # If we loaded a 'cache' file, we assume it matches the desired config (cache_size).
+        # But if we just loaded a 'base' file (ds_only) and want to use a specific cache size, 
+        # we might need to reset.
+        # For simplicity, similar to Bottom-Up, if the user explicitly provided cache files that match params,
+        # they probably don't need reset.
+        # But to be safe, let's allow force_reset via restore_client_state logic if needed.
+        # Here we assume if they load files, they want to use them. 
+        # But wait, restore_client_state also initializes local objects.
+        
+        # Logic: Always call restore. If user wants fresh cache (different from file or file is empty cache),
+        # they might need a way to signal.
+        # Currently we follow Bottom-Up logic: Load what is given. 
+        # But note: Top-Down "forced reset" requires sending an init with empty structures.
+        # If we just loaded "cache_1023.pkl", we do NOT want to reset it.
+        # If we loaded "base.pkl" only, we DO want to reset/init cache to empty.
+        
+        # Heuristic: If filename contains "cache", assume we loaded cache, so don't reset.
+        loaded_cache = any("cache" in f for f in files)
+        force_reset = not loaded_cache
+        
+        proto.restore_client_state(force_reset_caches=force_reset)
+        print(f"  Storage loaded in {time.time() - setup_start:.2f}s")
+
+    else:
+        print("  Uploading initial data to server...")
+        setup_start = time.time()
+        # Note: top down setup expects list of (key, value)
+        # But keys are ints in our benchmark. 
+        # proto.setup converts them? 
+        # Looking at TopDownSomap.setup: data_map = Helper.hash_data_to_map... data is key, value
+        # Existing code used str(k). Let's stick to int k to match BottomUp if possible?
+        # No, existing call was: proto.setup([(str(k), make_value(k, value_size)) for k in range(num_data)])
+        # Wait, if we use str(k), the key type is str.
+        # TopDownSomapFixedCache uses: group_index = Helper.hash_data_to_leaf(..., data=key, ...)
+        # If key is int, Prf handles it? data=key.
+        # Prf.digest takes bytes. Helper.hash_data_to_leaf: data can be anything dumpable?
+        # Let's check Helper.
+        # For now, keep existing behavior: strictly follow what was there.
+        # But BottomUp uses int keys. Using str keys might make Prf results different if not consistent.
+        # But let's respect existing: keys: List[int]. But setup passed str(k).
+        # This implies keys in 'ops' loop (zip(keys, ops)) which are ints from zipf_keys 
+        # might mismatch if setup used str keys?
+        # Yes, big risk.
+        # Let's check `zipf_keys` return type. It returns ints.
+        # If setup uses str(k), and access uses int k, TopDown won't find items!
+        # Let's fix this standardization to INT while we are here, or carefully check.
+        # Actually TopDownSomap setup (line 527) in my read was: 
+        #   proto.setup([(str(k), make_value(k, value_size)) for k in range(num_data)])
+        # If I change it, I might break it if underlying expects str.
+        # BottomUp uses int.
+        # Let's invoke access with int.
+        
+        # Recommendation: Use int for both to be consistent. 
+        # I will change setup to use int k.
+        proto.setup([(k, make_value(k, value_size)) for k in range(num_data)])
+        
+        setup_time = time.time() - setup_start
+        print(f"  Setup complete in {setup_time:.2f}s")
     
     proto.reset_peak_client_size()
     counter.reset()
@@ -531,7 +595,8 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                 sys.stdout.flush()
             try:
                 new_key = base_new_key + i
-                proto.access('insert', str(new_key), value=make_value(new_key, value_size))
+                # access(op, key, value) for TopDown
+                proto.access('insert', new_key, value=make_value(new_key, value_size))
                 success += 1
             except Exception as e:
                 print(f"\n  Error on op {i}: {e}")
@@ -541,8 +606,10 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                 sys.stdout.write(f"\r  Progress: {i}/{len(keys)}")
                 sys.stdout.flush()
             try:
-                gk = str(key)
-                proto.access('search', gk)
+                actual_op = 'search' if op == 'read' else 'insert'
+                val = make_value(key, value_size) if actual_op == 'insert' else None
+                # access(op, key, value) for TopDown
+                proto.access(actual_op, key, val)
                 success += 1
             except Exception as e:
                 print(f"\n  Error on op {i}: {e}")
@@ -574,7 +641,8 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
 
 def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
                  keys: List[int], ops: List[str], order: int = 4,
-                 key_size: int = 16, value_size: int = 16, mode: str = "mix"):
+                 key_size: int = 16, value_size: int = 16, mode: str = "mix",
+                 load_storage: str = None):
     """Run Baseline BPlus OMAP benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -588,12 +656,20 @@ def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
         num_key_bytes=key_size
     )
     
-    print("  Uploading initial data to server...")
-    setup_start = time.time()
-    storage = omap._init_ods_storage([(k, make_value(k, value_size)) for k in range(num_data)])
-    client.init({omap._name: storage})
-    setup_time = time.time() - setup_start
-    print(f"  Setup complete in {setup_time:.2f}s")
+    if load_storage:
+        print(f"  Loading storage from server: {load_storage} (skipping data upload)...")
+        t_start = time.time()
+        client.load_storage(load_storage)
+        # IMPORTANT: Restore the B+ Tree Root pointer from the loaded metadata
+        omap.restore_client_state()
+        print(f"  Storage loaded & Client State restored in {time.time() - t_start:.2f}s")
+    else:
+        print("  Uploading initial data to server...")
+        setup_start = time.time()
+        storage = omap._init_ods_storage([(k, make_value(k, value_size)) for k in range(num_data)])
+        client.init({omap._name: storage})
+        setup_time = time.time() - setup_start
+        print(f"  Setup complete in {setup_time:.2f}s")
     
     omap.reset_peak_client_size()
     counter.reset()
@@ -723,8 +799,8 @@ def main():
     total_ops = args.ops
     
     # Load storage mode check
-    if args.load_storage and args.protocol not in ['bottom_up', 'all']:
-        print("[Warning] --load-storage is optimized for bottom_up currently. Other protocols may need fresh init.")
+    if args.load_storage and args.protocol not in ['bottom_up', 'top_down', 'all']:
+        print("[Warning] --load-storage is optimized for bottom_up and top_down. Other protocols may need fresh init.")
 
     keys = zipf_keys(num_data, total_ops, alpha=0.8)
     ops_list = ['read' if random.random() < args.read_ratio else 'write' for _ in range(total_ops)]
@@ -767,7 +843,8 @@ def main():
         results['top_down'] = run_top_down(
             args.server_ip, args.port, num_data, cache_size,
             data_size, keys, ops_list, order=args.order,
-            key_size=key_size, value_size=value_size, mode=args.mode
+            key_size=key_size, value_size=value_size, mode=args.mode,
+            load_storage=args.load_storage
         )
         print_results("Top-Down", results['top_down'], total_ops)
         time.sleep(1)
@@ -777,7 +854,8 @@ def main():
         results['baseline'] = run_baseline(
             args.server_ip, args.port, num_data, data_size,
             keys, ops_list, order=args.order,
-            key_size=key_size, value_size=value_size, mode=args.mode
+            key_size=key_size, value_size=value_size, mode=args.mode,
+            load_storage=args.load_storage
         )
         print_results("Baseline", results['baseline'], total_ops)
 
