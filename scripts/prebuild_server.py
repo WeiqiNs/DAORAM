@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--cache-size", type=int, default=1023, help="Cache size (for structure initialization only)")
     parser.add_argument("--output", type=str, required=True, help="Output pickle filename")
     parser.add_argument("--mock-crypto", action="store_true", help="Use mock encryption")
+    parser.add_argument("--simulate-init", action="store_true",
+                        help="Skip encryption/padding during setup for faster init (simulate mode)")
     parser.add_argument("--target", type=str, default="full", choices=["full", "ds_only", "cache_only"],
                         help="What components to save: full (all), ds_only (StaticORAM), cache_only (OW/OR/Queues)")
     parser.add_argument("--protocol", type=str, default="bottom_up", choices=["bottom_up", "top_down", "baseline"],
@@ -43,6 +45,8 @@ def main():
     if args.mock_crypto:
         print("[Mock Encryption Enabled]")
         crypto.MOCK_ENCRYPTION = True
+    if args.simulate_init:
+        print("[Simulate Init Enabled] Encryption/Padding disabled during setup")
 
     print(f"Pre-building storage: N={args.num_data}, V={args.value_size}, Target={args.target} -> {args.output}")
     
@@ -58,8 +62,13 @@ def main():
     # Optional: Load reuse DS
     if args.reuse_ds:
         print(f"Loading DS from {args.reuse_ds}...")
+        if not os.path.exists(args.reuse_ds) or os.path.getsize(args.reuse_ds) == 0:
+            raise FileNotFoundError(f"Reuse DS file missing or empty: {args.reuse_ds}")
         with open(args.reuse_ds, 'rb') as f:
-            full_storage = pickle.load(f)
+            try:
+                full_storage = pickle.load(f)
+            except EOFError as exc:
+                raise ValueError(f"Reuse DS file is empty or corrupted: {args.reuse_ds}") from exc
         
         ds_components = {}
         for k, v in full_storage.items():
@@ -88,7 +97,7 @@ def main():
             cache_size=args.cache_size, 
             data_size=data_size,
             client=server_side, 
-            use_encryption=True, 
+            use_encryption=not args.simulate_init, 
             aes_key=b'0'*16, 
             order=args.order,
             num_key_bytes=args.key_size
@@ -106,7 +115,7 @@ def main():
             cache_size=args.cache_size,
             data_size=data_size,
             client=server_side,
-            use_encryption=True,
+            use_encryption=not args.simulate_init,
             aes_key=b'0'*16,
             key_size=args.key_size,
             order=args.order,
@@ -123,7 +132,7 @@ def main():
         # Baseline BPlus OMAP
         proto = BPlusOdsOmap(
             order=args.order, num_data=num_data, key_size=args.key_size, data_size=data_size,
-            client=server_side, name="baseline", use_encryption=True, aes_key=b'0'*16,
+            client=server_side, name="baseline", use_encryption=not args.simulate_init, aes_key=b'0'*16,
             num_key_bytes=args.key_size
         )
         # Manually init storage and upload

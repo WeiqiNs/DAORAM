@@ -19,14 +19,16 @@ Parameter Sweep Benchmark (Real Case, Server Version)
 - 详细进度提示
 """
 
-NUM_DATA = int(pow(2,14)) - 1
+NUM_DATA = int(pow(2,24)) - 1
 KEY_SIZE = 16
 VALUE_SIZE = 4096
 OPS = 100
 ORDERS = [4, 8, 16]
-CACHE_SIZES = [int(pow(2,i))-1 for i in range(3,14)]
+CACHE_SIZES = [int(pow(2,i))-1 for i in range(3,24)]
 LATENCIES = [30, 50, 80]
 RESULT_FILE = "sweep_results_real.txt"
+SIMULATE_INIT = True
+SIM_CRYPTO_MBPS = 200.0
 
 python_cmd = sys.executable
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +48,11 @@ def run_command(cmd, desc):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"      [FAILED] {result.stderr.strip()}")
+            err = result.stderr.strip()
+            out = result.stdout.strip()
+            print(f"      [FAILED] {err}")
+            if out:
+                print(f"      [STDOUT] {out}")
             return None
         print(f"      [Done] {time.time()-start:.2f}s", flush=True)
         return result.stdout
@@ -91,6 +97,7 @@ full_state_files = {}   # (protocol, order, cache_size) -> full file
 
 # 分阶段 sweep：先 sweep latency=50ms 且 order=8 的所有 case，再 sweep 其它 case
 def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_idx=0, total_cases=None):
+    baseline_done = set()  # (order, latency)
     case_idx = start_idx
     for cache_size in CACHE_SIZES:
         for order in ORDERS:
@@ -98,8 +105,13 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                 for proto_name, proto in [("Bottom-Up","bottom_up"), ("Top-Down","top_down"), ("Baseline","baseline")]:
                     if not filter_func(cache_size, order, latency, proto):
                         continue
+                    if proto == "baseline" and (order, latency) in baseline_done:
+                        case_idx += 1
+                        continue
                     case_tag = f"#CASE: cache={cache_size},order={order},latency={latency},proto={proto}"
                     if case_tag in completed:
+                        if proto == "baseline":
+                            baseline_done.add((order, latency))
                         case_idx += 1
                         continue
                     if total_cases:
@@ -112,16 +124,23 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                         static_key = (proto, order)
                         if static_key not in full_state_files:
                             full_file = f"static_oram_baseline_{order}.pkl"
-                            build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
-                                "--protocol", proto,
-                                "--num-data", str(NUM_DATA),
-                                "--value-size", str(VALUE_SIZE),
-                                "--key-size", str(KEY_SIZE),
-                                "--output", full_file,
-                                "--order", str(order),
-                                "--target", "full"]
-                            run_command(build_cmd, f"Prebuild static ORAM for Baseline (order={order})")
-                            full_state_files[static_key] = full_file
+                            if os.path.exists(full_file):
+                                print(f"      [Skip] Found existing {full_file}, reuse.")
+                                full_state_files[static_key] = full_file
+                            else:
+                                build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
+                                    "--protocol", proto,
+                                    "--num-data", str(NUM_DATA),
+                                    "--value-size", str(VALUE_SIZE),
+                                    "--key-size", str(KEY_SIZE),
+                                    "--output", full_file,
+                                    "--order", str(order),
+                                    "--target", "full"]
+                                if SIMULATE_INIT:
+                                    build_cmd.append("--simulate-init")
+                                out = run_command(build_cmd, f"Prebuild static ORAM for Baseline (order={order})")
+                                if out and os.path.exists(full_file):
+                                    full_state_files[static_key] = full_file
                         ds_file = full_state_files[static_key]
                     else:
                         base_key = (proto, order)
@@ -131,20 +150,27 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                                 if proto == "bottom_up"
                                 else f"static_serverstate_top_down_{order}_ds.pkl"
                             )
-                            build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
-                                "--protocol", proto,
-                                "--num-data", str(NUM_DATA),
-                                "--value-size", str(VALUE_SIZE),
-                                "--key-size", str(KEY_SIZE),
-                                "--output", base_file,
-                                "--order", str(order),
-                                "--target", "ds_only",
-                                "--cache-size", str(max(CACHE_SIZES))]
-                            if proto == "top_down":
-                                run_command(build_cmd, f"Prebuild base DS for Top-Down (order={order})")
+                            if os.path.exists(base_file):
+                                print(f"      [Skip] Found existing {base_file}, reuse.")
+                                base_ds_files[base_key] = base_file
                             else:
-                                run_command(build_cmd, f"Prebuild base DS for Bottom-Up (order={order})")
-                            base_ds_files[base_key] = base_file
+                                build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
+                                    "--protocol", proto,
+                                    "--num-data", str(NUM_DATA),
+                                    "--value-size", str(VALUE_SIZE),
+                                    "--key-size", str(KEY_SIZE),
+                                    "--output", base_file,
+                                    "--order", str(order),
+                                    "--target", "ds_only",
+                                    "--cache-size", str(max(CACHE_SIZES))]
+                                if SIMULATE_INIT:
+                                    build_cmd.append("--simulate-init")
+                                if proto == "top_down":
+                                    run_command(build_cmd, f"Prebuild base DS for Top-Down (order={order})")
+                                else:
+                                    run_command(build_cmd, f"Prebuild base DS for Bottom-Up (order={order})")
+                                if os.path.exists(base_file):
+                                    base_ds_files[base_key] = base_file
 
                         static_key = (proto, order, cache_size)
                         if static_key not in full_state_files:
@@ -153,22 +179,33 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                                 if proto == "bottom_up"
                                 else f"static_serverstate_top_down_{order}_cache{cache_size}.pkl"
                             )
-                            build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
-                                "--protocol", proto,
-                                "--num-data", str(NUM_DATA),
-                                "--value-size", str(VALUE_SIZE),
-                                "--key-size", str(KEY_SIZE),
-                                "--output", full_file,
-                                "--order", str(order),
-                                "--target", "full",
-                                "--cache-size", str(cache_size),
-                                "--reuse-ds", base_ds_files[base_key]]
-                            if proto == "top_down":
-                                run_command(build_cmd, f"Prebuild full Top-Down (order={order}, cache={cache_size})")
+                            if os.path.exists(full_file):
+                                print(f"      [Skip] Found existing {full_file}, reuse.")
+                                full_state_files[static_key] = full_file
                             else:
-                                run_command(build_cmd, f"Prebuild full Bottom-Up (order={order}, cache={cache_size})")
-                            full_state_files[static_key] = full_file
-                        ds_file = full_state_files[static_key]
+                                build_cmd = [python_cmd, os.path.join(root_dir, "scripts", "prebuild_server.py"),
+                                    "--protocol", proto,
+                                    "--num-data", str(NUM_DATA),
+                                    "--value-size", str(VALUE_SIZE),
+                                    "--key-size", str(KEY_SIZE),
+                                    "--output", full_file,
+                                    "--order", str(order),
+                                    "--target", "full",
+                                    "--cache-size", str(cache_size),
+                                    "--reuse-ds", base_ds_files[base_key]]
+                                if SIMULATE_INIT:
+                                    build_cmd.append("--simulate-init")
+                                if proto == "top_down":
+                                    run_command(build_cmd, f"Prebuild full Top-Down (order={order}, cache={cache_size})")
+                                else:
+                                    run_command(build_cmd, f"Prebuild full Bottom-Up (order={order}, cache={cache_size})")
+                                if os.path.exists(full_file):
+                                    full_state_files[static_key] = full_file
+                        ds_file = full_state_files.get(static_key)
+                    if not ds_file or not os.path.exists(ds_file):
+                        print(f"    [Result skipped] Missing storage file: {ds_file}")
+                        case_idx += 1
+                        continue
                     # 2. 启动 server
                     port = 31000 + (case_idx % 1000)
                     server_cmd = [python_cmd, os.path.join(root_dir, "demo", "server.py"), "--port", str(port)]
@@ -187,6 +224,8 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                             "--order", str(order),
                             "--mode", "mix",
                             "--latency", str(latency)]
+                        if SIMULATE_INIT:
+                            client_cmd += ["--simulate-init", "--sim-crypto-mbps", str(SIM_CRYPTO_MBPS)]
                         if proto != "baseline":
                             client_cmd += ["--cache-size", str(cache_size)]
                         out = run_command(client_cmd, f"Benchmark {proto_name}")
@@ -194,6 +233,16 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                     finally:
                         os.kill(server_proc.pid, signal.SIGTERM)
                         server_proc.wait()
+                    if not metrics:
+                        print("    [Result skipped] Benchmark failed or empty output")
+                        case_idx += 1
+                        # 清理 full 文件，节省磁盘
+                        if proto != "baseline":
+                            full_key = (proto, order, cache_size)
+                            full_file = full_state_files.get(full_key)
+                            if full_file and os.path.exists(full_file):
+                                os.remove(full_file)
+                        continue
                     # 3. 结果写入
                     with open(RESULT_FILE, "a") as f:
                         f.write(f"{case_tag}\n")
@@ -206,8 +255,15 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                         }, ensure_ascii=False) + "\n")
                         f.flush()
                     print(f"    [Result saved] {metrics}")
+                    if proto == "baseline":
+                        baseline_done.add((order, latency))
                     case_idx += 1
-                    # 4. static ORAM 不删除，便于复用
+                    # 4. 清理 full 文件，仅保留 base DS 与 baseline static ORAM
+                    if proto != "baseline":
+                        full_key = (proto, order, cache_size)
+                        full_file = full_state_files.get(full_key)
+                        if full_file and os.path.exists(full_file):
+                            os.remove(full_file)
                     # 5. 进度提示
                     if total_cases:
                         print(f"    [Progress] {case_idx}/{total_cases} cases finished.\n", flush=True)
@@ -215,14 +271,19 @@ def sweep_cases(filter_func, base_ds_files, full_state_files, completed, start_i
                         print(f"    [Progress] {case_idx} cases finished.\n", flush=True)
     return case_idx
 
-# 先 sweep latency=50ms 且 order=8
-print("\n[Phase 1] Sweep latency=50ms, order=8 全部 case...")
-phase1_cases = len(CACHE_SIZES)*1*1*3
-idx = sweep_cases(lambda c,o,l,p: o==8 and l==50, base_ds_files, full_state_files, completed, start_idx=0, total_cases=phase1_cases)
+def now_str():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
 
-# 再 sweep 其它 case
-print("\n[Phase 2] Sweep 其它 case...")
-total_cases = len(CACHE_SIZES)*len(ORDERS)*len(LATENCIES)*3
-sweep_cases(lambda c,o,l,p: not (o==8 and l==50), base_ds_files, full_state_files, completed, start_idx=idx, total_cases=total_cases)
+# 单独执行：top_down, latency=50ms, order=8, cache_size=2^10-1..2^23-1
+single_cache_sizes = [int(pow(2, i)) - 1 for i in range(10, 24)]
+print(f"\n[Single Case] top_down, latency=50ms, order=8, caches=2^10-1..2^23-1... ({now_str()})")
+sweep_cases(
+    lambda c, o, l, p: (p == "top_down" and o == 8 and l == 50 and c in single_cache_sizes),
+    base_ds_files,
+    full_state_files,
+    completed,
+    start_idx=0,
+    total_cases=len(single_cache_sizes),
+)
 
-print("\nAll cases finished! Results in sweep_results_real.txt")
+print(f"\nSingle case finished! Results in sweep_results_real.txt ({now_str()})")

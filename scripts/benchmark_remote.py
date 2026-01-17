@@ -30,13 +30,28 @@ from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 
 class RoundCounter:
     """Wraps client to count rounds and measure bandwidth."""
-    def __init__(self, client: InteractServer, sim_latency_ms: float = 0.0):
+    def __init__(
+        self,
+        client: InteractServer,
+        sim_latency_ms: float = 0.0,
+        simulate_padding: bool = False,
+        sim_bucket_size: int = None,
+        sim_block_size: int = None,
+        sim_crypto_mbps: float = 200.0,
+    ):
         self.client = client
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
+        self.raw_bytes_sent = 0
+        self.raw_bytes_recv = 0
         self.comm_time = 0.0
         self.sim_latency_sec = (sim_latency_ms * 2) / 1000.0 if sim_latency_ms > 0 else 0.0
+        self.simulate_padding = simulate_padding
+        self.sim_bucket_size = sim_bucket_size
+        self.sim_block_size = sim_block_size
+        self.sim_crypto_mbps = sim_crypto_mbps
+        self.sim_proc_time = 0.0
 
     def wrap(self):
         self._orig_batch = getattr(self.client, "batch_query", None)
@@ -55,13 +70,18 @@ class RoundCounter:
         if self._orig_batch:
             def _batch(ops):
                 self.rounds += 1  # batch is 1 RTT
-                self.bytes_sent += _size(ops)
+                sent = _size(ops)
+                self.bytes_sent += sent
+                self.raw_bytes_sent += sent
                 start = time.time()
                 if self.sim_latency_sec > 0:
                     time.sleep(self.sim_latency_sec)
                 res = self._orig_batch(ops)
                 self.comm_time += (time.time() - start)
-                self.bytes_recv += _size(res)
+                recv = _size(res)
+                self.bytes_recv += recv
+                self.raw_bytes_recv += recv
+                # NOTE: batch simulate padding is protocol-specific; skip for now
                 return res
             self.client.batch_query = _batch
 
@@ -69,13 +89,18 @@ class RoundCounter:
             def _read(label, leaf):
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
-                self.bytes_sent += _size({"label": label, "leaf": leaf})
+                sent = _size({"label": label, "leaf": leaf})
+                self.bytes_sent += sent
+                self.raw_bytes_sent += sent
                 start = time.time()
                 if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
                      time.sleep(self.sim_latency_sec)
                 res = self._orig_read(label, leaf)
                 self.comm_time += (time.time() - start)
-                self.bytes_recv += _size(res)
+                recv = _size(res)
+                self.bytes_recv += recv
+                self.raw_bytes_recv += recv
+                self._simulate_padding_recv(res)
                 return res
             self.client.read_query = _read
 
@@ -83,13 +108,18 @@ class RoundCounter:
             def _read_mul(label, leaf):
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
-                self.bytes_sent += _size({"label": label, "leaf": leaf})
+                sent = _size({"label": label, "leaf": leaf})
+                self.bytes_sent += sent
+                self.raw_bytes_sent += sent
                 start = time.time()
                 if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False): 
                     time.sleep(self.sim_latency_sec)
                 res = self._orig_read_mul(label, leaf)
                 self.comm_time += (time.time() - start)
-                self.bytes_recv += _size(res)
+                recv = _size(res)
+                self.bytes_recv += recv
+                self.raw_bytes_recv += recv
+                self._simulate_padding_recv(res)
                 return res
             self.client.read_mul_query = _read_mul
 
@@ -97,13 +127,18 @@ class RoundCounter:
             def _write(label, leaf, data):
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
-                self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
+                sent = _size({"label": label, "leaf": leaf, "data": data})
+                self.bytes_sent += sent
+                self.raw_bytes_sent += sent
                 start = time.time()
                 if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
                     time.sleep(self.sim_latency_sec)
                 res = self._orig_write(label, leaf, data)
                 self.comm_time += (time.time() - start)
-                self.bytes_recv += _size(res)
+                recv = _size(res)
+                self.bytes_recv += recv
+                self.raw_bytes_recv += recv
+                self._simulate_padding_send(data)
                 return res
             self.client.write_query = _write
 
@@ -111,20 +146,65 @@ class RoundCounter:
             def _write_mul(label, leaf, data):
                 if not getattr(self.client, "skip_round_counting", False):
                     self.rounds += 1
-                self.bytes_sent += _size({"label": label, "leaf": leaf, "data": data})
+                sent = _size({"label": label, "leaf": leaf, "data": data})
+                self.bytes_sent += sent
+                self.raw_bytes_sent += sent
                 start = time.time()
                 if self.sim_latency_sec > 0 and not getattr(self.client, "skip_round_counting", False):
                     time.sleep(self.sim_latency_sec)
                 res = self._orig_write_mul(label, leaf, data)
                 self.comm_time += (time.time() - start)
-                self.bytes_recv += _size(res)
+                recv = _size(res)
+                self.bytes_recv += recv
+                self.raw_bytes_recv += recv
+                self._simulate_padding_send(data)
                 return res
             self.client.write_mul_query = _write_mul
+
+    def _simulate_padding_recv(self, buckets):
+        if not self.simulate_padding or self.sim_bucket_size is None or self.sim_block_size is None:
+            return
+        try:
+            missing = 0
+            for bucket in buckets:
+                missing += max(self.sim_bucket_size - len(bucket), 0)
+            if missing <= 0:
+                return
+            extra_bytes = missing * self.sim_block_size
+            self.bytes_recv += extra_bytes
+            self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
+        except Exception:
+            return
+
+    def _simulate_padding_send(self, buckets):
+        if not self.simulate_padding or self.sim_bucket_size is None or self.sim_block_size is None:
+            return
+        try:
+            missing = 0
+            for bucket in buckets:
+                missing += max(self.sim_bucket_size - len(bucket), 0)
+            if missing <= 0:
+                return
+            extra_bytes = missing * self.sim_block_size
+            self.bytes_sent += extra_bytes
+            self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
+        except Exception:
+            return
 
     def reset(self):
         self.rounds = 0
         self.bytes_sent = 0
         self.bytes_recv = 0
+        self.raw_bytes_sent = 0
+        self.raw_bytes_recv = 0
+        self.sim_proc_time = 0.0
+
+
+def calc_sim_real_crypto_time(counter: RoundCounter, sim_crypto_mbps: float) -> float:
+    if sim_crypto_mbps <= 0:
+        return 0.0
+    total = counter.raw_bytes_sent + counter.raw_bytes_recv
+    return total / (sim_crypto_mbps * 1024 * 1024)
 
 
 def zipf_keys(n, size, alpha=1.0):
@@ -390,19 +470,30 @@ def make_value(key: int, value_size: int = 16) -> bytes:
 def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int, 
                   data_size: int, keys: List[int], ops: List[str], order: int = 4,
                   key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                  load_storage: str = None, latency_ms: float = 0.0):
+                  load_storage: str = None, latency_ms: float = 0.0,
+                  simulate_init: bool = False, sim_crypto_mbps: float = 200.0):
     """Run Bottom-Up protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client, sim_latency_ms=latency_ms)
+    enc_block_size = calc_block_size(key_size, value_size, encrypted=True)
+    counter = RoundCounter(
+        client,
+        sim_latency_ms=latency_ms,
+        simulate_padding=simulate_init,
+        sim_bucket_size=None,
+        sim_block_size=enc_block_size,
+        sim_crypto_mbps=sim_crypto_mbps,
+    )
     counter.wrap()
     
     proto = BottomUpSomapFixedCache(
         num_data=num_data, cache_size=cache_size, data_size=data_size,
-        client=client, use_encryption=True, aes_key=b'0'*16, order=order,
+        client=client, use_encryption=not simulate_init, aes_key=b'0'*16, order=order,
         num_key_bytes=key_size
     )
+    if simulate_init:
+        counter.sim_bucket_size = proto._bucket_size
     
     if load_storage:
         # Load one or multiple files
@@ -491,11 +582,12 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
     
     client.close_connection()
     
+    sim_real_time = calc_sim_real_crypto_time(counter, sim_crypto_mbps) if simulate_init else 0.0
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': elapsed,
+        'elapsed_sec': elapsed + counter.sim_proc_time + sim_real_time,
         'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': proto._peak_client_size,
@@ -507,19 +599,30 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
 def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                  data_size: int, keys: List[int], ops: List[str], order: int = 4,
                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                 load_storage: str = None, latency_ms: float = 0.0):
+                 load_storage: str = None, latency_ms: float = 0.0,
+                 simulate_init: bool = False, sim_crypto_mbps: float = 200.0):
     """Run Top-Down protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client, sim_latency_ms=latency_ms)
+    enc_block_size = calc_block_size(key_size, value_size, encrypted=True)
+    counter = RoundCounter(
+        client,
+        sim_latency_ms=latency_ms,
+        simulate_padding=simulate_init,
+        sim_bucket_size=None,
+        sim_block_size=enc_block_size,
+        sim_crypto_mbps=sim_crypto_mbps,
+    )
     counter.wrap()
     
     proto = TopDownSomapFixedCache(
         num_data=num_data, cache_size=cache_size, data_size=data_size,
-        client=client, use_encryption=True, aes_key=b'0'*16, order=order,
+        client=client, use_encryption=not simulate_init, aes_key=b'0'*16, order=order,
         num_key_bytes=key_size, key_size=key_size
     )
+    if simulate_init:
+        counter.sim_bucket_size = proto._bucket_size
     
     if load_storage:
         # Load one or multiple files
@@ -637,11 +740,12 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
     
     client.close_connection()
     
+    sim_real_time = calc_sim_real_crypto_time(counter, sim_crypto_mbps) if simulate_init else 0.0
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': elapsed,
+        'elapsed_sec': elapsed + counter.sim_proc_time + sim_real_time,
         'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': proto._peak_client_size,
@@ -653,19 +757,30 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
 def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
                  keys: List[int], ops: List[str], order: int = 4,
                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
-                 load_storage: str = None, latency_ms: float = 0.0):
+                 load_storage: str = None, latency_ms: float = 0.0,
+                 simulate_init: bool = False, sim_crypto_mbps: float = 200.0):
     """Run Baseline BPlus OMAP benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
     
-    counter = RoundCounter(client, sim_latency_ms=latency_ms)
+    enc_block_size = calc_block_size(key_size, value_size, encrypted=True)
+    counter = RoundCounter(
+        client,
+        sim_latency_ms=latency_ms,
+        simulate_padding=simulate_init,
+        sim_bucket_size=None,
+        sim_block_size=enc_block_size,
+        sim_crypto_mbps=sim_crypto_mbps,
+    )
     counter.wrap()
     
     omap = BPlusOdsOmap(
         order=order, num_data=num_data, key_size=key_size, data_size=data_size,
-        client=client, name="baseline", use_encryption=True, aes_key=b'0'*16,
+        client=client, name="baseline", use_encryption=not simulate_init, aes_key=b'0'*16,
         num_key_bytes=key_size
     )
+    if simulate_init:
+        counter.sim_bucket_size = omap._bucket_size
     
     if load_storage:
         print(f"  Loading storage from server: {load_storage} (skipping data upload)...")
@@ -728,11 +843,12 @@ def run_baseline(server_ip: str, port: int, num_data: int, data_size: int,
     
     client.close_connection()
     
+    sim_real_time = calc_sim_real_crypto_time(counter, sim_crypto_mbps) if simulate_init else 0.0
     return {
         'rounds': counter.rounds,
         'bytes_sent': counter.bytes_sent,
         'bytes_recv': counter.bytes_recv,
-        'elapsed_sec': elapsed,
+        'elapsed_sec': elapsed + counter.sim_proc_time + sim_real_time,
         'comm_time': counter.comm_time,
         'success': success,
         'max_client_size': omap._peak_client_size,
@@ -795,6 +911,10 @@ def main():
     parser.add_argument("--mode", type=str, default="mix", choices=["mix", "insert_only"],
                         help="Operation mode: mix (read/write) or insert_only (new keys)")
     parser.add_argument("--mock-crypto", action="store_true", help="Use mock encryption")
+    parser.add_argument("--simulate-init", action="store_true",
+                        help="Simulate init/padding: disable encryption/padding and add simulated cost")
+    parser.add_argument("--sim-crypto-mbps", type=float, default=200.0,
+                        help="Simulated crypto throughput in MB/s (default: 200)")
     parser.add_argument("--load-storage", type=str, default=None, help="Path to pre-built storage on server to load")
     parser.add_argument("--latency", type=float, default=0.0, help="Simulated network latency (one-way) in ms")
     args = parser.parse_args()
@@ -833,6 +953,8 @@ def main():
     print(f"  Block Size: {raw_block_size} bytes (raw), {enc_block_size} bytes (encrypted)")
     print(f"  Mode:       {args.mode}")
     print(f"  Operations: {total_ops}")
+    if args.simulate_init:
+        print(f"  Sim Init:   ON (crypto {args.sim_crypto_mbps} MB/s)")
     if args.mode == "mix":
         print(f"  Read Ratio: {args.read_ratio}")
     print("="*60)
@@ -845,7 +967,8 @@ def main():
             args.server_ip, args.port, num_data, cache_size, 
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage, latency_ms=args.latency
+            load_storage=args.load_storage, latency_ms=args.latency,
+            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
         time.sleep(1)
@@ -856,7 +979,8 @@ def main():
             args.server_ip, args.port, num_data, cache_size,
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage, latency_ms=args.latency
+            load_storage=args.load_storage, latency_ms=args.latency,
+            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps
         )
         print_results("Top-Down", results['top_down'], total_ops)
         time.sleep(1)
@@ -867,7 +991,8 @@ def main():
             args.server_ip, args.port, num_data, data_size,
             keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
-            load_storage=args.load_storage, latency_ms=args.latency
+            load_storage=args.load_storage, latency_ms=args.latency,
+            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps
         )
         print_results("Baseline", results['baseline'], total_ops)
 
