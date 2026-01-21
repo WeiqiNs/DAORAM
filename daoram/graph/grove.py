@@ -225,7 +225,8 @@ class Grove:
         data_of_interest = {}
         duplications = []
         for data in self._graph_oram.stash:
-            if data.key == key:
+            # todo: key is a list here, so check it
+            if data.key in key:
                 data_of_interest[data.key] = data.value
                 data.leaf = secrets.randbelow(self._leaf_range)
                 # Generate delayed duplications.
