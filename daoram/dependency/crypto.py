@@ -111,11 +111,18 @@ class Prf:
         return self.__key
 
     def digest(self, message: bytes) -> bytes:
-        """Run PRF on the provided message."""
-        # Create a new AES instance; fix the IV to make the algorithm deterministic.
+        """Run PRF on the provided message. In mock mode, just return the input (padded/truncated)."""
+        global MOCK_ENCRYPTION
+        if MOCK_ENCRYPTION:
+            # For mock, just return the message padded/truncated to 16 bytes (deterministic, fast)
+            if len(message) < 16:
+                return message.ljust(16, b'\x00')
+            elif len(message) > 16:
+                return message[:16]
+            else:
+                return message
+        # Real PRF
         cipher = AES.new(self.__key, AES.MODE_CBC, iv=b"\x00" * 16)
-
-        # Pad the plaintext and encrypt.
         return cipher.encrypt(pad(data_to_pad=message, block_size=16, style="pkcs7"))
 
     def digest_mod_n(self, message: bytes, mod: int) -> int:

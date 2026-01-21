@@ -52,6 +52,21 @@ class RoundCounter:
         self.sim_block_size = sim_block_size
         self.sim_crypto_mbps = sim_crypto_mbps
         self.sim_proc_time = 0.0
+        self.total_read_ops = 0
+        self.total_write_ops = 0
+        self.total_read_buckets = 0
+        self.total_write_buckets = 0
+
+    def _count_buckets(self, buckets) -> int:
+        if not buckets or not isinstance(buckets, list):
+            return 0
+        if len(buckets) == 0:
+            return 0
+        if isinstance(buckets[0], list) and len(buckets[0]) > 0 and isinstance(buckets[0][0], list):
+            # List[Buckets]
+            return sum(len(path) for path in buckets)
+        # Buckets
+        return len(buckets)
 
     def wrap(self):
         self._orig_batch = getattr(self.client, "batch_query", None)
@@ -81,7 +96,8 @@ class RoundCounter:
                 recv = _size(res)
                 self.bytes_recv += recv
                 self.raw_bytes_recv += recv
-                # NOTE: batch simulate padding is protocol-specific; skip for now
+                # Simulate padding for batch operations
+                self._simulate_batch_padding(ops, res, sent, recv)
                 return res
             self.client.batch_query = _batch
 
@@ -100,7 +116,7 @@ class RoundCounter:
                 recv = _size(res)
                 self.bytes_recv += recv
                 self.raw_bytes_recv += recv
-                self._simulate_padding_recv(res)
+                self._simulate_padding_recv(res, recv)
                 return res
             self.client.read_query = _read
 
@@ -119,7 +135,7 @@ class RoundCounter:
                 recv = _size(res)
                 self.bytes_recv += recv
                 self.raw_bytes_recv += recv
-                self._simulate_padding_recv(res)
+                self._simulate_padding_recv(res, recv)
                 return res
             self.client.read_mul_query = _read_mul
 
@@ -138,7 +154,8 @@ class RoundCounter:
                 recv = _size(res)
                 self.bytes_recv += recv
                 self.raw_bytes_recv += recv
-                self._simulate_padding_send(data)
+                data_size = _size(data)
+                self._simulate_padding_send(data, data_size)
                 return res
             self.client.write_query = _write
 
@@ -157,37 +174,133 @@ class RoundCounter:
                 recv = _size(res)
                 self.bytes_recv += recv
                 self.raw_bytes_recv += recv
-                self._simulate_padding_send(data)
+                data_size = _size(data)
+                self._simulate_padding_send(data, data_size)
                 return res
             self.client.write_mul_query = _write_mul
 
-    def _simulate_padding_recv(self, buckets):
+    def _simulate_padding_recv(self, buckets, raw_bytes: int = 0):
+        """Simulate full bucket padding for received data.
+        
+        In real ORAM, each bucket is always padded to bucket_size blocks,
+        and each block is padded to block_size bytes. So total recv should be:
+        num_buckets × bucket_size × block_size
+        
+        We replace the actual pickle size with this theoretical full size.
+        
+        Note: buckets can be either:
+        - Buckets (List[Bucket]) from read_query
+        - List[Buckets] from read_mul_query
+        """
         if not self.simulate_padding or self.sim_bucket_size is None or self.sim_block_size is None:
             return
         try:
-            missing = 0
-            for bucket in buckets:
-                missing += max(self.sim_bucket_size - len(bucket), 0)
-            if missing <= 0:
+            # Detect if this is List[Buckets] (from read_mul_query) or Buckets (from read_query)
+            # List[Buckets] = List[List[Bucket]], Buckets = List[Bucket]
+            # Check if first element is a list (Bucket) or a list of lists (Buckets)
+            if len(buckets) == 0:
                 return
-            extra_bytes = missing * self.sim_block_size
-            self.bytes_recv += extra_bytes
-            self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
+            num_buckets = self._count_buckets(buckets)
+            if num_buckets > 0:
+                self.total_read_ops += 1
+                self.total_read_buckets += num_buckets
+            
+            full_size = num_buckets * self.sim_bucket_size * self.sim_block_size
+            # Replace actual pickle size with full padded size
+            extra_bytes = full_size - raw_bytes
+            if extra_bytes > 0:
+                self.bytes_recv += extra_bytes
+                self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
         except Exception:
             return
 
-    def _simulate_padding_send(self, buckets):
+    def _simulate_padding_send(self, buckets, raw_bytes: int = 0):
+        """Simulate full bucket padding for sent data.
+        
+        In real ORAM, each bucket is always padded to bucket_size blocks,
+        and each block is padded to block_size bytes. So total send should be:
+        num_buckets × bucket_size × block_size
+        
+        We replace the actual pickle size with this theoretical full size.
+        
+        Note: buckets can be either:
+        - Buckets (List[Bucket]) from write_query
+        - List[Buckets] from write_mul_query
+        """
         if not self.simulate_padding or self.sim_bucket_size is None or self.sim_block_size is None:
             return
         try:
-            missing = 0
-            for bucket in buckets:
-                missing += max(self.sim_bucket_size - len(bucket), 0)
-            if missing <= 0:
+            # Detect if this is List[Buckets] or Buckets
+            if len(buckets) == 0:
                 return
-            extra_bytes = missing * self.sim_block_size
-            self.bytes_sent += extra_bytes
-            self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
+            num_buckets = self._count_buckets(buckets)
+            if num_buckets > 0:
+                self.total_write_ops += 1
+                self.total_write_buckets += num_buckets
+            
+            full_size = num_buckets * self.sim_bucket_size * self.sim_block_size
+            # Replace actual pickle size with full padded size
+            extra_bytes = full_size - raw_bytes
+            if extra_bytes > 0:
+                self.bytes_sent += extra_bytes
+                self.sim_proc_time += extra_bytes / (self.sim_crypto_mbps * 1024 * 1024)
+        except Exception:
+            return
+
+    def _simulate_batch_padding(self, ops, results, raw_sent: int, raw_recv: int):
+        """Simulate full bucket padding for batch operations.
+        
+        Batch operations can include:
+        - read: Returns Buckets, needs recv padding
+        - write: Sends Buckets in op['data'], needs send padding
+        - list_insert/list_pop/list_get/list_update: Small metadata, no padding needed
+        
+        We calculate padded size for all read/write ops and add the difference from raw.
+        """
+        if not self.simulate_padding or self.sim_bucket_size is None or self.sim_block_size is None:
+            return
+        
+        try:
+            def _size(obj: Any) -> int:
+                try:
+                    return len(pickle.dumps(obj))
+                except Exception:
+                    return 0
+
+            extra_send = 0
+            for op in ops:
+                if op.get('op') == 'write' and 'data' in op:
+                    data = op['data']
+                    num_buckets = self._count_buckets(data)
+                    if num_buckets > 0:
+                        self.total_write_ops += 1
+                        self.total_write_buckets += num_buckets
+                        full_send = num_buckets * self.sim_bucket_size * self.sim_block_size
+                        raw_send = _size(data)
+                        if full_send > raw_send:
+                            extra_send += (full_send - raw_send)
+
+            extra_recv = 0
+            for i, op in enumerate(ops):
+                if op.get('op') == 'read' and i < len(results):
+                    res = results[i]
+                    num_buckets = self._count_buckets(res)
+                    if num_buckets > 0:
+                        self.total_read_ops += 1
+                        self.total_read_buckets += num_buckets
+                        full_recv = num_buckets * self.sim_bucket_size * self.sim_block_size
+                        raw_recv_local = _size(res)
+                        if full_recv > raw_recv_local:
+                            extra_recv += (full_recv - raw_recv_local)
+
+            if extra_send > 0:
+                self.bytes_sent += extra_send
+                self.sim_proc_time += extra_send / (self.sim_crypto_mbps * 1024 * 1024)
+
+            if extra_recv > 0:
+                self.bytes_recv += extra_recv
+                self.sim_proc_time += extra_recv / (self.sim_crypto_mbps * 1024 * 1024)
+                
         except Exception:
             return
 
@@ -198,6 +311,10 @@ class RoundCounter:
         self.raw_bytes_sent = 0
         self.raw_bytes_recv = 0
         self.sim_proc_time = 0.0
+        self.total_read_ops = 0
+        self.total_write_ops = 0
+        self.total_read_buckets = 0
+        self.total_write_buckets = 0
 
 
 def calc_sim_real_crypto_time(counter: RoundCounter, sim_crypto_mbps: float) -> float:
@@ -471,7 +588,8 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
                   data_size: int, keys: List[int], ops: List[str], order: int = 4,
                   key_size: int = 16, value_size: int = 16, mode: str = "mix",
                   load_storage: str = None, latency_ms: float = 0.0,
-                  simulate_init: bool = False, sim_crypto_mbps: float = 200.0):
+                  simulate_init: bool = False, sim_crypto_mbps: float = 200.0,
+                  force_reset_caches: bool = False):
     """Run Bottom-Up protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -521,7 +639,12 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
         #   If they loaded a 'cache config' file, they want THAT config.
         #   So we just do local hydration.
         # However, we must ensure the local params (cache_size) match what was loaded.
-        proto.restore_client_state(force_reset_caches=False)
+        
+        # Auto-detect ds_only: if file ends with _ds.pkl, force reset caches
+        auto_force_reset = any('_ds.pkl' in f for f in files) or force_reset_caches
+        proto.restore_client_state(force_reset_caches=auto_force_reset)
+        if auto_force_reset:
+            print(f"  [Note] Detected ds_only file or --force-reset-caches; initializing empty caches on server.")
         print(f"  Storage loaded in {time.time() - setup_start:.2f}s")
         
         # When loading a pre-built storage which contains a FULL structure,
@@ -590,6 +713,10 @@ def run_bottom_up(server_ip: str, port: int, num_data: int, cache_size: int,
         'elapsed_sec': elapsed + counter.sim_proc_time + sim_real_time,
         'comm_time': counter.comm_time,
         'success': success,
+        'read_ops': counter.total_read_ops,
+        'write_ops': counter.total_write_ops,
+        'read_buckets': counter.total_read_buckets,
+        'write_buckets': counter.total_write_buckets,
         'max_client_size': proto._peak_client_size,
         'client_storage': client_storage,
         'server_storage': server_storage
@@ -600,7 +727,8 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
                  data_size: int, keys: List[int], ops: List[str], order: int = 4,
                  key_size: int = 16, value_size: int = 16, mode: str = "mix",
                  load_storage: str = None, latency_ms: float = 0.0,
-                 simulate_init: bool = False, sim_crypto_mbps: float = 200.0):
+                 simulate_init: bool = False, sim_crypto_mbps: float = 200.0,
+                 force_reset_caches: bool = False):
     """Run Top-Down protocol benchmark against remote server."""
     client = InteractRemoteServer(ip=server_ip, port=port)
     client.init_connection()
@@ -650,11 +778,13 @@ def run_top_down(server_ip: str, port: int, num_data: int, cache_size: int,
         # If we just loaded "cache_1023.pkl", we do NOT want to reset it.
         # If we loaded "base.pkl" only, we DO want to reset/init cache to empty.
         
-        # Heuristic: If filename contains "cache", assume we loaded cache, so don't reset.
-        loaded_cache = any("cache" in f for f in files)
-        force_reset = not loaded_cache
+        # Heuristic: If filename contains "_ds.pkl", assume we loaded ds_only, so reset caches.
+        # Also respect explicit --force-reset-caches flag.
+        auto_force_reset = any('_ds.pkl' in f for f in files) or force_reset_caches
         
-        proto.restore_client_state(force_reset_caches=force_reset)
+        proto.restore_client_state(force_reset_caches=auto_force_reset)
+        if auto_force_reset:
+            print(f"  [Note] Detected ds_only file or --force-reset-caches; initializing empty caches on server.")
         print(f"  Storage loaded in {time.time() - setup_start:.2f}s")
 
     else:
@@ -875,6 +1005,16 @@ def print_results(name: str, result: dict, num_ops: int):
     
     print(f"  Bandwidth Sent: {result['bytes_sent']/1024:.2f} KB ({result['bytes_sent']/1024/num_ops:.2f} KB/op)")
     print(f"  Bandwidth Recv: {result['bytes_recv']/1024:.2f} KB ({result['bytes_recv']/1024/num_ops:.2f} KB/op)")
+
+    if 'read_buckets' in result or 'write_buckets' in result:
+        read_ops = result.get('read_ops', 0)
+        write_ops = result.get('write_ops', 0)
+        read_buckets = result.get('read_buckets', 0)
+        write_buckets = result.get('write_buckets', 0)
+        read_avg = (read_buckets / read_ops) if read_ops else 0.0
+        write_avg = (write_buckets / write_ops) if write_ops else 0.0
+        print(f"  Read Ops/Buckets:  {read_ops} ops, {read_buckets} buckets ({read_avg:.2f}/op)")
+        print(f"  Write Ops/Buckets: {write_ops} ops, {write_buckets} buckets ({write_avg:.2f}/op)")
     
     # Client storage details
     cs = result.get('client_storage', {})
@@ -917,6 +1057,8 @@ def main():
                         help="Simulated crypto throughput in MB/s (default: 200)")
     parser.add_argument("--load-storage", type=str, default=None, help="Path to pre-built storage on server to load")
     parser.add_argument("--latency", type=float, default=0.0, help="Simulated network latency (one-way) in ms")
+    parser.add_argument("--force-reset-caches", action="store_true",
+                        help="Force reset caches (O_W/O_R/Q_W/Q_R) after loading storage. Required when loading ds_only files.")
     args = parser.parse_args()
 
     if args.mock_crypto:
@@ -968,7 +1110,8 @@ def main():
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
             load_storage=args.load_storage, latency_ms=args.latency,
-            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps
+            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps,
+            force_reset_caches=args.force_reset_caches
         )
         print_results("Bottom-Up", results['bottom_up'], total_ops)
         time.sleep(1)
@@ -980,7 +1123,8 @@ def main():
             data_size, keys, ops_list, order=args.order,
             key_size=key_size, value_size=value_size, mode=args.mode,
             load_storage=args.load_storage, latency_ms=args.latency,
-            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps
+            simulate_init=args.simulate_init, sim_crypto_mbps=args.sim_crypto_mbps,
+            force_reset_caches=args.force_reset_caches
         )
         print_results("Top-Down", results['top_down'], total_ops)
         time.sleep(1)
