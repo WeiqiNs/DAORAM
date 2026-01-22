@@ -80,7 +80,7 @@ class TestBPlusOmap:
             data_size=10,
             client=client,
             filename=str(test_file),
-            encryptor=encryptor
+            encryptor=encryptor,
         )
 
         # Initialize an empty storage.

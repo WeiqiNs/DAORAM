@@ -31,41 +31,41 @@ class DAOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 client: Optional[InteractServer] = None,
                  name: str = "da",
-                 num_ic: int = 64,
-                 ic_length: int = 6,
-                 gc_length: int = 64,
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
+                 num_ic: int = 64,
+                 ic_length: int = 6,
+                 gc_length: int = 64,
                  on_chip_mem: int = 10,
-                 prf_key: bytes = None,
                  last_oram_data: int = None,
                  last_oram_level: int = None,
                  is_pos_map: bool = False,
                  evict_path_obo: bool = False,
                  encryptor: Encryptor = None,
-                 client: Optional[InteractServer] = None):
+                 prf_key: bytes = None):
         """
         Initialize the average oram with the following parameters.
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server; None for pos map oram.
         :param name: The name of the protocol, this should be unique if multiple schemes are used together.
-        :param num_ic: Number of individual counts we store per block.
-        :param ic_length: Length of the binary representing individual count.
-        :param gc_length: Length of the binary representing group count.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
+        :param num_ic: Number of individual counts we store per block.
+        :param ic_length: Length of the binary representing individual count.
+        :param gc_length: Length of the binary representing group count.
         :param on_chip_mem: The number of data points the client can store.
-        :param prf_key: The key to use for the PRF instance, by default it will be randomly sampled.
         :param last_oram_data: The number of data points last oram stored (only useful for position map oram).
         :param last_oram_level: The level the last oram has (only useful for position map oram).
         :param is_pos_map: Flag indicating this is a position map ORAM (no client required).
         :param evict_path_obo: A boolean indicating whether to evict path one by one.
         :param encryptor: The encryptor to use for encryption.
-        :param client: The instance we use to interact with server; None for pos map oram.
+        :param prf_key: The key to use for the PRF instance, by default it will be randomly sampled.
         """
         # Validate that main ORAMs have a client.
         if not is_pos_map and client is None:
@@ -73,14 +73,14 @@ class DAOram(TreeBaseOram):
 
         # Initialize the parent BaseOram class.
         super().__init__(
-            name=name,
-            client=client,
-            filename=filename,
             num_data=num_data,
             data_size=data_size,
-            encryptor=encryptor,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # Add children class attributes.

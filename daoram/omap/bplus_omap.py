@@ -142,15 +142,15 @@ class BPlusOmap(ObliviousSearchTree):
         """
         # Initialize the parent ObliviousSearchTree class.
         super().__init__(
-            name=name,
-            client=client,
-            filename=filename,
             num_data=num_data,
             key_size=key_size,
-            encryptor=encryptor,
             data_size=data_size,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
-            stash_scale=stash_scale
+            stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # Save the branching order and middle point.

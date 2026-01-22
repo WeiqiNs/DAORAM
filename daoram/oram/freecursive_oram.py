@@ -34,43 +34,43 @@ class FreecursiveOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 client: Optional[InteractServer] = None,
                  name: str = "fc",
-                 num_ic: int = 48,
-                 ic_length: int = 10,
-                 gc_length: int = 32,
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 prf_key: bytes = None,
+                 num_ic: int = 48,
+                 ic_length: int = 10,
+                 gc_length: int = 32,
                  on_chip_size: int = 10,
-                 is_pos_map: bool = False,
                  reset_method: str = "prob",
+                 reset_prob: Optional[float] = None,
                  last_oram_data: int = None,
                  last_oram_level: int = None,
+                 is_pos_map: bool = False,
                  encryptor: Encryptor = None,
-                 reset_prob: Optional[float] = None,
-                 client: Optional[InteractServer] = None):
+                 prf_key: bytes = None):
         """
         Initialize the freecursive oram with the following parameters.
 
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server; None for pos map oram.
         :param name: The name of the protocol, this should be unique if multiple schemes are used together.
-        :param num_ic: Number of individual counts we store per block.
-        :param ic_length: Length of the binary representing individual count.
-        :param gc_length: Length of the binary representing group count.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
-        :param prf_key: The key to use for the PRF instance, by default it will be randomly sampled.
+        :param num_ic: Number of individual counts we store per block.
+        :param ic_length: Length of the binary representing individual count.
+        :param gc_length: Length of the binary representing group count.
         :param on_chip_size: The number of data points the client can store.
         :param reset_method: "Prob" triggers reset with some probability and "hard" triggers reset when IC overflows.
+        :param reset_prob: The probability of reset to happen when reset method is "prob".
         :param last_oram_data: The number of data points last oram stored (only useful for position map oram).
         :param last_oram_level: The level the last oram has (only useful for position map oram).
-        :param reset_prob: The probability of reset to happen when reset method is "prob".
         :param is_pos_map: Flag indicating this is a position map ORAM (no client required).
         :param encryptor: The encryptor to use for encryption.
-        :param client: The instance we use to interact with server; None for pos map oram.
+        :param prf_key: The key to use for the PRF instance, by default it will be randomly sampled.
         """
         # Validate that main ORAMs have a client.
         if not is_pos_map and client is None:
@@ -78,14 +78,14 @@ class FreecursiveOram(TreeBaseOram):
 
         # Initialize the parent BaseOram class.
         super().__init__(
-            name=name,
-            client=client,
-            filename=filename,
             num_data=num_data,
             data_size=data_size,
-            encryptor=encryptor,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # Add children class attributes.

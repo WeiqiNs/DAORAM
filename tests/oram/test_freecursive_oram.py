@@ -107,7 +107,7 @@ class TestFreecursiveOram:
 
     def test_hard_without_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client, reset_method="hard")
 
         # Initialize the server with storage.
         oram.init_server_storage()
@@ -134,7 +134,7 @@ class TestFreecursiveOram:
 
     def test_hard_with_init(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client, reset_method="hard")
 
         # Initialize the server with storage.
         oram.init_server_storage({i: i * 2 for i in range(num_data)})
@@ -146,7 +146,7 @@ class TestFreecursiveOram:
     def test_hard_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption enabled.
         oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=client, encryptor=encryptor
+            num_data=num_data, data_size=10, client=client, reset_method="hard", encryptor=encryptor
         )
 
         # Initialize the server with storage.
@@ -163,7 +163,7 @@ class TestFreecursiveOram:
     def test_hard_with_file(self, num_data, client, test_file):
         # Create the oram instance; encryption turned off for testing efficiency.
         oram = FreecursiveOram(
-            num_data=num_data, data_size=10, reset_method="hard", client=client, filename=str(test_file)
+            num_data=num_data, data_size=10, client=client, filename=str(test_file), reset_method="hard"
         )
 
         # Initialize the server with storage.
@@ -182,10 +182,10 @@ class TestFreecursiveOram:
         oram = FreecursiveOram(
             num_data=num_data,
             data_size=10,
-            reset_method="hard",
             client=client,
             filename=str(test_file),
-            encryptor=encryptor
+            reset_method="hard",
+            encryptor=encryptor,
         )
 
         # Initialize the server with storage.
@@ -201,7 +201,7 @@ class TestFreecursiveOram:
 
     def test_hard_operate_then_evict(self, num_data, client):
         # Create the oram instance; encryption turned off for testing efficiency.
-        oram = FreecursiveOram(num_data=num_data, data_size=10, reset_method="hard", client=client)
+        oram = FreecursiveOram(num_data=num_data, data_size=10, client=client, reset_method="hard")
 
         # Initialize the server with storage.
         oram.init_server_storage()

@@ -19,8 +19,8 @@ class MulPathOram(PathOram):
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 encryptor: Encryptor = None,
-                 stash_scale_multiplier: int = 1):
+                 stash_scale_multiplier: int = 1,
+                 encryptor: Encryptor = None):
         """
         Defines the multi-path oram for batch operations.
 
@@ -36,14 +36,14 @@ class MulPathOram(PathOram):
         """
         # Initialize the parent PathOram class.
         super().__init__(
-            name=name,
-            client=client,
             num_data=num_data,
-            filename=filename,
-            encryptor=encryptor,
             data_size=data_size,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
-            stash_scale=stash_scale * stash_scale_multiplier
+            stash_scale=stash_scale * stash_scale_multiplier,
+            encryptor=encryptor,
         )
 
         # Store temporary leaves for batch operations without immediate eviction.

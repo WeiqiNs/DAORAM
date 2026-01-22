@@ -11,7 +11,7 @@ import os
 import pickle
 from typing import Any, Dict, List, Optional, Tuple
 
-from daoram.dependency import Blake2Prf, Data, Encryptor, Helper, InteractServer, UNSET
+from daoram.dependency import Blake2Prf, Data, Encryptor, Helper, InteractServer, PseudoRandomFunction, UNSET
 from daoram.oram import TreeBaseOram, MulPathOram
 
 
@@ -25,40 +25,43 @@ class GroupOmap:
                  num_data: int,
                  key_size: int,
                  data_size: int,
-                 upper_oram: TreeBaseOram,
                  client: InteractServer,
+                 upper_oram: TreeBaseOram,
                  name: str = "group_omap",
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 encryptor: Encryptor = None):
+                 encryptor: Encryptor = None,
+                 bucket_prf: PseudoRandomFunction = None,
+                 leaf_prf: PseudoRandomFunction = None):
         """Initialize the group-path OMAP.
 
         :param num_data: Capacity for both ORAMs.
         :param key_size: Bytes for keys (used for sizing).
         :param data_size: Bytes for values (used for sizing).
-        :param upper_oram: ORAM for storing bucket metadata.
         :param client: The instance we use to interact with server.
+        :param upper_oram: ORAM for storing bucket metadata.
         :param name: The name of the protocol.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
         :param encryptor: The encryptor to use for encryption.
+        :param bucket_prf: PRF for bucket hashing. If None, a new Blake2Prf is created.
+        :param leaf_prf: PRF for leaf path computation. If None, a new Blake2Prf is created.
         """
         self._name = name
         self._num_data = num_data
-        self._num_buckets = num_data
         self._key_size = key_size
         self._data_size = data_size
 
-        # Upper ORAM for metadata
+        # Upper ORAM that stores
         self._upper_oram = upper_oram
 
         # PRFs: one for bucket hashing, one for leaf path computation
-        self._bucket_prf = Blake2Prf()
-        self._leaf_prf = Blake2Prf()
+        self._bucket_prf = bucket_prf if bucket_prf is not None else Blake2Prf()
+        self._leaf_prf = leaf_prf if leaf_prf is not None else Blake2Prf()
 
         # Compute upper bound on bucket size (for stash scaling)
-        self._upper_bound = math.ceil(
-            math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(self._num_buckets, 2) + 128 - 1)).real + 1)
+        self._group_size = math.ceil(
+            math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(self._num_data, 2) + 128 - 1)).real + 1)
         )
 
         # Create lower ORAM with same num_data, stash scaled by upper_bound
@@ -70,27 +73,8 @@ class GroupOmap:
             bucket_size=bucket_size,
             stash_scale=stash_scale,
             encryptor=encryptor,
-            stash_scale_multiplier=self._upper_bound
+            stash_scale_multiplier=self._group_size
         )
-
-    def _key_to_int(self, key: Any) -> int:
-        """Convert a key to an integer for lower ORAM indexing.
-
-        :param key: The actual key.
-        :return: Integer key for lower ORAM in [0, num_data).
-        """
-        if isinstance(key, int) and 0 <= key < self._num_data:
-            return key
-        # Hash non-integer or out-of-range keys
-        if isinstance(key, int):
-            key_bytes = key.to_bytes(16, byteorder="big")
-        elif isinstance(key, str):
-            key_bytes = key.encode("utf-8")
-        elif isinstance(key, bytes):
-            key_bytes = key
-        else:
-            key_bytes = str(key).encode("utf-8")
-        return self._leaf_prf.digest_mod_n(message=key_bytes, mod=self._num_data)
 
     def _key_to_bytes(self, key: Any) -> bytes:
         """Convert a key to bytes for PRF input.
@@ -123,8 +107,7 @@ class GroupOmap:
         :param key: The search key.
         :return: Bucket index in [0, num_buckets).
         """
-        key_bytes = self._key_to_bytes(key)
-        return self._bucket_prf.digest_mod_n(message=key_bytes, mod=self._num_buckets)
+        return Helper.hash_data_to_leaf(prf=self._bucket_prf, data=key, map_size=self._num_data)
 
     def _encode_metadata(self, count: int, seed: bytes, keys: List[Any]) -> bytes:
         """Pack bucket metadata into bytes.
@@ -154,7 +137,7 @@ class GroupOmap:
 
         # Partition data into buckets
         data_map = Helper.hash_data_to_map(
-            prf=self._bucket_prf, data=data, map_size=self._num_buckets
+            prf=self._bucket_prf, data=data, map_size=self._num_data
         )
 
         # Prepare metadata for upper ORAM, data for lower ORAM
@@ -165,14 +148,14 @@ class GroupOmap:
         # Track which lower_keys are used
         used_lower_keys: set = set()
 
-        for bucket_id in range(self._num_buckets):
+        for bucket_id in range(self._num_data):
             bucket_items = data_map.get(bucket_id, [])
             count = len(bucket_items)
 
             # Check bucket size limit
-            if count > self._upper_bound:
+            if count > self._group_size:
                 raise MemoryError(
-                    f"Bucket {bucket_id} has {count} items, exceeds upper bound {self._upper_bound}"
+                    f"Bucket {bucket_id} has {count} items, exceeds upper bound {self._group_size}"
                 )
 
             # Generate initial seed for this bucket
@@ -184,7 +167,7 @@ class GroupOmap:
 
             # Store items in lower ORAM
             for key, value in bucket_items:
-                lower_key = self._key_to_int(key)
+                lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
                 leaf = self._compute_path(seed, key)
                 lower_data[lower_key] = (key, value)  # Store actual key with value
                 lower_path_map[lower_key] = leaf
@@ -227,7 +210,7 @@ class GroupOmap:
         key_value_map: Dict[int, Any] = {}
 
         for actual_key in bucket_keys:
-            lower_key = self._key_to_int(actual_key)
+            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
             old_path = self._compute_path(seed, actual_key)
             new_path = self._compute_path(new_seed, actual_key)
             key_path_map[lower_key] = old_path
@@ -235,7 +218,7 @@ class GroupOmap:
             key_value_map[lower_key] = UNSET  # Read only
 
         # Step 5: Pad to upper_bound accesses for obliviousness
-        dummy_count = self._upper_bound - count
+        dummy_count = self._group_size - count
         for i in range(dummy_count):
             # Use random paths for dummy accesses
             dummy_key = self._num_data + i  # Keys outside valid range
@@ -257,7 +240,7 @@ class GroupOmap:
         # Step 7: Search for the key among results
         found_value = None
         found_lower_key = None
-        lower_key = self._key_to_int(key)
+        lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
 
         if lower_key in results and results[lower_key] is not None:
             actual_key, actual_value = results[lower_key]
@@ -294,13 +277,13 @@ class GroupOmap:
         count, seed, bucket_keys = self._decode_metadata(metadata)
 
         # Step 3: Check bucket capacity
-        if count >= self._upper_bound:
+        if count >= self._group_size:
             raise MemoryError(
                 f"Bucket {bucket_id} is full ({count} items), cannot insert"
             )
 
         # Step 4: Compute path for the new item
-        lower_key = self._key_to_int(key)
+        lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
         path = self._compute_path(seed, key)
 
         # Step 5: Read the path first (standard ORAM pattern - read before write)
@@ -350,7 +333,7 @@ class GroupOmap:
         key_value_map: Dict[int, Any] = {}
 
         for actual_key in bucket_keys:
-            lower_key = self._key_to_int(actual_key)
+            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
             old_path = self._compute_path(seed, actual_key)
             new_path = self._compute_path(new_seed, actual_key)
             key_path_map[lower_key] = old_path
@@ -369,7 +352,7 @@ class GroupOmap:
         # Collect results
         items = []
         for actual_key in bucket_keys:
-            lower_key = self._key_to_int(actual_key)
+            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
             if lower_key in results and results[lower_key] is not None:
                 stored_key, stored_value = results[lower_key]
                 items.append((stored_key, stored_value))

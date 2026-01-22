@@ -105,7 +105,7 @@ class TestMulPathOram:
 
     def test_with_enc(self, num_data, client, encryptor):
         # Create the oram instance with encryption and stash scale multiplier for 5-key batch operations.
-        oram = MulPathOram(num_data=num_data, data_size=10, client=client, encryptor=encryptor, stash_scale_multiplier=5)
+        oram = MulPathOram(num_data=num_data, data_size=10, client=client, stash_scale_multiplier=5, encryptor=encryptor)
 
         # Initialize the server with storage.
         oram.init_server_storage()

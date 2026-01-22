@@ -2,18 +2,23 @@
 
 from typing import Any, List, Optional, Tuple, Union
 
-from daoram.dependency import Helper, Blake2Prf
+from daoram.dependency import Helper, Blake2Prf, PseudoRandomFunction
 from daoram.omap.oblivious_search_tree import ObliviousSearchTree
 from daoram.oram.tree_base_oram import TreeBaseOram
 
 
 class OramOstOmap:
-    def __init__(self, num_data: int, ost: ObliviousSearchTree, oram: TreeBaseOram):
+    def __init__(self,
+                 num_data: int,
+                 ost: ObliviousSearchTree,
+                 oram: TreeBaseOram,
+                 prf: PseudoRandomFunction = None):
         """Initialize the proposed construction for optimal omap.
 
         :param num_data: The number of data points the oram should store.
         :param ost: Some tree structured ods omap that inherits the TreeOdsOmap class.
         :param oram: Some tree-based oram that inherits the TreeBaseOmap class.
+        :param prf: PRF for hashing input keys. If None, a new Blake2Prf is created.
         """
         # Save the input as class attributes.
         self._num_data: int = num_data
@@ -23,8 +28,8 @@ class OramOstOmap:
         # The ods for tree needs to adjust its height only.
         self._ost.update_mul_tree_height(num_tree=num_data)
 
-        # A new PRF used to hash the input keys.
-        self._prf: Blake2Prf = Blake2Prf()
+        # PRF used to hash the input keys.
+        self._prf: PseudoRandomFunction = prf if prf is not None else Blake2Prf()
 
     def init_server_storage(self, data: Optional[List[Tuple[Union[str, int, bytes], Any]]] = None) -> None:
         """

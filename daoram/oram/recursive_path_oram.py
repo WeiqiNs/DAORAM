@@ -24,15 +24,15 @@ class RecursivePathOram(TreeBaseOram):
     def __init__(self,
                  num_data: int,
                  data_size: int,
+                 client: Optional[InteractServer] = None,
                  name: str = "rc",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  on_chip_mem: int = 10,
-                 is_pos_map: bool = False,
                  compression_ratio: int = 4,
-                 encryptor: Encryptor = None,
-                 client: Optional[InteractServer] = None):
+                 is_pos_map: bool = False,
+                 encryptor: Encryptor = None):
         """
         Initialize the recursive path oram with the following parameters.
 
@@ -45,8 +45,8 @@ class RecursivePathOram(TreeBaseOram):
         :param stash_scale: The scaling scale of the stash.
         :param on_chip_mem: The number of data points the client can store.
         :param compression_ratio: The amount of leaves each position maps data point stores.
-        :param encryptor: The encryptor to use for encryption.
         :param is_pos_map: Flag indicating this is a position map ORAM (no client required).
+        :param encryptor: The encryptor to use for encryption.
         """
         # Validate that main ORAMs have a client.
         if not is_pos_map and client is None:
@@ -54,14 +54,14 @@ class RecursivePathOram(TreeBaseOram):
 
         # Initialize the parent BaseOram class.
         super().__init__(
-            name=name,
-            client=client,
-            filename=filename,
             num_data=num_data,
             data_size=data_size,
-            encryptor=encryptor,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # Add children class attributes.

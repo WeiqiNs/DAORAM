@@ -21,17 +21,17 @@ class Storage:
             size: int,
             bucket_size: int,
             encryption: bool,
-            filename: str = None,
             data_size: int = None,
             disk_size: int = None,
+            filename: str = None,
     ) -> None:
         """
         :param size: Number of rows (tree nodes) in the matrix.
         :param bucket_size: Number of blocks stored in each bucket (columns).
         :param encryption: Whether encryption is enabled or not.
-        :param filename: Optional path for on-disk backing; if provided, storage is pre-allocated.
         :param data_size: Number of bytes in the data structure (padding header will be added automatically).
         :param disk_size: Byte length of each block (after padding and encryption), required for file-backed storage.
+        :param filename: Optional path for on-disk backing; if provided, storage is pre-allocated.
         """
         # Store the information useful for accessing data.
         self._size: int = size

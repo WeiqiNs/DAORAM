@@ -17,10 +17,10 @@ from daoram.dependency import BinaryTree, Data, Helper, InteractServer, Encrypto
 
 class TreeBaseOram(ABC):
     def __init__(self,
-                 name: str,
                  num_data: int,
                  data_size: int,
                  client: InteractServer,
+                 name: str = "oram",
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
@@ -28,10 +28,10 @@ class TreeBaseOram(ABC):
         """
         Defines the base oram, including its attributes and methods.
 
-        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param num_data: The number of data points the oram should store.
         :param data_size: The number of bytes the random dummy data should have.
         :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
         :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.

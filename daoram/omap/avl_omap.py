@@ -192,15 +192,15 @@ class AVLOmap(ObliviousSearchTree):
         """
         # Initialize the parent BaseOmap class.
         super().__init__(
-            name=name,
-            client=client,
-            filename=filename,
             num_data=num_data,
             key_size=key_size,
             data_size=data_size,
-            encryptor=encryptor,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
-            stash_scale=stash_scale
+            stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # Compute the maximum height of the AVL tree.

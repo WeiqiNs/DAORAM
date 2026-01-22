@@ -28,11 +28,11 @@ def create_omap(omap_type: str, num_data: int, client: InteractRemoteServer):
     elif omap_type == "daoram-avl":
         ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
         oram = DAOram(num_data=num_data, data_size=10, client=client)
-        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        return OramOstOmap(ost=ods, oram=oram, num_data=num_data)
     elif omap_type == "daoram-bplus":
         ods = BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
         oram = DAOram(num_data=num_data, data_size=10, client=client)
-        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        return OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
 
 def run_demo(omap_type: str, num_data: int, ip: str, port: int):

@@ -26,25 +26,25 @@ class PathOram(TreeBaseOram):
         """
         Defines the path oram, including its attributes and methods.
 
-        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
-        :param client: The instance we use to interact with server.
         :param num_data: The number of data points the oram should store.
-        :param filename: The filename to save the oram data to.
-        :param encryptor: The encryptor to use for encryption.
         :param data_size: The number of bytes the random dummy data should have.
+        :param client: The instance we use to interact with server.
+        :param name: The name of the protocol, this should be unique if multiple schemes are used together.
+        :param filename: The filename to save the oram data to.
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
+        :param encryptor: The encryptor to use for encryption.
         """
         # Initialize the parent BaseOram class.
         super().__init__(
-            name=name,
-            client=client,
             num_data=num_data,
-            filename=filename,
-            encryptor=encryptor,
             data_size=data_size,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
-            stash_scale=stash_scale
+            stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # This attribute is used to store a leaf temporarily for reading a path without evicting it immediately.

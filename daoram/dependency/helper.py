@@ -100,15 +100,15 @@ class Helper:
         return bin(int.from_bytes(binary_bytes, byteorder="big"))[2:]
 
     @staticmethod
-    def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: Union[str, int, bytes]) -> int:
+    def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: Any) -> int:
         """Compute hash of data modulo map_size.
 
         :param prf: The PRF instance to use for hashing.
         :param map_size: The modulus value.
-        :param data: The data to hash (can be str, int, or bytes).
+        :param data: The data to hash (can be str, int, bytes, or any other type).
         :return: The hashed value modulo map_size.
         """
-        # Convert data to bytes depend on their types.
+        # Convert data to bytes based on type.
         if type(data) is int:
             byte_data = data.to_bytes(16, byteorder="big")
         elif type(data) is str:
@@ -116,7 +116,7 @@ class Helper:
         elif type(data) is bytes:
             byte_data = data
         else:
-            raise TypeError(f"Data must be either a string or an integer.")
+            byte_data = str(data).encode("utf-8")
 
         # Use the prf as a hash and compute mod map size.
         return prf.digest_mod_n(message=byte_data, mod=map_size)
@@ -125,7 +125,7 @@ class Helper:
     def hash_data_to_map(
             prf: PseudoRandomFunction,
             map_size: int,
-            data: List[Tuple[Union[str, int, bytes], Any]]
+            data: List[Tuple[Any, Any]]
     ) -> dict:
         """
         Given a list of data, map them to the correct integer bucket.

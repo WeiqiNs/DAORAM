@@ -585,7 +585,7 @@ def __getstate__(self) -> Dict[str, Any]:
     return {
         # Basic parameters
         '_num_data': self._num_data,
-        '_bucket_size': self._bucket_size,
+        '_bucket_size': self._group_size,
         '_enc_key_size': self._enc_key_size,
         '_data_size': self._data_size,
         '_filename': self._filename,
@@ -608,7 +608,7 @@ def __setstate__(self, state: Dict[str, Any]) -> None:
     """Custom deserialization method"""
     # Restore basic parameters
     self._num_data = state['_num_data']
-    self._bucket_size = state['_bucket_size']
+    self._group_size = state['_bucket_size']
     self._enc_key_size = state['_enc_key_size']
     self._data_size = state['_data_size']
     self._filename = state['_filename']

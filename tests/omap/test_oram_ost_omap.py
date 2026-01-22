@@ -14,7 +14,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -39,7 +39,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -64,7 +64,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -90,7 +90,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client, encryptor=oram_encryptor)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -111,7 +111,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
@@ -132,7 +132,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])
@@ -153,7 +153,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -180,7 +180,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -206,7 +206,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client, encryptor=oram_encryptor)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -227,7 +227,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize an empty storage.
         omap.init_server_storage()
@@ -252,7 +252,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
@@ -273,7 +273,7 @@ class TestOramOdsOmap:
         oram = DAOram(num_data=num_data, data_size=10, client=client)
 
         # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
         omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])

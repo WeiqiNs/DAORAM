@@ -12,9 +12,9 @@ class BinaryTree:
             self,
             num_data: int,
             bucket_size: int,
-            filename: str = None,
             data_size: int = None,
             disk_size: int = None,
+            filename: str = None,
             encryption: bool = False
     ) -> None:
         """
@@ -22,9 +22,9 @@ class BinaryTree:
 
         :param num_data: The number of data points the tree should hold.
         :param bucket_size: Size of each node/bucket in the tree.
-        :param filename: Optional backing file to persist the tree.
         :param data_size: Plaintext byte size of each data point (padding header is handled by Storage).
         :param disk_size: Plaintext byte length of each on-disk block; Storage adds the padding header internally.
+        :param filename: Optional backing file to persist the tree.
         :param encryption: Deprecated alias for use_encryption; kept for compatibility.
         """
         # Store the number of data point and bucket size.
@@ -41,11 +41,11 @@ class BinaryTree:
         # Use the input buckets to initialize storage or create an empty list.
         self._storage = Storage(
             size=self._size,
-            filename=filename,
-            data_size=data_size,
-            disk_size=disk_size,
             bucket_size=bucket_size,
             encryption=encryption,
+            data_size=data_size,
+            disk_size=disk_size,
+            filename=filename,
         )
 
     @property

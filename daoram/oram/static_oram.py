@@ -36,14 +36,14 @@ class StaticOram(PathOram):
         """
         # Initialize the parent PathOram class.
         super().__init__(
-            name=name,
-            client=client,
             num_data=num_data,
-            filename=filename,
-            encryptor=encryptor,
             data_size=data_size,
+            client=client,
+            name=name,
+            filename=filename,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
+            encryptor=encryptor,
         )
 
         # PRF for generating fixed path numbers from keys.
