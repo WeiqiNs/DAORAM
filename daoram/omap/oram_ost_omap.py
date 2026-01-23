@@ -31,7 +31,7 @@ class OramOstOmap:
         # PRF used to hash the input keys.
         self._prf: PseudoRandomFunction = prf if prf is not None else Blake2Prf()
 
-    def init_server_storage(self, data: Optional[List[Tuple[Union[str, int, bytes], Any]]] = None) -> None:
+    def init_server_storage(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
         """
         Initialize the server storage for the input list of key-value pairs.
 

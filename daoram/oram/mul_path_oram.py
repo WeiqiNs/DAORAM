@@ -6,7 +6,7 @@ improving efficiency for operations that need to access multiple keys.
 """
 from typing import Any, Dict, List
 
-from daoram.dependency import Encryptor, InteractServer, PathData, UNSET
+from daoram.dependency import Encryptor, InteractServer, PathData, UNSET, ExecuteResult
 from daoram.oram.path_oram import PathOram
 
 
@@ -49,18 +49,35 @@ class MulPathOram(PathOram):
         # Store temporary leaves for batch operations without immediate eviction.
         self._tmp_leaves: List[int] = []
 
-    def init_server_storage(self, data_map: dict = None, path_map: dict = None) -> None:
+    def _init_pos_map(self) -> None:
+        """Initialize an empty position map to support non-integer keys."""
+        self._pos_map = {}
+
+    def _look_up_pos_map(self, key: Any) -> int:
+        """Look up key and get the leaf for where the data is stored.
+
+        :param key: A key of a data block (can be any hashable type).
+        :return: The corresponding leaf if found.
+        """
+        if key not in self._pos_map:
+            raise KeyError(f"Key {key} not found in position map.")
+        return self._pos_map[key]
+
+    def init_server_storage(self, data_map: Dict[Any, Any] = None, path_map: Dict[Any, int] = None) -> None:
         """
         Initialize the server storage based on the data map for this oram.
 
         :param data_map: A dictionary storing {key: data}.
-        :param path_map: Optional dictionary mapping {key: leaf}. If provided, overrides
-                         the random position map values for these keys.
+        :param path_map: Optional dictionary mapping {key: leaf}. If provided, uses these
+                         keys and leaves. If not provided, falls back to integer keys (0 to num_data-1).
         """
-        # Override position map with provided paths if given
         if path_map:
+            # Use provided path_map for non-integer keys
             for key, leaf in path_map.items():
                 self._pos_map[key] = leaf
+        else:
+            # Fall back to integer keys for backwards compatibility
+            self._pos_map = {i: self._get_new_leaf() for i in range(self._num_data)}
 
         # Call parent implementation
         super().init_server_storage(data_map=data_map)
@@ -68,9 +85,9 @@ class MulPathOram(PathOram):
     def _retrieve_mul_data_blocks(
             self,
             path: PathData,
-            key_leaf_map: Dict[int, int],
-            values: Dict[int, Any] = None,
-    ) -> Dict[int, Any]:
+            key_leaf_map: Dict[Any, int],
+            values: Dict[Any, Any] = None,
+    ) -> Dict[Any, Any]:
         """
         Retrieve multiple data blocks from the path. If values provided, write them.
 
@@ -81,7 +98,7 @@ class MulPathOram(PathOram):
         """
         # Track which keys we've found and their values.
         found_keys = set()
-        read_values: Dict[int, Any] = {}
+        read_values: Dict[Any, Any] = {}
 
         # Store the current stash length for searching stash later.
         to_index = len(self._stash)
@@ -127,10 +144,10 @@ class MulPathOram(PathOram):
 
     def operate_on_keys(
             self,
-            key_value_map: Dict[int, Any],
-            key_path_map: Dict[int, int] = None,
-            new_path_map: Dict[int, int] = None,
-    ) -> Dict[int, Any]:
+            key_value_map: Dict[Any, Any],
+            key_path_map: Dict[Any, int] = None,
+            new_path_map: Dict[Any, int] = None,
+    ) -> Dict[Any, Any]:
         """
         Perform batch operations on multiple keys. Reads all paths at once,
         performs operations, and evicts all paths at once.
@@ -150,7 +167,7 @@ class MulPathOram(PathOram):
 
         # Look up current leaves and determine new leaves for all keys.
         old_leaves: List[int] = []
-        key_leaf_map: Dict[int, int] = {}
+        key_leaf_map: Dict[Any, int] = {}
 
         for key in key_list:
             # Find which path the data lies on.
@@ -189,10 +206,10 @@ class MulPathOram(PathOram):
 
     def operate_on_keys_without_eviction(
             self,
-            key_value_map: Dict[int, Any],
-            key_path_map: Dict[int, int] = None,
-            new_path_map: Dict[int, int] = None,
-    ) -> Dict[int, Any]:
+            key_value_map: Dict[Any, Any],
+            key_path_map: Dict[Any, int] = None,
+            new_path_map: Dict[Any, int] = None,
+    ) -> Dict[Any, Any]:
         """
         Perform batch operations on multiple keys without eviction.
         Call eviction_for_mul_keys() later to complete the operation.
@@ -212,7 +229,7 @@ class MulPathOram(PathOram):
 
         # Look up current leaves and determine new leaves for all keys.
         old_leaves: List[int] = []
-        key_leaf_map: Dict[int, int] = {}
+        key_leaf_map: Dict[Any, int] = {}
 
         for key in key_list:
             # Find which path the data lies on.
@@ -245,7 +262,7 @@ class MulPathOram(PathOram):
 
         return read_values
 
-    def eviction_for_mul_keys(self, updates: Dict[int, Any] = None, execute: bool = True) -> None:
+    def eviction_for_mul_keys(self, updates: Dict[Any, Any] = None, execute: bool = True) -> None:
         """
         Complete the batch operation by updating stash and evicting.
 
@@ -271,4 +288,39 @@ class MulPathOram(PathOram):
             self._client.execute()
 
         # Clear temporary leaves.
+        self._tmp_leaves = []
+
+    def queue_read(self, leaves: List[int]) -> None:
+        """
+        Queue a read for the given leaves. Store leaves for later eviction.
+        Call process_read_result() after client.execute() to process the result.
+
+        :param leaves: List of leaf labels of the paths to read.
+        """
+        self._client.add_read_path(label=self._name, leaves=leaves)
+        self._tmp_leaves = leaves
+
+    def process_read_result(self, result: ExecuteResult) -> None:
+        """
+        Process the read result from client.execute() and add data to stash.
+
+        :param result: The ExecuteResult from client.execute().
+        """
+        path_data = result.results[self._name]
+        path_data = self._decrypt_path_data(path=path_data)
+        for bucket in path_data.values():
+            for data in bucket:
+                if data.key is not None:
+                    self._stash.append(data)
+
+    def queue_write(self, leaves: List[int] = None) -> None:
+        """
+        Evict stash and queue the write.
+        Call client.execute() after to complete the write.
+
+        :param leaves: Optional list of leaves to evict to. If None, uses leaves from queue_read().
+        """
+        evict_leaves = leaves if leaves is not None else self._tmp_leaves
+        evicted_path = self._evict_stash(leaves=evict_leaves)
+        self._client.add_write_path(label=self._name, data=evicted_path)
         self._tmp_leaves = []

@@ -1,17 +1,15 @@
 """Group-by-hash OMAP with oblivious metadata storage.
 
 Design:
-- Upper ORAM: Stores (count, prf_seed, key_list) for each hash bucket
-- Lower ORAM (MulPathOram): Stores actual key-value pairs with PRF-computed paths
-- Search: Fetches item by actual key, reshuffles bucket with new seed
-- Insert: Computes path for new item, inserts directly
+- Upper ORAM: Stores (seed, count) for each hash bucket
+- Lower ORAM (MulPathOram): Stores (key, value) pairs at PRF-computed paths
+- Search: Computes paths from seed, fetches all items, reshuffles with new seed
 """
 import math
 import os
-import pickle
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from daoram.dependency import Blake2Prf, Data, Encryptor, Helper, InteractServer, PseudoRandomFunction, UNSET
+from daoram.dependency import Blake2Prf, Encryptor, Helper, InteractServer, PseudoRandomFunction, UNSET, KVPair
 from daoram.oram import TreeBaseOram, MulPathOram
 
 
@@ -59,10 +57,11 @@ class GroupOmap:
         self._bucket_prf = bucket_prf if bucket_prf is not None else Blake2Prf()
         self._leaf_prf = leaf_prf if leaf_prf is not None else Blake2Prf()
 
-        # Compute upper bound on bucket size (for stash scaling)
+        # Compute upper bound on bucket size.
         self._group_size = math.ceil(
             math.e ** (Helper.lambert_w(math.e ** -1 * (math.log(self._num_data, 2) + 128 - 1)).real + 1)
         )
+        self._group_byte_length = (self._group_size.bit_length() + 7) // 8
 
         # Create lower ORAM with same num_data, stash scaled by upper_bound
         self._lower_oram = MulPathOram(
@@ -76,291 +75,64 @@ class GroupOmap:
             stash_scale_multiplier=self._group_size
         )
 
-    def _key_to_bytes(self, key: Any) -> bytes:
-        """Convert a key to bytes for PRF input.
-
-        :param key: The actual key.
-        :return: Bytes representation of the key.
-        """
-        if isinstance(key, int):
-            return key.to_bytes(16, byteorder="big")
-        elif isinstance(key, str):
-            return key.encode("utf-8")
-        elif isinstance(key, bytes):
-            return key
-        else:
-            return str(key).encode("utf-8")
-
-    def _compute_path(self, seed: bytes, key: Any) -> int:
-        """Compute the leaf path for an item using PRF(seed || key).
+    def _get_path_from_seed_and_index(self, index: int, seed: bytes) -> int:
+        """Compute all paths from seed || 1 to seed || group_size.
 
         :param seed: The bucket's PRF seed.
-        :param key: The actual key.
-        :return: Leaf index in lower ORAM.
+        :return: The path numbers in lower ORAM.
         """
-        message = seed + self._key_to_bytes(key)
+        message = seed + index.to_bytes(self._group_byte_length, byteorder="big")
         return self._leaf_prf.digest_mod_n(message=message, mod=self._num_data)
 
-    def _hash_key_to_bucket(self, key: Any) -> int:
-        """Hash a key to its bucket index.
+    def _get_all_path_from_seed(self, seed: bytes) -> List[int]:
+        """Compute all paths from seed || 1 to seed || group_size.
 
-        :param key: The search key.
-        :return: Bucket index in [0, num_buckets).
+        :param seed: The bucket's PRF seed.
+        :return: The path numbers in lower ORAM.
         """
-        return Helper.hash_data_to_leaf(prf=self._bucket_prf, data=key, map_size=self._num_data)
+        return [self._get_path_from_seed_and_index(index=i, seed=seed) for i in range(1, self._group_size + 1)]
 
-    def _encode_metadata(self, count: int, seed: bytes, keys: List[Any]) -> bytes:
-        """Pack bucket metadata into bytes.
-
-        :param count: Number of items in bucket.
-        :param seed: PRF seed for path computation.
-        :param keys: List of actual keys in this bucket.
-        :return: Packed metadata bytes.
-        """
-        return pickle.dumps((count, seed, keys))
-
-    def _decode_metadata(self, data: bytes) -> Tuple[int, bytes, List[Any]]:
-        """Unpack bucket metadata.
-
-        :param data: Packed metadata bytes.
-        :return: Tuple of (count, seed, keys).
-        """
-        return pickle.loads(data)
-
-    def init_server_storage(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
+    def init_server_storage(self, data: Optional[List[KVPair]] = None) -> None:
         """Initialize both ORAMs with the given key-value pairs.
 
-        :param data: List of (key, value) tuples to store.
+        :param data: List of KVPair objects to store.
         """
         if data is None:
             data = []
 
-        # Partition data into buckets
-        data_map = Helper.hash_data_to_map(
-            prf=self._bucket_prf, data=data, map_size=self._num_data
-        )
+        # Hash data into buckets.
+        data_map = Helper.hash_data_to_map(prf=self._bucket_prf, data=data, map_size=self._num_data)
 
-        # Prepare metadata for upper ORAM, data for lower ORAM
-        upper_data: Dict[int, bytes] = {}
-        lower_data: Dict[int, Any] = {}
-        lower_path_map: Dict[int, int] = {}
-
-        # Track which lower_keys are used
-        used_lower_keys: set = set()
+        upper_level_data = {}
+        lower_data_map = {}
+        lower_path_map = {}
 
         for bucket_id in range(self._num_data):
-            bucket_items = data_map.get(bucket_id, [])
-            count = len(bucket_items)
-
-            # Check bucket size limit
-            if count > self._group_size:
-                raise MemoryError(
-                    f"Bucket {bucket_id} has {count} items, exceeds upper bound {self._group_size}"
-                )
-
-            # Generate initial seed for this bucket
+            bucket_items = data_map[bucket_id]
             seed = os.urandom(self.SEED_SIZE)
+            upper_level_data[bucket_id] = (seed, len(bucket_items))
 
-            # Collect keys in this bucket
-            bucket_keys = [k for k, v in bucket_items]
-            upper_data[bucket_id] = self._encode_metadata(count, seed, bucket_keys)
+            for index, each_data in enumerate(bucket_items):
+                path = self._get_path_from_seed_and_index(index=index + 1, seed=seed)
+                lower_data_map[each_data.key] = each_data.value
+                lower_path_map[each_data.key] = path
 
-            # Store items in lower ORAM
-            for key, value in bucket_items:
-                lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
-                leaf = self._compute_path(seed, key)
-                lower_data[lower_key] = (key, value)  # Store actual key with value
-                lower_path_map[lower_key] = leaf
-                used_lower_keys.add(lower_key)
-
-        # Fill remaining positions with None (required by ORAM init)
-        for lower_key in range(self._num_data):
-            if lower_key not in used_lower_keys:
-                lower_data[lower_key] = None
-
-        # Initialize upper ORAM with metadata
-        self._upper_oram.init_server_storage(data_map=upper_data)
-
-        # Initialize lower ORAM with items
-        self._lower_oram.init_server_storage(data_map=lower_data, path_map=lower_path_map)
+        # Initialize both ORAMs.
+        self._upper_oram.init_server_storage(data_map=upper_level_data)
+        self._lower_oram.init_server_storage(data_map=lower_data_map, path_map=lower_path_map)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """Search for a key and optionally update its value.
-
-        Accesses all items in the bucket for obliviousness.
-        After search, all items are reshuffled to new paths.
 
         :param key: The search key.
         :param value: If provided, update the value for this key.
         :return: The (old) value for the key, or None if not found.
         """
-        # Step 1: Hash key to bucket
-        bucket_id = self._hash_key_to_bucket(key)
-
-        # Step 2: Read metadata from upper ORAM
-        metadata = self._upper_oram.operate_on_key_without_eviction(key=bucket_id)
-        count, seed, bucket_keys = self._decode_metadata(metadata)
-
-        # Step 3: Generate new seed for reshuffling
+        # Hash key to bucket and read metadata from upper ORAM.
+        bucket_id = self._bucket_prf.digest_mod_n(message=key, mod=self._num_data)
+        seed, count = self._upper_oram.operate_on_key_without_eviction(key=bucket_id)
         new_seed = os.urandom(self.SEED_SIZE)
 
-        # Step 4: Build maps for all keys in bucket (for obliviousness, access all)
-        key_path_map: Dict[int, int] = {}
-        new_path_map: Dict[int, int] = {}
-        key_value_map: Dict[int, Any] = {}
-
-        for actual_key in bucket_keys:
-            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
-            old_path = self._compute_path(seed, actual_key)
-            new_path = self._compute_path(new_seed, actual_key)
-            key_path_map[lower_key] = old_path
-            new_path_map[lower_key] = new_path
-            key_value_map[lower_key] = UNSET  # Read only
-
-        # Step 5: Pad to upper_bound accesses for obliviousness
-        dummy_count = self._group_size - count
-        for i in range(dummy_count):
-            # Use random paths for dummy accesses
-            dummy_key = self._num_data + i  # Keys outside valid range
-            dummy_path = self._leaf_prf.digest_mod_n(
-                message=os.urandom(16), mod=self._num_data
-            )
-            # Don't actually add to maps - just access random paths
-            # This is handled by accessing count keys and padding with dummy ops
-
-        # Step 6: Fetch items from lower ORAM
-        results = {}
-        if bucket_keys:
-            results = self._lower_oram.operate_on_keys_without_eviction(
-                key_value_map=key_value_map,
-                key_path_map=key_path_map,
-                new_path_map=new_path_map
-            )
-
-        # Step 7: Search for the key among results
-        found_value = None
-        found_lower_key = None
-        lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
-
-        if lower_key in results and results[lower_key] is not None:
-            actual_key, actual_value = results[lower_key]
-            if actual_key == key:
-                found_value = actual_value
-                found_lower_key = lower_key
-
-        # Step 8: If updating value, pass update to eviction
-        updates = None
-        if value is not None and found_lower_key is not None:
-            updates = {found_lower_key: (key, value)}
-
-        # Step 9: Evict lower ORAM
-        if bucket_keys:
-            self._lower_oram.eviction_for_mul_keys(updates=updates)
-
-        # Step 10: Update upper ORAM with new seed
-        new_metadata = self._encode_metadata(count, new_seed, bucket_keys)
-        self._upper_oram.eviction_with_update_stash(key=bucket_id, value=new_metadata)
-
-        return found_value
-
-    def insert(self, key: Any, value: Any) -> None:
-        """Insert a new key-value pair.
-
-        :param key: The key to insert.
-        :param value: The value to insert.
-        """
-        # Step 1: Hash key to bucket
-        bucket_id = self._hash_key_to_bucket(key)
-
-        # Step 2: Read metadata from upper ORAM
-        metadata = self._upper_oram.operate_on_key_without_eviction(key=bucket_id)
-        count, seed, bucket_keys = self._decode_metadata(metadata)
-
-        # Step 3: Check bucket capacity
-        if count >= self._group_size:
-            raise MemoryError(
-                f"Bucket {bucket_id} is full ({count} items), cannot insert"
-            )
-
-        # Step 4: Compute path for the new item
-        lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=key, map_size=self._num_data)
-        path = self._compute_path(seed, key)
-
-        # Step 5: Read the path first (standard ORAM pattern - read before write)
-        # This loads any existing data on the path into the stash
-        self._lower_oram._client.add_read_path(label=self._lower_oram._name, leaves=[path])
-        result = self._lower_oram._client.execute()
-        path_data = result.results[self._lower_oram._name]
-
-        # Process path data - add real data to stash
-        path_data = self._lower_oram._decrypt_path_data(path=path_data)
-        for bucket in path_data.values():
-            for data in bucket:
-                if data.key is not None:
-                    self._lower_oram._stash.append(data)
-
-        # Step 6: Create data block and add to stash
-        data_block = Data(key=lower_key, leaf=path, value=(key, value))
-        self._lower_oram._stash.append(data_block)
-        self._lower_oram._pos_map[lower_key] = path
-
-        # Step 7: Evict lower ORAM
-        evicted_path = self._lower_oram._evict_stash(leaves=[path])
-        self._lower_oram._client.add_write_path(label=self._lower_oram._name, data=evicted_path)
-        self._lower_oram._client.execute()
-
-        # Step 8: Update metadata with new key added
-        bucket_keys.append(key)
-        new_metadata = self._encode_metadata(count + 1, seed, bucket_keys)
-        self._upper_oram.eviction_with_update_stash(key=bucket_id, value=new_metadata)
-
-    def search_group(self, bucket_id: int) -> List[Tuple[Any, Any]]:
-        """Search for all items in a bucket.
-
-        :param bucket_id: The bucket index.
-        :return: List of (key, value) tuples in the bucket.
-        """
-        # Read metadata from upper ORAM
-        metadata = self._upper_oram.operate_on_key_without_eviction(key=bucket_id)
-        count, seed, bucket_keys = self._decode_metadata(metadata)
-
-        # Generate new seed for reshuffling
-        new_seed = os.urandom(self.SEED_SIZE)
-
-        # Build maps for all keys in bucket
-        key_path_map: Dict[int, int] = {}
-        new_path_map: Dict[int, int] = {}
-        key_value_map: Dict[int, Any] = {}
-
-        for actual_key in bucket_keys:
-            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
-            old_path = self._compute_path(seed, actual_key)
-            new_path = self._compute_path(new_seed, actual_key)
-            key_path_map[lower_key] = old_path
-            new_path_map[lower_key] = new_path
-            key_value_map[lower_key] = UNSET
-
-        # Fetch items from lower ORAM
-        results = {}
-        if bucket_keys:
-            results = self._lower_oram.operate_on_keys_without_eviction(
-                key_value_map=key_value_map,
-                key_path_map=key_path_map,
-                new_path_map=new_path_map
-            )
-
-        # Collect results
-        items = []
-        for actual_key in bucket_keys:
-            lower_key = Helper.hash_data_to_leaf(prf=self._leaf_prf, data=actual_key, map_size=self._num_data)
-            if lower_key in results and results[lower_key] is not None:
-                stored_key, stored_value = results[lower_key]
-                items.append((stored_key, stored_value))
-
-        # Evict and update
-        if bucket_keys:
-            self._lower_oram.eviction_for_mul_keys()
-        new_metadata = self._encode_metadata(count, new_seed, bucket_keys)
-        self._upper_oram.eviction_with_update_stash(key=bucket_id, value=new_metadata)
-
-        return items
+        # Compute all paths from seed (indices 1 to count).
+        old_paths = [self._get_path_from_seed_and_index(index=i + 1, seed=seed) for i in range(count)]
+        new_paths = [self._get_path_from_seed_and_index(index=i + 1, seed=new_seed) for i in range(count)]

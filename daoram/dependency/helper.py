@@ -6,9 +6,12 @@ import math
 import pickle
 import struct
 from dataclasses import astuple, dataclass
-from typing import List, Tuple, Union, Any, Optional
+from typing import List, Any, Optional, TYPE_CHECKING
 
 from daoram.dependency.crypto import PseudoRandomFunction, Encryptor
+
+if TYPE_CHECKING:
+    from daoram.dependency.types import KVPair
 
 
 @dataclass
@@ -122,11 +125,7 @@ class Helper:
         return prf.digest_mod_n(message=byte_data, mod=map_size)
 
     @staticmethod
-    def hash_data_to_map(
-            prf: PseudoRandomFunction,
-            map_size: int,
-            data: List[Tuple[Any, Any]]
-    ) -> dict:
+    def hash_data_to_map(prf: PseudoRandomFunction, map_size: int, data: List[KVPair]) -> dict:
         """
         Given a list of data, map them to the correct integer bucket.
 
@@ -139,9 +138,8 @@ class Helper:
         data_map = {i: [] for i in range(map_size)}
 
         # Map each data to the correct buckets.
-        for data in data:
-            data_key = Helper.hash_data_to_leaf(prf=prf, data=data[0], map_size=map_size)
-            data_map[data_key].append(data)
+        for each_data in data:
+            data_map[Helper.hash_data_to_leaf(prf=prf, data=each_data.key, map_size=map_size)].append(each_data)
 
         # Remove the empty buckets.
         return data_map
