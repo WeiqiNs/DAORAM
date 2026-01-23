@@ -146,7 +146,7 @@ class ObliviousSearchTree(ABC):
 
         return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_path_data(self, path: PathData) -> PathData:
+    def decrypt_path_data(self, path: PathData) -> PathData:
         """
         Decrypt all buckets in a PathData dict.
 
@@ -217,7 +217,7 @@ class ObliviousSearchTree(ABC):
         path_data = result.results[self._name]
 
         # Decrypt the path.
-        path = self._decrypt_path_data(path=path_data)
+        path = self.decrypt_path_data(path=path_data)
 
         # Find the desired data in the path.
         for bucket in path.values():
@@ -232,7 +232,8 @@ class ObliviousSearchTree(ABC):
 
         # Check if stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If the desired data is not found in the path, we check the stash.
         if not found:
@@ -291,7 +292,7 @@ class ObliviousSearchTree(ABC):
             path_data = result.results[self._name]
 
             # Decrypt the path.
-            path = self._decrypt_path_data(path=path_data)
+            path = self.decrypt_path_data(path=path_data)
 
             # Add all real data to the stash.
             for bucket in path.values():
@@ -300,7 +301,8 @@ class ObliviousSearchTree(ABC):
 
             # Check if stash overflows.
             if len(self._stash) > self._stash_size:
-                raise MemoryError("Stash overflow!")
+                raise OverflowError(
+                    f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
             # Evict the stash and write the path back to the ODS storage.
             self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))

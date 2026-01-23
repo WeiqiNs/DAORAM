@@ -171,7 +171,8 @@ class BPlusOmapCached(BPlusOmap):
         self._flush_local_to_stash()
         return super().fast_search(key=key, value=value)
 
-    def _find_path_with_siblings_cached(self, key: Any) -> tuple[Dict[int, Data], List[int], Dict[int, Data], Dict[int, int]]:
+    def _find_path_with_siblings_cached(self, key: Any) -> tuple[
+        Dict[int, Data], List[int], Dict[int, Data], Dict[int, int]]:
         """
         Find path from root to leaf, fetching one sibling at each non-root level.
         Completes in h rounds by pre-fetching siblings for potential borrow/merge.

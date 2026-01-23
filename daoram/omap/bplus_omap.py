@@ -251,7 +251,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_path_data(self, path: PathData) -> PathData:
+    def decrypt_path_data(self, path: PathData) -> PathData:
         """
         Decrypt all buckets in a PathData dict.
 
@@ -429,7 +429,7 @@ class BPlusOmap(ObliviousSearchTree):
         path_data = result.results[self._name]
 
         # Decrypt the path.
-        path = self._decrypt_path_data(path=path_data)
+        path = self.decrypt_path_data(path=path_data)
 
         # Find the desired data in the path.
         for bucket in path.values():
@@ -442,7 +442,8 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Check if stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If the desired data is not found in the path, check the stash.
         if not found:
@@ -468,7 +469,8 @@ class BPlusOmap(ObliviousSearchTree):
         """
         # Make sure that the local is cleared and is empty at the moment.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get the node information from oram storage.
         self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1], parent_key=None,
@@ -528,7 +530,8 @@ class BPlusOmap(ObliviousSearchTree):
         """
         # Make sure that the local is cleared and is empty at the moment.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get the node information from oram storage.
         self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None, child_index=None)
@@ -707,7 +710,8 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Make sure local is empty before starting.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get all nodes we need to visit until finding the key.
         self._find_leaf_to_local(key=key)
@@ -758,7 +762,8 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Make sure local is empty before starting.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get all nodes we need to visit until finding the key.
         self._find_leaf_to_local(key=key)
@@ -804,7 +809,8 @@ class BPlusOmap(ObliviousSearchTree):
 
         # Make sure local is empty before starting.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get all nodes we need to visit until finding the key.
         old_leaf, num_retrieved_nodes = self._find_leaf(key=key)

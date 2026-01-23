@@ -603,7 +603,7 @@ class DAOram(TreeBaseOram):
         to_index = len(self._stash)
 
         # Decrypt data blocks if we use encryption.
-        path = self._decrypt_path_data(path=path)
+        path = self.decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
         for bucket in path.values():
@@ -630,7 +630,8 @@ class DAOram(TreeBaseOram):
 
         # Check if the stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If unable to make both key and r_key to be None, something should be wrong.
         if key is not None or r_key is not None:

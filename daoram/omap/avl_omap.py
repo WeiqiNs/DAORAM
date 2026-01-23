@@ -283,7 +283,7 @@ class AVLOmap(ObliviousSearchTree):
         # Return the encrypted PathData dict.
         return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_path_data(self, path: PathData) -> PathData:
+    def decrypt_path_data(self, path: PathData) -> PathData:
         """
         Decrypt all data in the given PathData dict.
 
@@ -344,7 +344,7 @@ class AVLOmap(ObliviousSearchTree):
         path_data = result.results[self._name]
 
         # Decrypt the path.
-        path = self._decrypt_path_data(path=path_data)
+        path = self.decrypt_path_data(path=path_data)
 
         # Find the desired data in the path.
         for bucket in path.values():
@@ -357,7 +357,8 @@ class AVLOmap(ObliviousSearchTree):
 
         # Check if stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If the desired data is not found in the path, check the stash.
         if not found:
@@ -656,7 +657,8 @@ class AVLOmap(ObliviousSearchTree):
 
         # Make sure that the local is cleared and is empty at the moment.
         if self._local:
-            raise MemoryError("The local storage was not emptied before this operation.")
+            raise MemoryError(
+                f"Local storage in {self._name} was not emptied before operation (size={len(self._local)}).")
 
         # Get the root node from oram storage.
         self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)

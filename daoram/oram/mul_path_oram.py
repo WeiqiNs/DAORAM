@@ -6,7 +6,7 @@ improving efficiency for operations that need to access multiple keys.
 """
 from typing import Any, Dict, List
 
-from daoram.dependency import Encryptor, InteractServer, PathData, UNSET, ExecuteResult
+from daoram.dependency import Encryptor, InteractServer, PathData, UNSET
 from daoram.oram.path_oram import PathOram
 
 
@@ -50,7 +50,7 @@ class MulPathOram(PathOram):
         self._tmp_leaves: List[int] = []
 
     def _init_pos_map(self) -> None:
-        """Initialize an empty position map to support non-integer keys."""
+        """Initialize an empty position map to support noninteger keys."""
         self._pos_map = {}
 
     def _look_up_pos_map(self, key: Any) -> int:
@@ -71,8 +71,8 @@ class MulPathOram(PathOram):
         :param path_map: Optional dictionary mapping {key: leaf}. If provided, uses these
                          keys and leaves. If not provided, falls back to integer keys (0 to num_data-1).
         """
-        if path_map:
-            # Use provided path_map for non-integer keys
+        if path_map is not None:
+            # Use provided path_map for noninteger keys (can be empty)
             for key, leaf in path_map.items():
                 self._pos_map[key] = leaf
         else:
@@ -81,6 +81,18 @@ class MulPathOram(PathOram):
 
         # Call parent implementation
         super().init_server_storage(data_map=data_map)
+
+    def queue_read(self, leaves: List[int]) -> None:
+        """Queue path read and store leaves for later eviction."""
+        self._client.add_read_path(label=self._name, leaves=leaves)
+        self._tmp_leaves = leaves
+
+    def queue_write(self, leaves: List[int] = None) -> None:
+        """Evict stash and queue path write. Uses stored leaves if not specified."""
+        evict_leaves = leaves if leaves is not None else self._tmp_leaves
+        evicted_path = self._evict_stash(leaves=evict_leaves)
+        self._client.add_write_path(label=self._name, data=evicted_path)
+        self._tmp_leaves = []
 
     def _retrieve_mul_data_blocks(
             self,
@@ -104,7 +116,7 @@ class MulPathOram(PathOram):
         to_index = len(self._stash)
 
         # Decrypt the path if needed.
-        path = self._decrypt_path_data(path=path)
+        path = self.decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
         for bucket in path.values():
@@ -129,7 +141,8 @@ class MulPathOram(PathOram):
 
         # Check if the stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # Check stash for any keys not found in path.
         for key, new_leaf in key_leaf_map.items():
@@ -288,25 +301,4 @@ class MulPathOram(PathOram):
             self._client.execute()
 
         # Clear temporary leaves.
-        self._tmp_leaves = []
-
-    def queue_read(self, leaves: List[int]) -> None:
-        """Queue path read and store leaves for later eviction."""
-        self._client.add_read_path(label=self._name, leaves=leaves)
-        self._tmp_leaves = leaves
-
-    def process_read_result(self, result: ExecuteResult) -> None:
-        """Process read result and add data to stash."""
-        path_data = result.results[self._name]
-        path_data = self._decrypt_path_data(path=path_data)
-        for bucket in path_data.values():
-            for data in bucket:
-                if data.key is not None:
-                    self._stash.append(data)
-
-    def queue_write(self, leaves: List[int] = None) -> None:
-        """Evict stash and queue path write. Uses stored leaves if not specified."""
-        evict_leaves = leaves if leaves is not None else self._tmp_leaves
-        evicted_path = self._evict_stash(leaves=evict_leaves)
-        self._client.add_write_path(label=self._name, data=evicted_path)
         self._tmp_leaves = []

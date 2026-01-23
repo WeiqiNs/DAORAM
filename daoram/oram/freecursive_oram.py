@@ -369,7 +369,7 @@ class FreecursiveOram(TreeBaseOram):
         to_index = len(self._stash)
 
         # Decrypt data blocks if we use encryption.
-        path = self._decrypt_path_data(path=path)
+        path = self.decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
         for bucket in path.values():
@@ -653,7 +653,7 @@ class FreecursiveOram(TreeBaseOram):
         # Store the current stash length.
         to_index = len(self._stash)
         # Decrypt data blocks if we use encryption.
-        path = self._decrypt_path_data(path=path)
+        path = self.decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
         for bucket in path.values():
@@ -675,7 +675,8 @@ class FreecursiveOram(TreeBaseOram):
 
         # Check if the stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If both next cur leaf and reset leaves are still None, we go search the stash.
         if next_cur_leaf is None and reset_leaves is None:

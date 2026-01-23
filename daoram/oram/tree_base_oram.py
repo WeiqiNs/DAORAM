@@ -140,7 +140,7 @@ class TreeBaseOram(ABC):
 
         return {idx: _enc_bucket(bucket) for idx, bucket in path.items()} if self._encryptor else path
 
-    def _decrypt_path_data(self, path: PathData) -> PathData:
+    def decrypt_path_data(self, path: PathData) -> PathData:
         """
         Decrypt all buckets in a PathData dict.
 
@@ -274,7 +274,7 @@ class TreeBaseOram(ABC):
         to_index = len(self._stash)
 
         # Decrypt the path if needed.
-        path = self._decrypt_path_data(path=path)
+        path = self.decrypt_path_data(path=path)
 
         # Read all buckets in the path and add real data to stash.
         for bucket in path.values():
@@ -298,7 +298,8 @@ class TreeBaseOram(ABC):
 
         # Check if the stash overflows.
         if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
 
         # If the value is not found, it might be in the stash.
         if not found:
