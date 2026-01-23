@@ -46,8 +46,8 @@ def run_demo(oram_type: str, num_data: int, ip: str, port: int):
     read_time = time.time() - start
 
     # Summary.
-    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
-    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Write: {write_time:.2f}s ({num_data / write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
     client.close_connection()

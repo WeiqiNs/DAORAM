@@ -104,7 +104,12 @@ class BPlusOmapCached(BPlusOmap):
             node.leaf = new_leaf
 
     def insert(self, key: Any, value: Any = None) -> None:
-        """Insert with caching: check stash before fetch, flush at end."""
+        """
+        Given key-value pair, insert the pair to the tree with caching.
+
+        :param key: The search key of interest.
+        :param value: The value to insert.
+        """
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height + 1)
             return
@@ -147,7 +152,14 @@ class BPlusOmapCached(BPlusOmap):
         self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
-        """Search with caching: flush at start, keep in local at end."""
+        """
+        Given a search key, return its corresponding value with caching.
+
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
+        """
         self._flush_local_to_stash()
         search_value = super().fast_search(key=key, value=value)
         self._perform_dummy_operation(num_round=1)

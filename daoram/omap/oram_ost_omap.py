@@ -1,8 +1,8 @@
 """OMAP combining an ORAM with an Oblivious Search Tree for optimal construction."""
 
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Union
 
-from daoram.dependency import Helper, Blake2Prf, PseudoRandomFunction
+from daoram.dependency import Helper, Blake2Prf, KVPair, PseudoRandomFunction
 from daoram.omap.oblivious_search_tree import ObliviousSearchTree
 from daoram.oram.tree_base_oram import TreeBaseOram
 
@@ -31,11 +31,11 @@ class OramOstOmap:
         # PRF used to hash the input keys.
         self._prf: PseudoRandomFunction = prf if prf is not None else Blake2Prf()
 
-    def init_server_storage(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
+    def init_server_storage(self, data: Optional[List[KVPair]] = None) -> None:
         """
         Initialize the server storage for the input list of key-value pairs.
 
-        :param data: A list of key-value pairs.
+        :param data: A list of KVPair objects.
         """
         # If the data list is not provided, we set it to an empty list.
         if data is None:

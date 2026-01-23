@@ -1,4 +1,4 @@
-from daoram.dependency import AesGcm
+from daoram.dependency import AesGcm, KVPair
 from daoram.omap import AVLOmap, BPlusOmap, OramOstOmap
 from daoram.omap.avl_omap_cache import AVLOmapCached
 from daoram.omap.bplus_omap_cache import BPlusOmapCached
@@ -114,7 +114,7 @@ class TestOramOdsOmap:
         omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
+        omap.init_server_storage(data=[KVPair(key=i, value=i) for i in range(num_data // 4)])
 
         # Keep inserting more values.
         for i in range(num_data // 4, num_data):
@@ -134,8 +134,8 @@ class TestOramOdsOmap:
         # Create the omap object.
         omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])
+        # Initialize the omap with some string keys.
+        omap.init_server_storage(data=[KVPair(key=f"Key {i}", value=f"Value {i}") for i in range(num_data // 2)])
 
         # Keep inserting more values.
         for i in range(num_data // 2, num_data):
@@ -255,7 +255,7 @@ class TestOramOdsOmap:
         omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
         # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
+        omap.init_server_storage(data=[KVPair(key=i, value=i) for i in range(num_data // 4)])
 
         # Keep inserting more values.
         for i in range(num_data // 4, num_data):
@@ -275,8 +275,8 @@ class TestOramOdsOmap:
         # Create the omap object.
         omap = OramOstOmap(ost=ods, oram=oram, num_data=num_data)
 
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])
+        # Initialize the omap with some string keys.
+        omap.init_server_storage(data=[KVPair(key=f"Key {i}", value=f"Value {i}") for i in range(num_data // 2)])
 
         # Keep inserting more values.
         for i in range(num_data // 2, num_data):

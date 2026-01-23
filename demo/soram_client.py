@@ -50,8 +50,8 @@ def run_demo(num_data: int, cache_size: int, data_size: int):
     read_time = time.time() - start
 
     # Summary.
-    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
-    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Write: {write_time:.2f}s ({num_data / write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
 

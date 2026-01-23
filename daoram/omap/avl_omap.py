@@ -18,10 +18,10 @@ class LocalNodes:
     """
 
     def __init__(self):
-        self.nodes: dict[Any, Data] = {}       # key -> Data node
-        self.parent_of: dict[Any, Any] = {}    # key -> parent_key
+        self.nodes: dict[Any, Data] = {}  # key -> Data node
+        self.parent_of: dict[Any, Any] = {}  # key -> parent_key
         self.root_key: Any = None
-        self.path: List[Any] = []              # Keys in traversal order (root to current)
+        self.path: List[Any] = []  # Keys in traversal order (root to current)
 
     def __len__(self) -> int:
         return len(self.nodes)
@@ -99,7 +99,7 @@ class LocalNodes:
         return node
 
     def update_child_in_parent(self, parent_key: Any, old_child_key: Any,
-                                new_key: Any, new_leaf: Any, new_height: int) -> None:
+                               new_key: Any, new_leaf: Any, new_height: int) -> None:
         """
         Update a parent's child pointer to new values.
 

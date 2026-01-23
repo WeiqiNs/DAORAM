@@ -7,9 +7,9 @@ Design:
 """
 import math
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
-from daoram.dependency import Blake2Prf, Encryptor, Helper, InteractServer, PseudoRandomFunction, UNSET, KVPair
+from daoram.dependency import Blake2Prf, Encryptor, Helper, InteractServer, PseudoRandomFunction, KVPair
 from daoram.oram import TreeBaseOram, MulPathOram
 
 
@@ -93,9 +93,10 @@ class GroupOmap:
         return [self._get_path_from_seed_and_index(index=i, seed=seed) for i in range(1, self._group_size + 1)]
 
     def init_server_storage(self, data: Optional[List[KVPair]] = None) -> None:
-        """Initialize both ORAMs with the given key-value pairs.
+        """
+        Initialize the server storage for the input list of key-value pairs.
 
-        :param data: List of KVPair objects to store.
+        :param data: A list of KVPair objects.
         """
         if data is None:
             data = []
@@ -122,11 +123,13 @@ class GroupOmap:
         self._lower_oram.init_server_storage(data_map=lower_data_map, path_map=lower_path_map)
 
     def search(self, key: Any, value: Any = None) -> Any:
-        """Search for a key and optionally update its value.
+        """
+        Given a search key, return its corresponding value.
 
-        :param key: The search key.
-        :param value: If provided, update the value for this key.
-        :return: The (old) value for the key, or None if not found.
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
         """
         # Hash key to bucket and read metadata from upper ORAM.
         bucket_id = self._bucket_prf.digest_mod_n(message=key, mod=self._num_data)

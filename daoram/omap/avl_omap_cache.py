@@ -55,7 +55,12 @@ class AVLOmapCached(AVLOmap):
             super()._move_node_to_local(key=key, leaf=leaf, parent_key=parent_key)
 
     def insert(self, key: Any, value: Any = None) -> None:
-        """Insert with caching: flush at start, keep in local at end."""
+        """
+        Given key-value pair, insert the pair to the tree with caching.
+
+        :param key: The search key of interest.
+        :param value: The value to insert.
+        """
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height + 1)
             return
@@ -102,7 +107,14 @@ class AVLOmapCached(AVLOmap):
         self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
 
     def search(self, key: Any, value: Any = None) -> Any:
-        """Search with caching: flush at start, keep in local at end."""
+        """
+        Given a search key, return its corresponding value with caching.
+
+        If the input value is not None, the value corresponding to the search tree will be updated.
+        :param key: The search key of interest.
+        :param value: The updated value.
+        :return: The (old) value corresponding to the search key.
+        """
         if key is None or self.root is None:
             self._perform_dummy_operation(num_round=self._max_height + 1)
             return None

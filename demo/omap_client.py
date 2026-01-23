@@ -58,8 +58,8 @@ def run_demo(omap_type: str, num_data: int, ip: str, port: int):
     search_time = time.time() - start
 
     # Summary.
-    print(f"Insert: {insert_time:.2f}s ({num_data/insert_time:.0f} ops/s)")
-    print(f"Search: {search_time:.2f}s ({num_data/search_time:.0f} ops/s)")
+    print(f"Insert: {insert_time:.2f}s ({num_data / insert_time:.0f} ops/s)")
+    print(f"Search: {search_time:.2f}s ({num_data / search_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
     client.close_connection()

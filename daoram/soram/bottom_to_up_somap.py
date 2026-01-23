@@ -338,12 +338,12 @@ class BottomUpSomap:
             # Encrypt data before inserting if encryption is enabled
             encrypted_data = self._encrypt_data(data)
             # -1 represents insert at the front of the list
-            self._client.add_write_list(label=label, data={-1:encrypted_data})
+            self._client.add_write_list(label=label, data={-1: encrypted_data})
             self._client.execute()
         elif op == 'pop':
             # Get the encrypted data from the list
             # -2 represents pop the last element
-            self._client.add_write_list(label=label, data={-2:None})
+            self._client.add_write_list(label=label, data={-2: None})
             result = self._client.execute()
             encrypted_data = result.results[label]
             # Decrypt the data if encryption is enabled

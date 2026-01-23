@@ -291,21 +291,12 @@ class MulPathOram(PathOram):
         self._tmp_leaves = []
 
     def queue_read(self, leaves: List[int]) -> None:
-        """
-        Queue a read for the given leaves. Store leaves for later eviction.
-        Call process_read_result() after client.execute() to process the result.
-
-        :param leaves: List of leaf labels of the paths to read.
-        """
+        """Queue path read and store leaves for later eviction."""
         self._client.add_read_path(label=self._name, leaves=leaves)
         self._tmp_leaves = leaves
 
     def process_read_result(self, result: ExecuteResult) -> None:
-        """
-        Process the read result from client.execute() and add data to stash.
-
-        :param result: The ExecuteResult from client.execute().
-        """
+        """Process read result and add data to stash."""
         path_data = result.results[self._name]
         path_data = self._decrypt_path_data(path=path_data)
         for bucket in path_data.values():
@@ -314,12 +305,7 @@ class MulPathOram(PathOram):
                     self._stash.append(data)
 
     def queue_write(self, leaves: List[int] = None) -> None:
-        """
-        Evict stash and queue the write.
-        Call client.execute() after to complete the write.
-
-        :param leaves: Optional list of leaves to evict to. If None, uses leaves from queue_read().
-        """
+        """Evict stash and queue path write. Uses stored leaves if not specified."""
         evict_leaves = leaves if leaves is not None else self._tmp_leaves
         evicted_path = self._evict_stash(leaves=evict_leaves)
         self._client.add_write_path(label=self._name, data=evicted_path)
