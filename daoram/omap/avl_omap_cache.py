@@ -13,7 +13,7 @@ class AVLOmapCached(AVLOmap):
     Key differences from AVLOmap:
     1. Checks stash before fetching from server (cache hit avoids ORAM access)
     2. Nodes stay in local at end of operation, flushed to stash at start of next
-    3. Reduced dummy operations for insert/search (single tree height traversal)
+    3. Reduced interaction rounds: insert/search use h rounds, delete uses 2h rounds
     """
 
     def __init__(self,
@@ -62,7 +62,7 @@ class AVLOmapCached(AVLOmap):
         :param value: The value to insert.
         """
         if key is None:
-            self._perform_dummy_operation(num_round=self._max_height + 1)
+            self._perform_dummy_operation(num_round=self._max_height)
             return
 
         data_block = self._get_avl_data(key=key, value=value)
@@ -70,7 +70,7 @@ class AVLOmapCached(AVLOmap):
         if self.root is None:
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
-            self._perform_dummy_operation(num_round=self._max_height + 1)
+            self._perform_dummy_operation(num_round=self._max_height)
             return
 
         # Flush cached nodes to stash at start
@@ -104,7 +104,7 @@ class AVLOmapCached(AVLOmap):
 
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
-        self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -115,9 +115,13 @@ class AVLOmapCached(AVLOmap):
         :param value: The updated value.
         :return: The (old) value corresponding to the search key.
         """
-        if key is None or self.root is None:
-            self._perform_dummy_operation(num_round=self._max_height + 1)
+        if key is None:
+            self._perform_dummy_operation(num_round=self._max_height)
             return None
+
+        # If the current root is empty, we can't perform search.
+        if self.root is None:
+            raise ValueError("Cannot search in an empty tree.")
 
         # Flush cached nodes to stash at start
         self._flush_local_to_stash()
@@ -151,26 +155,21 @@ class AVLOmapCached(AVLOmap):
 
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
-        self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
 
         return search_value
 
     def fast_search(self, key: Any, value: Any = None) -> Any:
-        """Fast search: flush local first so parent can find nodes in stash."""
-        self._flush_local_to_stash()
-        return super().fast_search(key=key, value=value)
+        """Fast search is identical to search in cached version."""
+        return self.search(key=key, value=value)
 
     def delete(self, key: Any) -> Any:
         """Delete with caching: flush at start, keep in local at end."""
         if self.root is None:
-            self._perform_dummy_operation(num_round=self._max_height + 1)
-            return None
+            raise ValueError("Cannot delete from an empty tree.")
 
         # Flush cached nodes to stash at start
         self._flush_local_to_stash()
-
-        # Use parent's delete logic (which now uses our cached _move_node_to_local)
-        # But we need to handle the "no flush at end" differently
 
         self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
         current_key = self.root[0]
@@ -189,7 +188,7 @@ class AVLOmapCached(AVLOmap):
                     root_node = self._local.get_root()
                     self.root = (root_node.key, root_node.leaf)
                     num_retrieved = len(self._local)
-                    self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
+                    self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
                     return None
             else:
                 if node.value.l_key is not None:
@@ -202,73 +201,18 @@ class AVLOmapCached(AVLOmap):
                     root_node = self._local.get_root()
                     self.root = (root_node.key, root_node.leaf)
                     num_retrieved = len(self._local)
-                    self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved)
+                    self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
                     return None
 
-        deleted_value = node.value.value
+        # At this point, node contains the key to delete
         node_key = node.key
         parent_key = self._local.get_parent_key(node_key)
 
-        # Case 1: No children
-        if node.value.l_key is None and node.value.r_key is None:
-            if len(self._local) == 1:
-                self.root = None
-                self._local.clear()
-                self._perform_dummy_operation(num_round=self._max_height)
-                return deleted_value
-            self._local.update_child_in_parent(parent_key, node_key, None, None, 0)
-            self._local.remove(node_key)
-
-        # Case 2: One child
-        elif node.value.l_key is None or node.value.r_key is None:
-            has_left = node.value.l_key is not None
-            child_key = node.value.l_key if has_left else node.value.r_key
-            child_leaf = node.value.l_leaf if has_left else node.value.r_leaf
-            child_height = node.value.l_height if has_left else node.value.r_height
-
-            if len(self._local) == 1:
-                self.root = (child_key, child_leaf)
-                self._local.clear()
-                self._perform_dummy_operation(num_round=self._max_height)
-                return deleted_value
-            self._local.update_child_in_parent(parent_key, node_key, child_key, child_leaf, child_height)
-            self._local.remove(node_key)
-
-        # Case 3: Two children
-        else:
-            use_predecessor = node.value.l_height > node.value.r_height
-            original_key = node.key
-
-            traverse_key = node.value.l_key if use_predecessor else node.value.r_key
-            traverse_leaf = node.value.l_leaf if use_predecessor else node.value.r_leaf
-            self._move_node_to_local(key=traverse_key, leaf=traverse_leaf, parent_key=node_key)
-            current = self._local.get(traverse_key)
-            parent_of_replacement_key = node_key
-
-            next_key = current.value.r_key if use_predecessor else current.value.l_key
-            while next_key is not None:
-                next_leaf = current.value.r_leaf if use_predecessor else current.value.l_leaf
-                self._move_node_to_local(key=next_key, leaf=next_leaf, parent_key=traverse_key)
-                parent_of_replacement_key = traverse_key
-                traverse_key = next_key
-                current = self._local.get(traverse_key)
-                next_key = current.value.r_key if use_predecessor else current.value.l_key
-
-            replacement_node = current
-            node.key = replacement_node.key
-            node.value.value = replacement_node.value.value
-
-            child_key = replacement_node.value.l_key if use_predecessor else replacement_node.value.r_key
-            child_leaf = replacement_node.value.l_leaf if use_predecessor else replacement_node.value.r_leaf
-            child_height = (
-                replacement_node.value.l_height if use_predecessor else replacement_node.value.r_height
-            ) if child_key else 0
-            self._local.update_child_in_parent(
-                parent_of_replacement_key, replacement_node.key, child_key, child_leaf, child_height
-            )
-            self._local.remove(replacement_node.key)
-            self._local.update_child_in_parent(parent_key, original_key, node.key, node.leaf, 0)
-            self._local.replace_node_key(original_key, node.key)
+        # Perform the deletion using the helper
+        deleted_value, early_returned = self._delete_node_from_local(node, node_key, parent_key)
+        if early_returned:
+            self._perform_dummy_operation(num_round=2 * self._max_height)
+            return deleted_value
 
         self._update_height()
         self._local.update_all_leaves(self._get_new_leaf)
@@ -276,6 +220,6 @@ class AVLOmapCached(AVLOmap):
 
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
-        self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved)
+        self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
 
         return deleted_value

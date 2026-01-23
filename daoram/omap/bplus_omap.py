@@ -757,8 +757,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
-            return None
+            raise ValueError("Cannot search in an empty tree.")
 
         # Make sure local is empty before starting.
         if self._local:
@@ -804,8 +803,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            self._perform_dummy_operation(num_round=self._max_height)
-            return None
+            raise ValueError("Cannot search in an empty tree.")
 
         # Make sure local is empty before starting.
         if self._local:
@@ -931,8 +929,7 @@ class BPlusOmap(ObliviousSearchTree):
 
         # If the current root is empty, nothing to delete.
         if self.root is None:
-            self._perform_dummy_operation(num_round=3 * self._max_height)
-            return None
+            raise ValueError("Cannot delete from an empty tree.")
 
         # Compute the minimum number of keys each node should have.
         min_keys = (self._order - 1) // 2

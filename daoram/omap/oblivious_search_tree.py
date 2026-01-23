@@ -279,7 +279,7 @@ class ObliviousSearchTree(ABC):
         """Perform the desired number of dummy evictions."""
         # Check if the number of rounds is lower than needed.
         if num_round < 0:
-            raise ValueError("The height is not enough, as the number of dummy operation required is negative.")
+            raise ValueError("Tree height insufficient: negative dummy operations required.")
 
         # Perform the desired number of dummy evictions.
         for _ in range(num_round):

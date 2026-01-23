@@ -714,7 +714,7 @@ class AVLOmap(ObliviousSearchTree):
         """
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform search.")
+            raise ValueError("Cannot search in an empty tree.")
 
         # Otherwise get information about node.
         self._move_node_to_local(key=self._root[0], leaf=self._root[1], parent_key=None)
@@ -774,7 +774,7 @@ class AVLOmap(ObliviousSearchTree):
         :return: The (old) value corresponding to the search key.
         """
         if self.root is None:
-            return None
+            raise ValueError("Cannot search in an empty tree.")
 
         self._move_node_to_local_without_eviction(key=self.root[0], leaf=self.root[1], parent_key=None)
         current_key = self.root[0]
@@ -830,68 +830,32 @@ class AVLOmap(ObliviousSearchTree):
         self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_child_path]))
         self._client.execute()
 
-        self._perform_dummy_operation(num_round=self._max_height)
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
         return search_value
 
-    def delete(self, key: Any) -> Any:
+    def _delete_node_from_local(self, node: Data, node_key: Any, parent_key: Any) -> Tuple[Any, bool]:
         """
-        Given a search key, delete the corresponding node from the tree.
+        Remove a node from local storage and update tree structure.
 
-        :param key: The search key of interest.
-        :return: The value of the deleted node.
+        Handles all three AVL deletion cases:
+        - Case 1: No children (leaf node)
+        - Case 2: One child
+        - Case 3: Two children (finds in-order predecessor/successor)
+
+        :param node: The node to delete.
+        :param node_key: The key of the node to delete.
+        :param parent_key: The key of the parent node.
+        :return: Tuple of (deleted_value, early_returned).
+                 early_returned is True if the tree had only the root node.
         """
-        if key is None:
-            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
-            return None
-        # If the current root is empty, we can't perform deletion.
-        if self.root is None:
-            raise ValueError(f"It seems the tree is empty and can't perform deletion.")
-
-        # First, find the node to delete by traversing the tree
-        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
-        current_key = self.root[0]
-        node = self._local.get(current_key)
-
-        # Find the node to delete
-        while node.key != key:
-            if node.key < key:
-                if node.value.r_key is not None:
-                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
-                    current_key = node.value.r_key
-                    node = self._local.get(current_key)
-                else:
-                    # Key not found, return None
-                    num_retrieved_nodes = len(self._local)
-                    self._stash += self._local.to_list()
-                    self._local.clear()
-                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
-                    return None
-
-            else:
-                if node.value.l_key is not None:
-                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
-                    current_key = node.value.l_key
-                    node = self._local.get(current_key)
-                else:
-                    # Key not found, return None
-                    num_retrieved_nodes = len(self._local)
-                    self._stash += self._local.to_list()
-                    self._local.clear()
-                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
-                    return None
-
-        # At this point, node contains the key to delete
         deleted_value = node.value.value
-        node_key = node.key
-        parent_key = self._local.get_parent_key(node_key)
 
         # Case 1: Node has no children (leaf node)
         if node.value.l_key is None and node.value.r_key is None:
             if len(self._local) == 1:
                 self.root = None
                 self._local.clear()
-                self._perform_dummy_operation(num_round=2 * self._max_height)
-                return deleted_value
+                return deleted_value, True
 
             # Remove from parent and local
             self._local.update_child_in_parent(parent_key, node_key, None, None, 0)
@@ -907,8 +871,7 @@ class AVLOmap(ObliviousSearchTree):
             if len(self._local) == 1:
                 self.root = (child_key, child_leaf)
                 self._local.clear()
-                self._perform_dummy_operation(num_round=2 * self._max_height)
-                return deleted_value
+                return deleted_value, True
 
             # Replace in parent and remove from local
             self._local.update_child_in_parent(parent_key, node_key, child_key, child_leaf, child_height)
@@ -954,6 +917,65 @@ class AVLOmap(ObliviousSearchTree):
             # Update parent of deleted node to point to new key, then update LocalNodes tracking
             self._local.update_child_in_parent(parent_key, original_key, node.key, node.leaf, 0)
             self._local.replace_node_key(original_key, node.key)
+
+        return deleted_value, False
+
+    def delete(self, key: Any) -> Any:
+        """
+        Given a search key, delete the corresponding node from the tree.
+
+        :param key: The search key of interest.
+        :return: The value of the deleted node.
+        """
+        if key is None:
+            self._perform_dummy_operation(num_round=2 * self._max_height + 1)
+            return None
+        # If the current root is empty, we can't perform deletion.
+        if self.root is None:
+            raise ValueError("Cannot delete from an empty tree.")
+
+        # First, find the node to delete by traversing the tree
+        self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
+        current_key = self.root[0]
+        node = self._local.get(current_key)
+
+        # Find the node to delete
+        while node.key != key:
+            if node.key < key:
+                if node.value.r_key is not None:
+                    self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
+                    current_key = node.value.r_key
+                    node = self._local.get(current_key)
+                else:
+                    # Key not found, return None
+                    num_retrieved_nodes = len(self._local)
+                    self._stash += self._local.to_list()
+                    self._local.clear()
+                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+                    return None
+
+            else:
+                if node.value.l_key is not None:
+                    self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
+                    current_key = node.value.l_key
+                    node = self._local.get(current_key)
+                else:
+                    # Key not found, return None
+                    num_retrieved_nodes = len(self._local)
+                    self._stash += self._local.to_list()
+                    self._local.clear()
+                    self._perform_dummy_operation(num_round=2 * self._max_height + 1 - num_retrieved_nodes)
+                    return None
+
+        # At this point, node contains the key to delete
+        node_key = node.key
+        parent_key = self._local.get_parent_key(node_key)
+
+        # Perform the deletion using the helper
+        deleted_value, early_returned = self._delete_node_from_local(node, node_key, parent_key)
+        if early_returned:
+            self._perform_dummy_operation(num_round=2 * self._max_height)
+            return deleted_value
 
         # Update heights
         self._update_height()

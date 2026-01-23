@@ -14,7 +14,7 @@ class BPlusOmapCached(BPlusOmap):
     Key differences from BPlusOmap:
     1. Checks stash before fetching from server (cache hit avoids ORAM access)
     2. Nodes stay in local at end of operation, flushed to stash at start of next
-    3. Reduced dummy operations (max_height + 1 instead of 2 * max_height)
+    3. Reduced interaction rounds: insert/search use h rounds, delete uses h rounds (batched)
     """
 
     def __init__(self,
@@ -56,6 +56,75 @@ class BPlusOmapCached(BPlusOmap):
         else:
             # Cache miss - fetch from server
             super()._move_node_to_local(key=key, leaf=leaf, parent_key=parent_key, child_index=child_index)
+
+    def _batch_move_nodes_to_local(self, nodes_to_fetch: List[tuple[Any, int]]) -> None:
+        """
+        Batch fetch multiple nodes in a single read-write round.
+
+        Checks stash first for each node, then batches remaining reads.
+        This reduces multiple sequential fetches to a single round.
+
+        :param nodes_to_fetch: List of (key, leaf) tuples to fetch.
+        """
+        nodes_from_stash = []
+        keys_to_read = []
+        leaves_to_read = []
+
+        # Check stash first for each node
+        for key, leaf in nodes_to_fetch:
+            stash_idx = self._find_in_stash(key)
+            if stash_idx >= 0:
+                nodes_from_stash.append(self._stash.pop(stash_idx))
+            else:
+                keys_to_read.append(key)
+                leaves_to_read.append(leaf)
+
+        # Add nodes found in stash to local
+        for node in nodes_from_stash:
+            self._local.add(node=node, parent_key=None, child_index=None)
+
+        # If all nodes were in stash, no server access needed
+        if not leaves_to_read:
+            return
+
+        # Batch read remaining nodes
+        self._client.add_read_path(label=self._name, leaves=leaves_to_read)
+        result = self._client.execute()
+        path_data = result.results[self._name]
+
+        # Decrypt and process
+        path = self.decrypt_path_data(path=path_data)
+
+        keys_to_find = set(keys_to_read)
+        to_index = len(self._stash)
+
+        for bucket in path.values():
+            for data in bucket:
+                if data.key in keys_to_find:
+                    self._local.add(node=data, parent_key=None, child_index=None)
+                    keys_to_find.remove(data.key)
+                elif data.key is not None:
+                    self._stash.append(data)
+
+        # Check stash overflow
+        if len(self._stash) > self._stash_size:
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
+
+        # Check stash for any keys not found in paths
+        for key in list(keys_to_find):
+            stash_idx = self._find_in_stash(key)
+            if 0 <= stash_idx < to_index:
+                self._local.add(node=self._stash.pop(stash_idx), parent_key=None, child_index=None)
+                keys_to_find.remove(key)
+
+        if keys_to_find:
+            raise KeyError(f"Keys {keys_to_find} not found in paths or stash.")
+
+        # Batch write back
+        evicted = self._evict_stash(leaves=leaves_to_read)
+        self._client.add_write_path(label=self._name, data=evicted)
+        self._client.execute()
 
     def _find_leaf_to_local_cached(self, key: Any) -> None:
         """
@@ -111,7 +180,7 @@ class BPlusOmapCached(BPlusOmap):
         :param value: The value to insert.
         """
         if key is None:
-            self._perform_dummy_operation(num_round=self._max_height + 1)
+            self._perform_dummy_operation(num_round=self._max_height)
             return
 
         # If the current root is empty, we simply set root as this new block
@@ -119,7 +188,7 @@ class BPlusOmapCached(BPlusOmap):
             data_block = self._get_bplus_data(keys=[key], values=[value])
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
-            self._perform_dummy_operation(num_round=self._max_height + 1)
+            self._perform_dummy_operation(num_round=self._max_height)
             return
 
         # Get all nodes we need to visit until finding the key (with caching)
@@ -149,7 +218,7 @@ class BPlusOmapCached(BPlusOmap):
         self._flush_local_to_stash()
 
         # Perform dummy operations
-        self._perform_dummy_operation(num_round=self._max_height + 1 - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -160,26 +229,54 @@ class BPlusOmapCached(BPlusOmap):
         :param value: The updated value.
         :return: The (old) value corresponding to the search key.
         """
+        if key is None:
+            self._perform_dummy_operation(num_round=self._max_height)
+            return None
+
+        # If the current root is empty, we can't perform search.
+        if self.root is None:
+            raise ValueError("Cannot search in an empty tree.")
+
+        # Get all nodes we need to visit until finding the key (with caching)
+        self._find_leaf_to_local_cached(key=key)
+
+        # Set the last node in local as leaf
+        leaf = self._local.get_leaf()
+        search_value = None
+
+        # Search the desired key and update its value as needed
+        for index, each_key in enumerate(leaf.value.keys):
+            if key == each_key:
+                search_value = leaf.value.values[index]
+                if value is not None:
+                    leaf.value.values[index] = value
+                break
+
+        # Save the number of retrieved nodes
+        num_retrieved_nodes = len(self._local)
+
+        # Flush local to stash
         self._flush_local_to_stash()
-        search_value = super().fast_search(key=key, value=value)
-        self._perform_dummy_operation(num_round=1)
+
+        # Perform dummy operations
+        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
 
         return search_value
 
     def fast_search(self, key: Any, value: Any = None) -> Any:
-        """Fast search: flush local first so parent can find nodes in stash."""
-        self._flush_local_to_stash()
-        return super().fast_search(key=key, value=value)
+        """Fast search is identical to search in cached version."""
+        return self.search(key=key, value=value)
 
     def _find_path_with_siblings_cached(self, key: Any) -> tuple[
         Dict[int, Data], List[int], Dict[int, Data], Dict[int, int]]:
         """
-        Find path from root to leaf, fetching one sibling at each non-root level.
-        Completes in h rounds by pre-fetching siblings for potential borrow/merge.
+        Find path from root to leaf, fetching target and sibling in batched rounds.
 
-        At each level (except root), fetches:
+        At each level (except root), batches fetches for:
         - The target child on the path
         - One sibling (left if available, else right) for underflow handling
+
+        This completes in h rounds (2 executes per level) instead of 2h-1 rounds.
 
         :param key: Search key of interest.
         :return: Tuple of (path_nodes, child_indices, siblings, sibling_indices).
@@ -207,9 +304,9 @@ class BPlusOmapCached(BPlusOmap):
         self.root = (node.key, node.leaf)
         path_nodes[level] = node
 
-        # Traverse down to leaf, fetching target + sibling at each level
+        # Traverse down to leaf, fetching target + sibling in ONE batch per level
         while not (len(node.value.keys) == len(node.value.values)):
-            # Sample a new leaf for the child
+            # Sample new leaves for the child and sibling
             new_leaf = self._get_new_leaf()
 
             # Find the child index to descend to
@@ -225,17 +322,12 @@ class BPlusOmapCached(BPlusOmap):
             # Record the child index
             child_indices.append(child_index)
 
-            # Move the target child to local (checks stash first)
+            # Get child info
             child_key, child_leaf = node.value.values[child_index]
-            self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
-            child_node = self._local.remove(self._local.root_key)
 
-            # Update the parent's pointer to child with new leaf
-            node.value.values[child_index] = (child_key, new_leaf)
-            child_node.leaf = new_leaf
-
-            # Fetch sibling: prefer left, fallback to right
+            # Determine sibling: prefer left, fallback to right
             sibling_index = None
+            sib_key, sib_leaf, sib_new_leaf = None, None, None
             if child_index > 0:
                 sibling_index = child_index - 1
             elif child_index < len(node.value.values) - 1:
@@ -244,8 +336,22 @@ class BPlusOmapCached(BPlusOmap):
             if sibling_index is not None:
                 sib_key, sib_leaf = node.value.values[sibling_index]
                 sib_new_leaf = self._get_new_leaf()
-                self._move_node_to_local(key=sib_key, leaf=sib_leaf, parent_key=None, child_index=None)
-                sibling_node = self._local.remove(self._local.root_key)
+
+            # Batch fetch target child and sibling in ONE round
+            nodes_to_fetch = [(child_key, child_leaf)]
+            if sibling_index is not None:
+                nodes_to_fetch.append((sib_key, sib_leaf))
+
+            self._batch_move_nodes_to_local(nodes_to_fetch)
+
+            # Extract child node from local
+            child_node = self._local.remove(child_key)
+            child_node.leaf = new_leaf
+            node.value.values[child_index] = (child_key, new_leaf)
+
+            # Extract sibling node from local if fetched
+            if sibling_index is not None:
+                sibling_node = self._local.remove(sib_key)
                 sibling_node.leaf = sib_new_leaf
                 node.value.values[sibling_index] = (sib_key, sib_new_leaf)
 
@@ -262,18 +368,23 @@ class BPlusOmapCached(BPlusOmap):
 
     def delete(self, key: Any) -> Any:
         """
-        Delete with h-round optimization: pre-fetches siblings during traversal.
+        Delete with h-round optimization: batches target + sibling fetches per level.
 
-        At each level (except root), fetches both target node and one sibling,
+        At each level, fetches both target node and sibling in ONE batch round,
         completing the entire operation in h rounds regardless of underflow handling.
         """
-        # Total accesses for h-level tree: 1 (root) + 2*(h-1) = 2h - 1
-        # Pad to 2 * max_height - 1 for obliviousness
-        max_accesses = 2 * self._max_height - 1
+        # Total accesses for h-level tree: 1 (root) + 1*(h-1) = h
+        # Each access is a batch fetch (target + sibling) = 2 executes
+        # Pad to max_height for obliviousness
+        max_accesses = self._max_height
 
-        if key is None or self.root is None:
+        if key is None:
             self._perform_dummy_operation(num_round=max_accesses)
             return None
+
+        # If the current root is empty, nothing to delete.
+        if self.root is None:
+            raise ValueError("Cannot delete from an empty tree.")
 
         # Compute the minimum number of keys each node should have
         min_keys = (self._order - 1) // 2
