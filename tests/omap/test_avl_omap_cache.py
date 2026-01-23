@@ -196,3 +196,118 @@ class TestAVLOmapCache:
 
         # Verify tree is empty.
         assert omap.root is None
+
+    def test_batch_search_basic(self, num_data, client):
+        """Test basic batch_search functionality."""
+        omap = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
+        omap.init_server_storage()
+
+        # Insert data.
+        for i in range(num_data):
+            omap.insert(key=i, value=i * 10)
+
+        # Batch search for multiple keys.
+        keys_to_search = [0, 5, 10, 15, 20]
+        results = omap.batch_search(keys=keys_to_search)
+
+        # Verify results.
+        for key in keys_to_search:
+            if key < num_data:
+                assert results[key] == key * 10
+            else:
+                assert results[key] is None
+
+    def test_batch_search_all_keys(self, num_data, client):
+        """Test batch_search with all keys in the tree."""
+        # Use smaller num_data for this test.
+        test_size = min(32, num_data)
+        omap = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
+        omap.init_server_storage()
+
+        # Insert data.
+        for i in range(test_size):
+            omap.insert(key=i, value=i * 2)
+
+        # Batch search for all keys.
+        keys_to_search = list(range(test_size))
+        results = omap.batch_search(keys=keys_to_search)
+
+        # Verify all results.
+        for key in keys_to_search:
+            assert results[key] == key * 2
+
+    def test_batch_search_nonexistent_keys(self, num_data, client):
+        """Test batch_search with keys that don't exist."""
+        omap = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
+        omap.init_server_storage()
+
+        # Insert some data.
+        for i in range(10):
+            omap.insert(key=i, value=i)
+
+        # Search for non-existent keys.
+        keys_to_search = [100, 200, 300]
+        results = omap.batch_search(keys=keys_to_search)
+
+        # Verify all are None.
+        for key in keys_to_search:
+            assert results[key] is None
+
+    def test_batch_search_empty_list(self, num_data, client):
+        """Test batch_search with empty key list."""
+        omap = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
+        omap.init_server_storage()
+
+        # Insert some data.
+        for i in range(10):
+            omap.insert(key=i, value=i)
+
+        # Search with empty list.
+        results = omap.batch_search(keys=[])
+
+        # Verify empty result.
+        assert results == {}
+
+    def test_batch_search_with_encryption(self, num_data, client, encryptor):
+        """Test batch_search with encryption enabled."""
+        omap = AVLOmapCached(
+            num_data=num_data, key_size=10, data_size=10, client=client, encryptor=encryptor
+        )
+        omap.init_server_storage()
+
+        # Insert data.
+        for i in range(20):
+            omap.insert(key=i, value=i * 5)
+
+        # Batch search.
+        keys_to_search = [0, 5, 10, 15]
+        results = omap.batch_search(keys=keys_to_search)
+
+        # Verify results.
+        for key in keys_to_search:
+            assert results[key] == key * 5
+
+    def test_batch_search_level_optimization(self, num_data, client):
+        """Test that batch_search uses level-based optimization correctly."""
+        # This test ensures the optimization kicks in:
+        # - When searching for many keys (k), if level has fewer nodes, read all nodes
+        # - Otherwise, read k paths
+        test_size = 16
+        omap = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
+        omap.init_server_storage()
+
+        # Insert data.
+        for i in range(test_size):
+            omap.insert(key=i, value=i)
+
+        # Search for more keys than nodes at early levels (e.g., 8 keys)
+        # At level 0: max 1 node, so read all (1 path)
+        # At level 1: max 2 nodes, so read all (2 paths)
+        # At level 2: max 4 nodes, so read all (4 paths)
+        # At level 3: max 8 nodes = k, so read 8 paths
+        keys_to_search = [0, 2, 4, 6, 8, 10, 12, 14]
+        results = omap.batch_search(keys=keys_to_search)
+
+        # Verify all results are correct.
+        for key in keys_to_search:
+            assert results[key] == key
