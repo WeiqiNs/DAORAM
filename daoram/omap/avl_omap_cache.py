@@ -14,7 +14,7 @@ class AVLOmapCached(AVLOmap):
     1. Checks stash before fetching from server (cache hit avoids ORAM access)
     2. Nodes stay in local at end of operation, flushed to stash at start of next
     3. Reduced interaction rounds: insert/search use h rounds, delete uses 2h rounds
-    # Todo: Do insert and serch use h+1 rounds?
+    # Todo: Do insert and search use h+1 rounds for indistinguishability?
     """
 
     def __init__(self,
@@ -246,7 +246,11 @@ class AVLOmapCached(AVLOmap):
         - If searching for k keys and 2^l >= k, read k paths (one per key)
         - If 2^l < k, read all 2^l nodes at that level (more efficient)
 
-        This reduces communication compared to reading k full paths independently.
+        Uses per-level eviction with pre-allocation:
+        - Before evicting parent nodes, pre-allocate new leaves for children we will visit
+        - Update parent's l_leaf/r_leaf to point to the pre-allocated leaves
+        - Save old child leaves for reading in next level
+        - Evict parents (they go to intersection of read path and new leaf path)
 
         :param keys: List of keys to search for.
         :return: Dict mapping each key to its corresponding value (None if not found).
@@ -259,27 +263,68 @@ class AVLOmapCached(AVLOmap):
 
         # Handle empty tree case
         if self.root is None:
-            self._perform_dummy_operation(num_round=self._max_height)
+            # Perform level-based dummy accesses to match batch search access pattern
+            for level in range(self._max_height):
+                max_nodes_at_level = 2 ** level
+                required = min(max_nodes_at_level, k)
+                if required <= 0:
+                    continue
+
+                leaves: List[int] = []
+                while len(leaves) < required:
+                    leaf = self._get_new_leaf()
+                    if leaf not in leaves:
+                        leaves.append(leaf)
+
+                self._client.add_read_path(label=self._name, leaves=leaves)
+                result = self._client.execute()
+                path_data = result.results[self._name]
+
+                # Decrypt the path and add all real data to stash
+                path = self.decrypt_path_data(path=path_data)
+                for bucket in path.values():
+                    for data in bucket:
+                        self._stash.append(data)
+
+                if len(self._stash) > self._stash_size:
+                    raise OverflowError(
+                        f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
+
+                evicted = self._evict_stash(leaves=leaves)
+                self._client.add_write_path(label=self._name, data=evicted)
+                self._client.execute()
+
             return results
 
         # Flush local to stash at start
         self._flush_local_to_stash()
 
-        # Track nodes retrieved during this operation
-        local_nodes: Dict[Any, Data] = {}  # key -> Data node
+        # Track keys we've seen in stash to avoid duplicates
         keys_in_stash: Set[Any] = {node.key for node in self._stash}
-        all_leaves_read: List[int] = []
+
+        # Save root's old leaf for reading, pre-allocate new leaf
+        root_key = self.root[0]
+        root_old_leaf = self.root[1]
 
         # For each key i:
-        #   current_node[i] = (node_key, leaf) - the node we need to visit next
+        #   current_node[i] = (node_key, leaf_to_read) - use old leaf for reading
         #   finished[i] = whether we're done with this key
-        current_node: List[Tuple[Any, int]] = [(self.root[0], self.root[1])] * k
+        current_node: List[Tuple[Any, int]] = [(root_key, root_old_leaf)] * k
         finished: List[bool] = [False] * k
 
-        # Process level by level - read paths but delay eviction until the end
+        # Pre-allocated leaves: child_key -> new_leaf
+        pre_allocated_leaves: Dict[Any, int] = {}
+
+        # Old leaves for reading: child_key -> old_leaf (the leaf where the node actually is)
+        old_leaves_for_reading: Dict[Any, int] = {}
+
+        # Process level by level with per-level eviction
         for level in range(self._max_height):
             # Maximum possible nodes at this level in a balanced tree
             max_nodes_at_level = 2 ** level
+
+            # Nodes retrieved this level
+            level_local_nodes: Dict[Any, Data] = {}
 
             # Collect unique leaves needed for this level
             leaf_to_node_keys: Dict[int, Set[Any]] = {}
@@ -288,15 +333,15 @@ class AVLOmapCached(AVLOmap):
                     continue
                 node_key, leaf = current_node[i]
 
-                # Check if node is already in local
-                if node_key in local_nodes:
+                # Check if node is already retrieved this level
+                if node_key in level_local_nodes:
                     continue
 
-                # Check if node is in stash - if so, move to local
+                # Check if node is in stash - if so, move to level_local
                 stash_idx = self._find_in_stash(node_key)
                 if stash_idx >= 0:
                     node = self._stash.pop(stash_idx)
-                    local_nodes[node.key] = node
+                    level_local_nodes[node.key] = node
                     keys_in_stash.discard(node.key)
                     continue
 
@@ -309,23 +354,24 @@ class AVLOmapCached(AVLOmap):
             actual_reads_needed = len(unique_leaves)
 
             # Determine how many paths to read for obliviousness
-            # If max_nodes_at_level < k, we read all possible paths at this level
-            # Otherwise, we read k paths (padding with dummies if needed)
             if max_nodes_at_level < k:
-                # Read all nodes at this level - dummy padding to max_nodes_at_level
                 dummy_count = max(0, max_nodes_at_level - actual_reads_needed)
             else:
-                # Read k paths - dummy padding to k
                 dummy_count = max(0, k - actual_reads_needed)
 
-            # Perform batch read if needed (WITHOUT eviction - delay until end)
+            # Perform batch read if needed
+            leaves_this_level = []
             if unique_leaves or dummy_count > 0:
                 # Add dummy leaves for padding
                 all_leaves = list(unique_leaves)
-                for _ in range(dummy_count):
-                    all_leaves.append(self._get_new_leaf())
+                tmp = 0
+                while tmp < dummy_count:
+                    tmp_path = self._get_new_leaf()
+                    if tmp_path not in all_leaves:
+                        all_leaves.append(tmp_path)
+                        tmp += 1
 
-                all_leaves_read.extend(all_leaves)
+                leaves_this_level = all_leaves
 
                 # Read paths from server
                 self._client.add_read_path(label=self._name, leaves=all_leaves)
@@ -340,28 +386,42 @@ class AVLOmapCached(AVLOmap):
                 for node_keys in leaf_to_node_keys.values():
                     target_node_keys.update(node_keys)
 
-                # Process path data - move target nodes to local, others to stash
+                # Process path data - move target nodes to level_local, others to stash
                 for bucket in path.values():
                     for data in bucket:
-                        if data.key in target_node_keys and data.key not in local_nodes:
-                            local_nodes[data.key] = data
-                        elif data.key not in keys_in_stash:
-                            self._stash.append(data)
-                            keys_in_stash.add(data.key)
+                        if data.key in level_local_nodes:
+                            continue
 
-            # Process each key - determine next node to visit
+                        stash_idx = self._find_in_stash(data.key)
+
+                        if data.key in target_node_keys:
+                            if stash_idx >= 0:
+                                self._stash.pop(stash_idx)
+                                keys_in_stash.discard(data.key)
+                            level_local_nodes[data.key] = data
+                        else:
+                            if stash_idx >= 0:
+                                # Refresh existing stash copy with latest data
+                                self._stash[stash_idx] = data
+                            else:
+                                self._stash.append(data)
+                                keys_in_stash.add(data.key)
+
+            # Determine which child nodes will be visited next level
+            children_to_visit: Set[Any] = set()
             for i in range(k):
                 if finished[i]:
                     continue
 
                 node_key, _ = current_node[i]
-
-                # Find node in local first, then stash
-                node = local_nodes.get(node_key)
+                node = level_local_nodes.get(node_key)
                 if node is None:
-                    node = self._find_node_in_stash_no_remove(node_key)
+                    stash_idx = self._find_in_stash(node_key)
+                    if stash_idx >= 0:
+                        node = self._stash.pop(stash_idx)
+                        level_local_nodes[node.key] = node
+                        keys_in_stash.discard(node.key)
                 if node is None:
-                    # Node not found - key doesn't exist
                     finished[i] = True
                     continue
 
@@ -369,49 +429,93 @@ class AVLOmapCached(AVLOmap):
                 if node.key == keys[i]:
                     results[keys[i]] = node.value.value
                     finished[i] = True
+                    continue
 
-                # Navigate right if key > node.key
-                elif keys[i] > node.key:
+                # Determine which child to visit and save its OLD leaf for reading
+                if keys[i] > node.key:
                     if node.value.r_key is not None:
-                        current_node[i] = (node.value.r_key, node.value.r_leaf)
+                        child_key = node.value.r_key
+                        children_to_visit.add(child_key)
+                        # Save the OLD leaf (where the child actually is) for reading
+                        if child_key not in old_leaves_for_reading:
+                            old_leaves_for_reading[child_key] = node.value.r_leaf
                     else:
-                        finished[i] = True  # Key not in tree
-
-                # Navigate left if key < node.key
+                        finished[i] = True
                 else:
                     if node.value.l_key is not None:
-                        current_node[i] = (node.value.l_key, node.value.l_leaf)
+                        child_key = node.value.l_key
+                        children_to_visit.add(child_key)
+                        # Save the OLD leaf (where the child actually is) for reading
+                        if child_key not in old_leaves_for_reading:
+                            old_leaves_for_reading[child_key] = node.value.l_leaf
                     else:
-                        finished[i] = True  # Key not in tree
+                        finished[i] = True
 
-        # Move local nodes back to stash for final processing
-        for node in local_nodes.values():
-            if self._find_in_stash(node.key) < 0:
-                self._stash.append(node)
+            # Pre-allocate new leaves for children we'll visit
+            for child_key in children_to_visit:
+                if child_key not in pre_allocated_leaves:
+                    pre_allocated_leaves[child_key] = self._get_new_leaf()
 
-        # Re-randomize leaves for all nodes in stash and update parent-child pointers
-        key_to_node: Dict[Any, Data] = {node.key: node for node in self._stash}
-        for node in self._stash:
-            node.leaf = self._get_new_leaf()
+            # Update current_node for next level - use OLD leaf for reading!
+            for i in range(k):
+                if finished[i]:
+                    continue
 
-        # Fix parent-child leaf pointers
-        for node in self._stash:
-            if node.value.l_key is not None and node.value.l_key in key_to_node:
-                node.value.l_leaf = key_to_node[node.value.l_key].leaf
-            if node.value.r_key is not None and node.value.r_key in key_to_node:
-                node.value.r_leaf = key_to_node[node.value.r_key].leaf
+                node_key, _ = current_node[i]
+                node = level_local_nodes.get(node_key)
+                if node is None:
+                    stash_idx = self._find_in_stash(node_key)
+                    if stash_idx >= 0:
+                        node = self._stash.pop(stash_idx)
+                        level_local_nodes[node.key] = node
+                        keys_in_stash.discard(node.key)
+                if node is None:
+                    finished[i] = True
+                    continue
 
-        # Update root pointer
-        if self.root is not None:
-            root_key = self.root[0]
-            if root_key in key_to_node:
-                self.root = (root_key, key_to_node[root_key].leaf)
+                if keys[i] > node.key:
+                    if node.value.r_key is not None:
+                        child_key = node.value.r_key
+                        # Use the saved OLD leaf for reading
+                        child_leaf = old_leaves_for_reading.get(child_key, node.value.r_leaf)
+                        current_node[i] = (child_key, child_leaf)
+                else:
+                    if node.value.l_key is not None:
+                        child_key = node.value.l_key
+                        # Use the saved OLD leaf for reading
+                        child_leaf = old_leaves_for_reading.get(child_key, node.value.l_leaf)
+                        current_node[i] = (child_key, child_leaf)
 
-        # Final eviction - evict to all paths we read
-        if all_leaves_read:
-            unique_leaves_for_eviction = list(set(all_leaves_read))
-            evicted = self._evict_stash(leaves=unique_leaves_for_eviction)
-            self._client.add_write_path(label=self._name, data=evicted)
-            self._client.execute()
+            # Update parent pointers to use pre-allocated leaves (AFTER saving old leaves)
+            for node in level_local_nodes.values():
+                if node.value.l_key is not None and node.value.l_key in pre_allocated_leaves:
+                    node.value.l_leaf = pre_allocated_leaves[node.value.l_key]
+                if node.value.r_key is not None and node.value.r_key in pre_allocated_leaves:
+                    node.value.r_leaf = pre_allocated_leaves[node.value.r_key]
+
+            # Assign new leaves for nodes at this level
+            for node in level_local_nodes.values():
+                if node.key in pre_allocated_leaves:
+                    # Use pre-allocated leaf from parent
+                    node.leaf = pre_allocated_leaves[node.key]
+                else:
+                    # Root or node without pre-allocation - assign new leaf
+                    node.leaf = self._get_new_leaf()
+
+            # Move level_local nodes to stash for eviction
+            for node in level_local_nodes.values():
+                if self._find_in_stash(node.key) < 0:
+                    self._stash.append(node)
+                    keys_in_stash.add(node.key)
+
+            # Update root pointer
+            if self.root is not None and root_key in level_local_nodes:
+                self.root = (root_key, level_local_nodes[root_key].leaf)
+
+            # Evict this level using the paths we read
+            if leaves_this_level:
+                evicted = self._evict_stash(leaves=leaves_this_level)
+                self._client.add_write_path(label=self._name, data=evicted)
+                self._client.execute()
 
         return results

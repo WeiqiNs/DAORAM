@@ -3,7 +3,7 @@ import copy
 import math
 import os
 from functools import cached_property
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 from daoram.dependency import AVLData, AVLTree, BinaryTree, Data, Encryptor, Helper, InteractServer, KVPair, PathData
 from daoram.omap.oblivious_search_tree import KV_LIST, ROOT, ObliviousSearchTree
@@ -41,7 +41,7 @@ class LocalNodes:
         """Get a node by its key."""
         return self.nodes.get(key)
 
-    def get_parent(self, key: Any) -> Data | None:
+    def get_parent(self, key: Any) -> Optional[Data]:
         """Get the parent node of a given key."""
         parent_key = self.parent_of.get(key)
         return self.nodes.get(parent_key) if parent_key is not None else None
@@ -68,7 +68,7 @@ class LocalNodes:
             idx2 = self.path.index(key2)
             self.path[idx1], self.path[idx2] = self.path[idx2], self.path[idx1]
 
-    def get_root(self) -> Data | None:
+    def get_root(self) -> Optional[Data]:
         """Get the root node."""
         return self.nodes.get(self.root_key) if self.root_key is not None else None
 
@@ -87,7 +87,7 @@ class LocalNodes:
                 elif parent.value.r_key == key:
                     parent.value.r_leaf = node.leaf
 
-    def remove(self, key: Any) -> Data | None:
+    def remove(self, key: Any) -> Optional[Data]:
         """Remove and return a node by its key."""
         node = self.nodes.pop(key, None)
         if node:
