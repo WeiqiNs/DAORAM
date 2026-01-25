@@ -94,6 +94,35 @@ class MulPathOram(PathOram):
         self._client.add_write_path(label=self._name, data=evicted_path)
         self._tmp_leaves = []
 
+    def process_read_result(self, result: Any) -> None:
+        """
+        Process the read result from the client and add data to stash.
+
+        :param result: The ExecuteResult object from client.execute().
+        """
+        if self._name not in result.results:
+            return
+
+        path_data = result.results[self._name]
+
+        # Decrypt the path if needed.
+        path = self.decrypt_path_data(path=path_data)
+
+        # Read all buckets in the path and add real data to stash.
+        for bucket in path.values():
+            for data in bucket:
+                # If dummy data, skip it.
+                if data.key is None:
+                    continue
+
+                # Add all real data to the stash.
+                self._stash.append(data)
+
+        # Check if the stash overflows.
+        if len(self._stash) > self._stash_size:
+            raise OverflowError(
+                f"Stash overflow in {self._name}: size {len(self._stash)} exceeds max {self._stash_size}.")
+
     def _retrieve_mul_data_blocks(
             self,
             path: PathData,
