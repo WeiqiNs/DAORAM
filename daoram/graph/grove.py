@@ -458,76 +458,187 @@ class Grove:
         :param vertex: the vertex to add, in format of (key, value, neighbors).
                        neighbors is a dict {neighbor_key: neighbor_leaf} or list of neighbor keys.
         
+        For obliviousness:
+        1. Always perform max_degree lookups (K real + max_degree-K dummy)
+        2. Access max_degree+1 paths in Graph ORAM (max_degree neighbors + 1 new vertex path)
+        3. Create duplications (RL path selection):
+           - _graph_meta: max_degree * (max_degree-1) for neighbors' neighbors + AVL node updates
+           - _pos_meta: max_degree for Graph ORAM -> PosMap updates
+        
         Data structure in Graph ORAM:
             Data(key=vertex_key, leaf=graph_leaf, value=(vertex_data, adjacency_dict, pos_leaf))
-            - Each vertex stores its OWN pos_leaf (its position in PosMap ORAM)
-            - adjacency_dict: {neighbor_key: neighbor_graph_leaf} (only graph_leaf, no pos_leaf)
-            - When we download a neighbor, we get its pos_leaf from its own data
         """
-        # Sample a new path for the new vertex in Graph ORAM.
-        new_graph_leaf = secrets.randbelow(self._leaf_range)
-        new_path_download = secrets.randbelow(self._leaf_range)
-
-        # Insert the new vertex key-path pair to the position OMAP and get the pos_leaf.
-        new_pos_leaf = self._pos_omap.insert(key=vertex[0], value=new_graph_leaf, return_pos_leaf=True)
-
         # Get neighbor keys from vertex[2] (could be dict or list).
         neighbor_keys = list(vertex[2].keys()) if isinstance(vertex[2], dict) else list(vertex[2])
+        K = len(neighbor_keys)  # Actual number of neighbors
+        
+        # Step 1: Sample a new path for the new vertex in Graph ORAM.
+        new_graph_leaf = secrets.randbelow(self._leaf_range)
 
-        # Use batch_search to get graph_leaf for all neighbors.
-        neighbor_path_map = self._pos_omap.batch_search(keys=neighbor_keys)
-        # neighbor_path_map: {neighbor_key: graph_leaf}
+        # Step 2: Insert the new vertex key-path pair to PosMap ORAM.
+        new_pos_leaf = self._pos_omap.insert(key=vertex[0], value=new_graph_leaf, return_pos_leaf=True)
 
-        # Build adjacency dict for the new vertex: {neighbor_key: graph_leaf}.
-        new_vertex_adjacency = {k: v for k, v in neighbor_path_map.items() if v is not None}
+        # Step 3: Use batch_search to get graph_leaf for all neighbors.
+        # Also get visited_nodes_map for AVL node updates.
+        if K > 0:
+            key_graph_leaf_dict, visited_nodes_map, total_posmap_paths = self._pos_omap.batch_search(
+                keys=neighbor_keys, return_visited_nodes=True
+            )
+            pos_meta_extra_paths = max(0, total_posmap_paths - K)
+        else:
+            key_graph_leaf_dict = {}
+            visited_nodes_map = {}
+            pos_meta_extra_paths = 0
 
-        # Collect all graph leaves to retrieve: new vertex path + all neighbor graph paths.
-        all_leaves = [new_path_download] + [v for v in neighbor_path_map.values() if v is not None]
+        # Collect real neighbor leaves.
+        real_neighbor_leaves = [v for k, v in key_graph_leaf_dict.items() if v is not None]
+        
+        # Step 4: Pad with dummy paths to max_degree for obliviousness.
+        dummy_count = max(0, self._max_deg - K)
+        dummy_leaves = [secrets.randbelow(self._leaf_range) for _ in range(dummy_count)]
+        
+        # Step 5: Read Graph ORAM (max_degree + 1 paths).
+        # One extra path for downloading the new vertex's insertion path.
+        new_path_download = secrets.randbelow(self._leaf_range)
+        all_graph_leaves = [new_path_download] + real_neighbor_leaves + dummy_leaves
+        
+        # RL paths for meta ORAMs:
+        # _graph_meta: 
+        #   - Neighbor updates: max_degree neighbors, each has up to (max_degree-1) other neighbors
+        #   - AVL node updates for non-downloaded vertices
+        graph_meta_rl_count = self._max_deg * (self._max_deg - 1) + pos_meta_extra_paths
+        graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + real_neighbor_leaves
+        
+        # _pos_meta: max_degree for Graph ORAM -> PosMap updates
+        pos_meta_rl_paths = self.get_rl_leaf(count=self._max_deg, for_pos_meta=True)
 
-        # Queue read and execute.
-        self._graph_oram.queue_read(leaves=all_leaves)
+        # Queue reads for all ORAMs.
+        self._graph_oram.queue_read(leaves=all_graph_leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_paths)
+        
         result = self._client.execute()
+
+        # Process read results.
         self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
 
-        # Build index of vertices in stash for quick lookup.
-        stash_index = {data.key: i for i, data in enumerate(self._graph_oram.stash)}
-
-        # Update each neighbor's adjacency list to include the new vertex.
-        # Also create duplications for _pos_meta (Graph ORAM -> PosMap updates).
+        # Build index of downloaded vertices.
+        downloaded_vertices = {data.key: data for data in self._graph_oram.stash 
+                               if data.key in key_graph_leaf_dict}
+        
+        # graph_meta_duplications: for neighbor updates and AVL node updates
+        graph_meta_duplications = []
+        
+        # pos_meta_duplications: for Graph ORAM -> PosMap updates (go to _pos_omap._meta)
         pos_meta_duplications = []
+        
+        # Build adjacency dict for the new vertex: {neighbor_key: neighbor_new_graph_leaf}
+        new_vertex_adjacency = {}
+
+        # Step 6: Update each neighbor's adjacency list and create duplications.
         for neighbor_key in neighbor_keys:
-            if neighbor_key in stash_index:
-                idx = stash_index[neighbor_key]
-                neighbor_data = self._graph_oram.stash[idx]
-                # Add the new vertex to neighbor's adjacency list (only graph_leaf).
-                neighbor_data.value[1][vertex[0]] = new_graph_leaf
-                # Assign new random graph leaf for the neighbor.
-                neighbor_new_graph_leaf = secrets.randbelow(self._leaf_range)
-                neighbor_data.leaf = neighbor_new_graph_leaf
-                # Update the adjacency dict with neighbor's new graph_leaf.
-                new_vertex_adjacency[neighbor_key] = neighbor_new_graph_leaf
-                # Create duplication for _pos_meta (Graph ORAM -> PosMap).
-                # Format: Data(key=neighbor_key, leaf=neighbor_pos_leaf, value=new_graph_leaf)
-                if len(neighbor_data.value) >= 3 and neighbor_data.value[2] is not None:
-                    neighbor_pos_leaf = neighbor_data.value[2]
-                    pos_meta_duplications.append(
-                        Data(key=neighbor_key, leaf=neighbor_pos_leaf, value=neighbor_new_graph_leaf)
+            if neighbor_key not in downloaded_vertices:
+                continue
+                
+            neighbor_data = downloaded_vertices[neighbor_key]
+            
+            # Extract neighbor's data.
+            if len(neighbor_data.value) == 3:
+                neighbor_vertex_data, neighbor_adjacency_dict, neighbor_old_pos_leaf = neighbor_data.value
+            else:
+                neighbor_vertex_data, neighbor_adjacency_dict = neighbor_data.value
+                neighbor_old_pos_leaf = None
+            
+            # Add the new vertex to neighbor's adjacency list.
+            neighbor_adjacency_dict[vertex[0]] = new_graph_leaf
+            
+            # Assign new random graph_leaf for the neighbor.
+            neighbor_new_graph_leaf = secrets.randbelow(self._leaf_range)
+            neighbor_data.leaf = neighbor_new_graph_leaf
+            
+            # Update new vertex's adjacency with neighbor's new graph_leaf.
+            new_vertex_adjacency[neighbor_key] = neighbor_new_graph_leaf
+            
+            # Get neighbor's new pos_leaf from visited_nodes_map.
+            visited_info = visited_nodes_map.get(neighbor_key)
+            if visited_info is not None:
+                neighbor_new_pos_leaf, _ = visited_info
+            else:
+                neighbor_new_pos_leaf = neighbor_old_pos_leaf
+            neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency_dict, neighbor_new_pos_leaf)
+            
+            # Type 1: Notify neighbor's neighbors about neighbor's new graph_leaf -> _graph_meta
+            for nn_key, nn_graph_leaf in neighbor_adjacency_dict.items():
+                if nn_key == vertex[0]:  # Skip the new vertex itself
+                    continue
+                if isinstance(nn_graph_leaf, tuple):
+                    nn_graph_leaf = nn_graph_leaf[0]
+                graph_meta_duplications.append(
+                    Data(key=neighbor_key, leaf=nn_graph_leaf, value=(neighbor_key, neighbor_new_graph_leaf))
+                )
+            
+            # Type 2: Notify PosMap about neighbor's new graph_leaf -> _pos_omap._meta
+            if neighbor_new_pos_leaf is not None:
+                pos_meta_duplications.append(
+                    Data(key=neighbor_key, leaf=neighbor_new_pos_leaf, value=neighbor_new_graph_leaf)
+                )
+        
+        # For visited AVL nodes whose vertex was NOT downloaded,
+        # create duplication to update their pos_leaf -> _graph_meta
+        for vertex_key, (new_pos_leaf_avl, vertex_graph_leaf) in visited_nodes_map.items():
+            if vertex_key not in downloaded_vertices and vertex_key != vertex[0]:
+                if vertex_graph_leaf is not None:
+                    graph_meta_duplications.append(
+                        Data(key=vertex_key, leaf=vertex_graph_leaf, value=new_pos_leaf_avl)
                     )
         
-        # Add the new vertex to stash with pos_leaf.
-        # value format: (vertex_data, adjacency_dict, pos_leaf)
+        # Step 7: Add the new vertex to stash.
         self._graph_oram.stash.append(
             Data(key=vertex[0], leaf=new_graph_leaf, value=(vertex[1], new_vertex_adjacency, new_pos_leaf))
         )
+        
+        # Add duplications to meta ORAMs (prepend for highest priority).
+        self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
+        self._pos_omap.add_meta_duplications(pos_meta_duplications)
 
-        # Queue write and execute.
+        # Perform de-duplication.
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+
+        # Apply graph_meta duplications to downloaded vertices (same as lookup).
+        retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
+        temp_stash = []
+        for data in self._graph_meta.stash:
+            if data.key in retrieved_vertices:
+                idx = retrieved_vertices[data.key]
+                vertex_value = self._graph_oram.stash[idx].value
+                
+                if isinstance(data.value, tuple):
+                    # Type 1: Neighbor update (adjacency list update)
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf_dup = data.value[0], data.value[1]
+                    
+                    if new_graph_leaf_dup < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        if source_key in adjacency_dict:
+                            adjacency_dict[source_key] = new_graph_leaf_dup
+                else:
+                    # Type 2: PosMap->GraphORAM update (pos_leaf update)
+                    if len(vertex_value) >= 3:
+                        self._graph_oram.stash[idx].value = (vertex_value[0], vertex_value[1], data.value)
+            else:
+                temp_stash.append(data)
+        self._graph_meta.stash = temp_stash
+
+        # Step 8: Queue writes for all ORAMs (use same paths as read for obliviousness).
         self._graph_oram.queue_write()
+        self._graph_meta.queue_write()
+        self._pos_meta.queue_write()
         self._client.execute()
-
-        # Add duplications to _pos_meta for neighbors whose graph_leaf changed.
-        # Prepend to give new duplications highest priority.
-        if pos_meta_duplications:
-            self._pos_meta.stash = pos_meta_duplications + self._pos_meta.stash
 
     def delete(self, key: Any) -> None:
         """
