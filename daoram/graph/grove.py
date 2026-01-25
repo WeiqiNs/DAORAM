@@ -642,19 +642,31 @@ class Grove:
 
     def delete(self, key: Any) -> None:
         """
-        Delete a vertex from the graph with direct neighbor updates.
+        Delete a vertex from the graph using duplication-based neighbor notification.
+        
+        Instead of downloading all neighbors, we send duplications to notify them
+        that this vertex has been deleted (using new_graph_leaf = -1 as deletion marker).
 
         :param key: The key of the vertex to delete.
         """
-        # Look up the vertex path from OMAP (and perform lazy deletion by setting value to None).
-        vertex_leaf = self._pos_omap.search(key=key, value=None)
-
-        # First retrieve the vertex to get its neighbor list.
-        self._graph_oram.queue_read(leaves=[vertex_leaf])
+        # Step 1: Delete from PosMap ORAM (search with value=None performs lazy deletion)
+        # This also returns the vertex's graph_leaf
+        vertex_graph_leaf = self._pos_omap.delete(key=key)
+        
+        # Step 2: Get RL paths for graph_meta (to notify neighbors via duplication)
+        # We need max_degree paths for obliviousness
+        graph_meta_rl_paths = self.get_rl_leaf(count=self._max_deg, for_pos_meta=False)
+        
+        # Step 3: Queue reads for Graph ORAM and Graph Meta
+        self._graph_oram.queue_read(leaves=[vertex_graph_leaf])
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+        
+        # Execute reads
         result = self._client.execute()
         self._graph_oram.process_read_result(result)
-
-        # Find the vertex in stash and get its neighbors.
+        self._graph_meta.process_read_result(result)
+        
+        # Step 4: Find the vertex in stash and get its neighbors
         vertex_data = None
         vertex_idx = None
         for i, data in enumerate(self._graph_oram.stash):
@@ -662,135 +674,313 @@ class Grove:
                 vertex_data = data
                 vertex_idx = i
                 break
-
+        
         if vertex_data is None:
-            # Vertex not found, just write back and return.
+            # Vertex not found, write back and return
             self._graph_oram.queue_write()
+            self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
             self._client.execute()
             return
-
-        # Get neighbor keys from the vertex's adjacency list.
-        # value format: (vertex_data, adjacency_dict, pos_leaf) or old format
-        neighbor_adjacency = vertex_data.value[1]  # {neighbor_key: graph_leaf}
+        
+        # Get neighbor info: {neighbor_key: graph_leaf}
+        neighbor_adjacency = vertex_data.value[1]
         neighbor_keys = list(neighbor_adjacency.keys())
-
-        if not neighbor_keys:
-            # No neighbors, just remove the vertex and write back.
-            del self._graph_oram.stash[vertex_idx]
-            self._graph_oram.queue_write()
-            self._client.execute()
-            return
-
-        # Use batch_search to get current paths for all neighbors.
-        neighbor_path_map = self._pos_omap.batch_search(keys=neighbor_keys)
-
-        # Retrieve all neighbor paths from graph ORAM.
-        neighbor_leaves = [v for v in neighbor_path_map.values() if v is not None]
-        self._graph_oram.queue_read(leaves=neighbor_leaves)
-        result = self._client.execute()
-        self._graph_oram.process_read_result(result)
-
-        # Build index of vertices in stash for quick lookup.
-        stash_index = {data.key: i for i, data in enumerate(self._graph_oram.stash)}
-
-        # Remove the deleted vertex from each neighbor's adjacency list.
-        for neighbor_key in neighbor_keys:
-            if neighbor_key in stash_index:
-                idx = stash_index[neighbor_key]
-                neighbor_data = self._graph_oram.stash[idx]
-                # Remove the deleted vertex from neighbor's adjacency list.
-                if key in neighbor_data.value[1]:
-                    del neighbor_data.value[1][key]
-                # Assign new random leaf for the neighbor.
-                neighbor_data.leaf = secrets.randbelow(self._leaf_range)
-
-        # Remove the deleted vertex from stash.
-        # Need to re-find index since stash may have changed.
-        for i, data in enumerate(self._graph_oram.stash):
+        
+        # Step 5: Apply duplications from graph_meta to this vertex (de-duplication)
+        temp_stash = []
+        for data in self._graph_meta.stash:
             if data.key == key:
-                del self._graph_oram.stash[i]
-                break
-
-        # Evict to all paths (vertex path + neighbor paths) and write back.
-        all_leaves = [vertex_leaf] + neighbor_leaves
-        self._graph_oram.queue_write(leaves=all_leaves)
+                # This dup targets the deleted vertex, discard it
+                pass
+            else:
+                temp_stash.append(data)
+        self._graph_meta.stash = temp_stash
+        
+        # Step 6: Create deletion duplications for all neighbors
+        # Use new_graph_leaf = -1 to indicate deletion
+        DELETION_MARKER = -1
+        deletion_dups = []
+        for i, neighbor_key in enumerate(neighbor_keys):
+            neighbor_graph_leaf = neighbor_adjacency[neighbor_key]
+            # Duplication format: Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(deleted_key, DELETION_MARKER))
+            dup = Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(key, DELETION_MARKER))
+            deletion_dups.append(dup)
+        
+        # Pad with dummy dups for obliviousness (total = max_degree)
+        dummy_leaf = secrets.randbelow(self._leaf_range)
+        for _ in range(self._max_deg - len(deletion_dups)):
+            dummy_dup = Data(key=None, leaf=dummy_leaf, value=(None, DELETION_MARKER))
+            deletion_dups.append(dummy_dup)
+        
+        # Add deletion dups to graph_meta stash (prepend for highest priority)
+        self._graph_meta.stash = deletion_dups + self._graph_meta.stash
+        
+        # Step 7: Remove the deleted vertex from graph_oram stash
+        del self._graph_oram.stash[vertex_idx]
+        
+        # Step 8: Write back
+        self._graph_oram.queue_write()
+        self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
         self._client.execute()
 
     def neighbor(self, keys: List[Any]) -> dict:
         """
-        Perform a neighbor lookup query.
+        Perform a neighbor lookup query with proper duplication handling.
+        
+        For a single center vertex:
+        1. Lookup the center vertex to get its neighbor list
+        2. Download all neighbors in one round
+        3. Update center's new path in all neighbors
+        4. Send duplications to neighbors' neighbors about path changes
+        5. Send duplications to PosMap for all path updates
 
         :param keys: List of vertex keys to find neighbors for.
-        :return: Dict mapping vertex key to (vertex_data, adjacency_dict).
+        :return: Dict mapping neighbor_key to (vertex_data, adjacency_dict).
         """
-        # First lookup using OMAP.
-        vertices = self.lookup(keys=keys)
-
-        # Get the neighbors to search (they already have graph_leaf in adjacency list).
-        # adjacency_dict format: {neighbor_key: neighbor_graph_leaf}
-        search_dict = {}
-        for vertex_value in vertices.values():
-            adjacency_dict = vertex_value[1]
-            for neighbor_key, neighbor_graph_leaf in adjacency_dict.items():
-                # Handle both old tuple format and new simple format
-                if isinstance(neighbor_graph_leaf, tuple):
-                    neighbor_graph_leaf = neighbor_graph_leaf[0]
-                search_dict[neighbor_key] = neighbor_graph_leaf
-
-        # For desired number of layers, keep searching.
-        for _ in range(self._graph_depth):
-            vertices = self.lookup_without_omap(search_dict)
-
-            # Update the search dictionary with new neighbors.
-            search_dict = {}
-            for vertex_value in vertices.values():
-                adjacency_dict = vertex_value[1]
-                for neighbor_key, neighbor_graph_leaf in adjacency_dict.items():
-                    if isinstance(neighbor_graph_leaf, tuple):
-                        neighbor_graph_leaf = neighbor_graph_leaf[0]
-                    search_dict[neighbor_key] = neighbor_graph_leaf
-
-        return vertices
+        if not keys:
+            return {}
+        
+        # For simplicity, handle one center vertex at a time
+        # TODO: extend to multiple centers
+        center_key = keys[0]
+        
+        # Step 1: Lookup the center vertex
+        center_result = self.lookup([center_key])
+        if center_key not in center_result:
+            return {}
+        
+        center_data, center_adjacency = center_result[center_key]
+        
+        # Get neighbor keys and their graph_leaves
+        neighbor_keys = list(center_adjacency.keys())
+        K = len(neighbor_keys)
+        
+        if K == 0:
+            return {}
+        
+        # Step 2: Get center's new graph_leaf from PosMap (it changed after lookup)
+        # Also get center's pos_leaf for pos_meta duplication
+        center_search = self._pos_omap.batch_search([center_key], return_pos_leaf=True)
+        center_info = center_search.get(center_key)
+        center_new_graph_leaf = center_info[0] if center_info else None
+        center_pos_leaf = center_info[1] if center_info else None
+        
+        # Get graph_leaves and pos_leaves for all neighbors
+        # return_pos_leaf=True returns {key: (graph_leaf, pos_leaf)}
+        neighbor_search = self._pos_omap.batch_search(neighbor_keys, return_pos_leaf=True)
+        neighbor_graph_leaves = []
+        neighbor_pos_leaves = {}  # {neighbor_key: pos_leaf}
+        valid_neighbor_keys = []  # neighbors that still exist
+        for nk in neighbor_keys:
+            info = neighbor_search.get(nk)
+            if info is not None and info[0] is not None:
+                neighbor_graph_leaves.append(info[0])  # graph_leaf
+                neighbor_pos_leaves[nk] = info[1]  # pos_leaf
+                valid_neighbor_keys.append(nk)
+        
+        # Update K to reflect only valid neighbors
+        K = len(valid_neighbor_keys)
+        
+        # Pad with dummy leaves for obliviousness
+        dummy_count = max(0, self._max_deg - K)
+        dummy_leaves = [secrets.randbelow(self._leaf_range) for _ in range(dummy_count)]
+        all_graph_leaves = neighbor_graph_leaves + dummy_leaves
+        
+        # RL paths for meta ORAMs
+        # graph_meta: max_degree neighbors, each has up to max_degree-1 other neighbors
+        graph_meta_rl_count = self._max_deg * (self._max_deg - 1)
+        graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + neighbor_graph_leaves
+        
+        # pos_meta: max_degree neighbors + 1 center need to update their pos_leaf
+        pos_meta_rl_paths = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True)
+        
+        # Step 3: Queue reads
+        self._graph_oram.queue_read(leaves=all_graph_leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_paths)
+        
+        result = self._client.execute()
+        
+        self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
+        
+        # De-duplication for graph_meta
+        self.graph_meta_de_duplication()
+        
+        # Step 4: Apply duplications and process neighbors
+        downloaded_neighbors = {}
+        for data in self._graph_oram.stash:
+            if data.key in neighbor_keys:
+                downloaded_neighbors[data.key] = data
+        
+        # Apply graph_meta duplications to downloaded neighbors
+        temp_stash = []
+        for dup in self._graph_meta.stash:
+            if dup.key in downloaded_neighbors:
+                neighbor_data = downloaded_neighbors[dup.key]
+                vertex_value = neighbor_data.value
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    # Type 1: Neighbor update
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf = dup.value
+                    if new_graph_leaf < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        if source_key in adjacency_dict:
+                            adjacency_dict[source_key] = new_graph_leaf
+                else:
+                    # Type 2: PosMap update
+                    if len(vertex_value) >= 3:
+                        neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
+            else:
+                temp_stash.append(dup)
+        self._graph_meta.stash = temp_stash
+        
+        # Prepare result and duplications
+        graph_meta_duplications = []
+        pos_meta_duplications = []
+        neighbor_result = {}
+        
+        for neighbor_key, neighbor_data in downloaded_neighbors.items():
+            if len(neighbor_data.value) == 3:
+                neighbor_vertex_data, neighbor_adjacency, neighbor_pos_leaf = neighbor_data.value
+            else:
+                neighbor_vertex_data, neighbor_adjacency = neighbor_data.value
+                neighbor_pos_leaf = None
+            
+            # Step 5: Update center's new path in this neighbor's adjacency
+            if center_key in neighbor_adjacency:
+                neighbor_adjacency[center_key] = center_new_graph_leaf
+            
+            # Assign new graph_leaf for this neighbor
+            neighbor_new_graph_leaf = secrets.randbelow(self._leaf_range)
+            neighbor_data.leaf = neighbor_new_graph_leaf
+            
+            # Step 6: Create duplications for this neighbor's other neighbors
+            for other_key, other_graph_leaf in neighbor_adjacency.items():
+                if other_key != center_key:  # Center already updated locally
+                    dup = Data(key=other_key, leaf=other_graph_leaf, 
+                              value=(neighbor_key, neighbor_new_graph_leaf))
+                    graph_meta_duplications.append(dup)
+            
+            # Also notify center about this neighbor's new path
+            dup_to_center = Data(key=center_key, leaf=center_new_graph_leaf,
+                                value=(neighbor_key, neighbor_new_graph_leaf))
+            graph_meta_duplications.append(dup_to_center)
+            
+            # Step 7: Create pos_meta duplication (Graph ORAM -> PosMap)
+            # Use pos_leaf from batch_search, not from vertex data
+            actual_pos_leaf = neighbor_pos_leaves.get(neighbor_key)
+            if actual_pos_leaf is not None:
+                pos_dup = Data(key=neighbor_key, leaf=actual_pos_leaf, value=neighbor_new_graph_leaf)
+                pos_meta_duplications.append(pos_dup)
+            
+            # Update neighbor's value with pos_leaf
+            neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency, actual_pos_leaf)
+            
+            neighbor_result[neighbor_key] = (neighbor_vertex_data, neighbor_adjacency)
+        
+        # Pad duplications with dummies
+        dummy_leaf = secrets.randbelow(self._leaf_range)
+        while len(graph_meta_duplications) < self._max_deg * (self._max_deg - 1):
+            graph_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=(None, 0)))
+        
+        while len(pos_meta_duplications) < self._max_deg + 1:
+            pos_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=0))
+        
+        # Add duplications to stash
+        self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
+        self._pos_omap.add_meta_duplications(pos_meta_duplications)
+        
+        # pos_meta de-duplication
+        self.pos_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Step 8: Write back
+        self._graph_oram.queue_write()
+        self._graph_meta.queue_write(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_write()
+        self._client.execute()
+        
+        return neighbor_result
 
     def t_hop(self, key: Any, num_hop: int) -> dict:
         """
         Perform the t-hop query, finding all neighbors within t hops.
+        
+        Returns all vertices reachable within num_hop hops from the starting vertex.
+        The starting vertex is included in the result.
 
         :param key: Starting vertex key.
         :param num_hop: Number of hops to traverse.
-        :return: Dict mapping vertex key to its value for all vertices found.
+        :return: Dict mapping vertex key to (vertex_data, adjacency_dict) for all vertices found.
         """
-        result = {}
-        keys_to_search = [key]
-
-        for _ in range(num_hop):
-            temp_result = self.neighbor(keys=keys_to_search)
-
-            keys_to_search = []
-            for k, value in temp_result.items():
-                if k not in result:
-                    keys_to_search.append(k)
-                    result[k] = value
-
+        if num_hop <= 0:
+            # Just return the starting vertex
+            return self.lookup([key])
+        
+        # First, lookup the starting vertex
+        result = self.lookup([key])
+        if key not in result:
+            return {}
+        
+        # BFS: keys we've seen and keys to explore next
+        visited = {key}
+        frontier = [key]
+        
+        for hop in range(num_hop):
+            next_frontier = []
+            
+            for center_key in frontier:
+                # Get neighbors of this vertex
+                neighbors = self.neighbor([center_key])
+                
+                for neighbor_key, neighbor_value in neighbors.items():
+                    if neighbor_key not in visited:
+                        visited.add(neighbor_key)
+                        next_frontier.append(neighbor_key)
+                        result[neighbor_key] = neighbor_value
+            
+            frontier = next_frontier
+            if not frontier:
+                break  # No more vertices to explore
+        
         return result
 
     def t_traversal(self, key: Any, num_hop: int) -> dict:
         """
         Perform t-hop traversal, randomly selecting one neighbor per hop.
+        
+        Starting from the given vertex, randomly walk through the graph for num_hop steps.
+        Each step randomly selects one neighbor to visit next.
 
         :param key: Starting vertex key.
         :param num_hop: Number of hops to traverse.
-        :return: Dict mapping vertex key to its value for visited vertices.
+        :return: Dict mapping vertex key to (vertex_data, adjacency_dict) for visited vertices.
         """
-        result = {}
-        keys_to_search = [key]
-
-        for _ in range(num_hop):
-            temp_result = self.neighbor(keys=keys_to_search)
-
-            key_of_interest = random.choice(list(temp_result.keys()))
-            result[key_of_interest] = temp_result[key_of_interest]
-
-            keys_to_search = [key_of_interest]
-
+        if num_hop <= 0:
+            return self.lookup([key])
+        
+        # Start with the initial vertex
+        result = self.lookup([key])
+        if key not in result:
+            return {}
+        
+        current_key = key
+        
+        for hop in range(num_hop):
+            # Get neighbors of current vertex
+            neighbors = self.neighbor([current_key])
+            
+            if not neighbors:
+                # No neighbors, stop traversal
+                break
+            
+            # Randomly select one neighbor
+            next_key = random.choice(list(neighbors.keys()))
+            result[next_key] = neighbors[next_key]
+            current_key = next_key
+        
         return result
