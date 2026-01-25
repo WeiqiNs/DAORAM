@@ -311,28 +311,49 @@ class Grove:
 
         # Process read results.
         self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
 
-        # Locate keys of interest and assign new paths.
-        data_of_interest = {}
-        
-        # graph_meta_duplications: for _graph_meta (indexed by graph_leaf)
-        # 1. Neighbor's graph_leaf updates
-        # 2. Non-downloaded vertex's pos_leaf updates (PosMap -> Graph ORAM)
-        graph_meta_duplications = []
-        
-        # pos_meta_duplications: for _pos_meta (indexed by pos_leaf)
-        # Downloaded vertex's graph_leaf updates (Graph ORAM -> PosMap)
-        pos_meta_duplications = []
+        # IMPORTANT: First apply graph_meta duplications to update adjacency_dict,
+        # THEN create new duplications using the UPDATED adjacency_dict.
+        # This ensures we send duplications to the correct (latest) neighbor paths.
         
         # Build index of downloaded vertices.
         downloaded_vertices = {data.key: data for data in self._graph_oram.stash 
                                if data.key in key_graph_leaf_dict}
         
-        # Check which keys are missing from the stash (for debugging)
-        # missing_from_stash = set(key_graph_leaf_dict.keys()) - set(downloaded_vertices.keys())
+        # Step 1: Apply existing graph_meta duplications to downloaded vertices FIRST
+        # This updates adjacency_dict with the latest neighbor graph_leaf values
+        retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
+        temp_meta_stash = []
+        for dup in self._graph_meta.stash:
+            if dup.key in retrieved_vertices:
+                idx = retrieved_vertices[dup.key]
+                vertex_value = self._graph_oram.stash[idx].value
+                
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    # Type 1: Neighbor update (adjacency list update)
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf = dup.value
+                    if new_graph_leaf < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        adjacency_dict[source_key] = new_graph_leaf
+                elif not isinstance(dup.value, tuple):
+                    # Type 2: PosMap->GraphORAM update (pos_leaf update)
+                    if len(vertex_value) >= 3:
+                        vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
+                        self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+            else:
+                temp_meta_stash.append(dup)
+        self._graph_meta.stash = temp_meta_stash
+
+        # Step 2: Now create new duplications using the UPDATED adjacency_dict
+        data_of_interest = {}
+        graph_meta_duplications = []
+        pos_meta_duplications = []
         
-        # Only process TARGET vertices (not all vertices in stash)
-        # Non-target vertices keep their original graph_leaf
         for data in self._graph_oram.stash:
             if data.key not in key_graph_leaf_dict:
                 continue
@@ -351,15 +372,15 @@ class Grove:
             data.leaf = new_graph_leaf
             
             # Update pos_leaf if this vertex was visited during PosMap access.
-            # visited_nodes_map format: {key: (new_pos_leaf, graph_leaf)}
             visited_info = visited_nodes_map.get(data.key) if visited_nodes_map else None
             if visited_info is not None:
-                new_pos_leaf, _ = visited_info  # Extract new_pos_leaf
+                new_pos_leaf, _ = visited_info
             else:
                 new_pos_leaf = old_pos_leaf
             data.value = (vertex_data, adjacency_dict, new_pos_leaf)
             
             # 1. Neighbor updates -> _graph_meta
+            # NOW adjacency_dict has the LATEST neighbor graph_leaf values!
             for neighbor_key, neighbor_graph_leaf in adjacency_dict.items():
                 if isinstance(neighbor_graph_leaf, tuple):
                     neighbor_graph_leaf = neighbor_graph_leaf[0]
@@ -369,78 +390,31 @@ class Grove:
                 )
             
             # 2. Graph ORAM -> PosMap update -> _pos_omap._meta
-            # Tell PosMap (AVL node) the new graph_leaf for this vertex
             if new_pos_leaf is not None:
                 pos_meta_duplications.append(
                     Data(key=data.key, leaf=new_pos_leaf, value=new_graph_leaf)
                 )
         
-        # For visited AVL nodes whose vertex was NOT downloaded from Graph ORAM,
-        # create duplication to update their pos_leaf -> _graph_meta
-        # visited_nodes_map format: {vertex_key: (new_pos_leaf, graph_leaf)}
+        # For visited AVL nodes whose vertex was NOT downloaded from Graph ORAM
         for vertex_key, (new_pos_leaf, vertex_graph_leaf) in visited_nodes_map.items():
             if vertex_key not in downloaded_vertices:
-                # The AVL node stores graph_leaf directly - no need to search in adjacency lists!
                 if vertex_graph_leaf is not None:
-                    # PosMap -> Graph ORAM: update vertex's pos_leaf -> _graph_meta
                     graph_meta_duplications.append(
                         Data(key=vertex_key, leaf=vertex_graph_leaf, value=new_pos_leaf)
                     )
 
-        # Process graph_meta read results.
-        self._graph_meta.process_read_result(result)
+        # Add new duplications to stash
         self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
         
-        # Process pos_meta read results.
-        self._pos_meta.process_read_result(result)
-        # Note: pos_meta_duplications go to _pos_omap._meta (internal meta), not _pos_meta
-        
         # Add Graph ORAM -> PosMap duplications to _pos_omap's internal meta ORAM.
-        # These will be applied during the next batch_search when accessing PosMap.
         self._pos_omap.add_meta_duplications(pos_meta_duplications)
 
-        # Perform de-duplication.
+        # Perform de-duplication (for any remaining duplications)
         self.graph_meta_de_duplication()
         self._pos_omap.meta_de_duplication()
-
-        # Apply graph_meta duplications to downloaded vertices.
-        # _graph_meta stores two types of duplications:
-        # 1. Neighbor updates: value = (source_key, new_graph_leaf) - tuple
-        # 2. PosMap->GraphORAM updates: value = new_pos_leaf - int
-        retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
-        temp_stash = []
-        for data in self._graph_meta.stash:
-            if data.key in retrieved_vertices:
-                idx = retrieved_vertices[data.key]
-                vertex_value = self._graph_oram.stash[idx].value
-                
-                if isinstance(data.value, tuple):
-                    # Type 1: Neighbor update (adjacency list update)
-                    # Only UPDATE existing neighbors, don't ADD new ones
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf = data.value[0], data.value[1]
-                    
-                    if new_graph_leaf < 0:
-                        # Delete request
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        # Update request - only update if neighbor already exists
-                        if source_key in adjacency_dict:
-                            adjacency_dict[source_key] = new_graph_leaf
-                else:
-                    # Type 2: PosMap->GraphORAM update (pos_leaf update)
-                    # data.value is new_pos_leaf (int)
-                    if len(vertex_value) >= 3:
-                        vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
-                        self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, data.value)
-            else:
-                temp_stash.append(data)
-        self._graph_meta.stash = temp_stash
         
-        # _pos_meta stores Graph ORAM -> PosMap duplications.
-        # These are NOT applied here - they will be applied when PosMap is accessed.
-        # Just keep them in _pos_meta.stash for now (no application needed in this round).
+        # Note: Duplications have already been applied to downloaded vertices in Step 1 above.
+        # The remaining duplications in _graph_meta.stash are for vertices not in stash.
 
         # Queue writes for graph ORAM and meta ORAMs.
         # Use same paths as read to maintain obliviousness (read/write symmetry)
@@ -528,6 +502,31 @@ class Grove:
         downloaded_vertices = {data.key: data for data in self._graph_oram.stash 
                                if data.key in key_graph_leaf_dict}
         
+        # IMPORTANT: First apply graph_meta duplications to update adjacency_dict,
+        # THEN create new duplications using the UPDATED adjacency_dict.
+        retrieved_vertices_all = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
+        temp_meta_stash = []
+        for dup in self._graph_meta.stash:
+            if dup.key in retrieved_vertices_all:
+                idx = retrieved_vertices_all[dup.key]
+                vertex_value = self._graph_oram.stash[idx].value
+                
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf_val = dup.value
+                    if new_graph_leaf_val < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        adjacency_dict[source_key] = new_graph_leaf_val
+                elif not isinstance(dup.value, tuple):
+                    if len(vertex_value) >= 3:
+                        vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
+                        self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+            else:
+                temp_meta_stash.append(dup)
+        self._graph_meta.stash = temp_meta_stash
+        
         # graph_meta_duplications: for neighbor updates and AVL node updates
         graph_meta_duplications = []
         
@@ -538,6 +537,7 @@ class Grove:
         new_vertex_adjacency = {}
 
         # Step 6: Update each neighbor's adjacency list and create duplications.
+        # NOW neighbor_adjacency_dict has the LATEST values after applying duplications!
         for neighbor_key in neighbor_keys:
             if neighbor_key not in downloaded_vertices:
                 continue
@@ -570,13 +570,14 @@ class Grove:
             neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency_dict, neighbor_new_pos_leaf)
             
             # Type 1: Notify neighbor's neighbors about neighbor's new graph_leaf -> _graph_meta
+            # We tell nn_key (neighbor's neighbor) that neighbor_key's path changed
             for nn_key, nn_graph_leaf in neighbor_adjacency_dict.items():
                 if nn_key == vertex[0]:  # Skip the new vertex itself
                     continue
                 if isinstance(nn_graph_leaf, tuple):
                     nn_graph_leaf = nn_graph_leaf[0]
                 graph_meta_duplications.append(
-                    Data(key=neighbor_key, leaf=nn_graph_leaf, value=(neighbor_key, neighbor_new_graph_leaf))
+                    Data(key=nn_key, leaf=nn_graph_leaf, value=(neighbor_key, neighbor_new_graph_leaf))
                 )
             
             # Type 2: Notify PosMap about neighbor's new graph_leaf -> _pos_omap._meta
@@ -606,33 +607,8 @@ class Grove:
         # Perform de-duplication.
         self.graph_meta_de_duplication()
         self._pos_omap.meta_de_duplication()
-
-        # Apply graph_meta duplications to downloaded vertices (same as lookup).
-        retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
-        temp_stash = []
-        for data in self._graph_meta.stash:
-            if data.key in retrieved_vertices:
-                idx = retrieved_vertices[data.key]
-                vertex_value = self._graph_oram.stash[idx].value
-                
-                if isinstance(data.value, tuple):
-                    # Type 1: Neighbor update (adjacency list update)
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf_dup = data.value[0], data.value[1]
-                    
-                    if new_graph_leaf_dup < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        if source_key in adjacency_dict:
-                            adjacency_dict[source_key] = new_graph_leaf_dup
-                else:
-                    # Type 2: PosMap->GraphORAM update (pos_leaf update)
-                    if len(vertex_value) >= 3:
-                        self._graph_oram.stash[idx].value = (vertex_value[0], vertex_value[1], data.value)
-            else:
-                temp_stash.append(data)
-        self._graph_meta.stash = temp_stash
+        
+        # Note: Duplications have already been applied in the step before Step 6.
 
         # Step 8: Queue writes for all ORAMs (use same paths as read for obliviousness).
         self._graph_oram.queue_write()
@@ -685,15 +661,15 @@ class Grove:
         # Get neighbor info: {neighbor_key: graph_leaf}
         neighbor_adjacency = vertex_data.value[1]
         neighbor_keys = list(neighbor_adjacency.keys())
-        
-        # Step 5: Apply duplications from graph_meta to this vertex (de-duplication)
+
+        # Step 5: Apply duplications only to the target vertex (the one we operate on),
+        # and discard dups targeting the deleted vertex.
         temp_stash = []
-        for data in self._graph_meta.stash:
-            if data.key == key:
+        for dup in self._graph_meta.stash:
+            if dup.key == key:
                 # This dup targets the deleted vertex, discard it
-                pass
-            else:
-                temp_stash.append(data)
+                continue
+            temp_stash.append(dup)
         self._graph_meta.stash = temp_stash
         
         # Step 6: Create deletion duplications for all neighbors
@@ -702,6 +678,8 @@ class Grove:
         deletion_dups = []
         for i, neighbor_key in enumerate(neighbor_keys):
             neighbor_graph_leaf = neighbor_adjacency[neighbor_key]
+            if isinstance(neighbor_graph_leaf, tuple):
+                neighbor_graph_leaf = neighbor_graph_leaf[0]
             # Duplication format: Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(deleted_key, DELETION_MARKER))
             dup = Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(key, DELETION_MARKER))
             deletion_dups.append(dup)
@@ -728,11 +706,11 @@ class Grove:
         Perform a neighbor lookup query with proper duplication handling.
         
         For a single center vertex:
-        1. Lookup the center vertex to get its neighbor list
-        2. Download all neighbors in one round
+        1. Lookup the center vertex to get its neighbor list (adjacency_dict has graph_leaf)
+        2. Download all neighbors in one round using graph_leaf from adjacency_dict
         3. Update center's new path in all neighbors
         4. Send duplications to neighbors' neighbors about path changes
-        5. Send duplications to PosMap for all path updates
+        5. Send duplications to PosMap for all path updates (pos_leaf from downloaded neighbors)
 
         :param keys: List of vertex keys to find neighbors for.
         :return: Dict mapping neighbor_key to (vertex_data, adjacency_dict).
@@ -741,7 +719,6 @@ class Grove:
             return {}
         
         # For simplicity, handle one center vertex at a time
-        # TODO: extend to multiple centers
         center_key = keys[0]
         
         # Step 1: Lookup the center vertex
@@ -751,45 +728,55 @@ class Grove:
         
         center_data, center_adjacency = center_result[center_key]
         
-        # Get neighbor keys and their graph_leaves
+        # adjacency_dict format: {neighbor_key: neighbor_graph_leaf}
+        # After lookup(center), center_adjacency should have up-to-date neighbor graph_leaf
+        # because lookup applies graph_meta duplications before creating new ones.
         neighbor_keys = list(center_adjacency.keys())
         K = len(neighbor_keys)
         
         if K == 0:
             return {}
+
+        # Step 2: Get center's new graph_leaf from _pos_omap._meta.stash
+        # The lookup above assigned a new graph_leaf to center and added dup to _pos_omap._meta.stash.
+        # We should NOT call batch_search again, because that would change AVL node's pos_leaf
+        # without sending dup to Graph ORAM, breaking the sync.
+        # Instead, get center_new_graph_leaf from the dup in stash.
+        center_new_graph_leaf = None
+        for dup in self._pos_omap._meta.stash:
+            if dup.key == center_key:
+                center_new_graph_leaf = dup.value
+                break
         
-        # Step 2: Get center's new graph_leaf from PosMap (it changed after lookup)
-        # Also get center's pos_leaf for pos_meta duplication
-        center_search = self._pos_omap.batch_search([center_key], return_pos_leaf=True)
-        center_info = center_search.get(center_key)
-        center_new_graph_leaf = center_info[0] if center_info else None
-        center_pos_leaf = center_info[1] if center_info else None
+        if center_new_graph_leaf is None:
+            # Fallback: this shouldn't happen if lookup worked correctly
+            return {}
+
+        # Do NOT touch PosMap here; use center's stored neighbor paths only.
+        visited_nodes_map = {}
+        pos_meta_extra_paths = 0
         
-        # Get graph_leaves and pos_leaves for all neighbors
-        # return_pos_leaf=True returns {key: (graph_leaf, pos_leaf)}
-        neighbor_search = self._pos_omap.batch_search(neighbor_keys, return_pos_leaf=True)
+        # Use graph_leaf from center_adjacency (should be up-to-date after lookup's dup processing)
         neighbor_graph_leaves = []
-        neighbor_pos_leaves = {}  # {neighbor_key: pos_leaf}
-        valid_neighbor_keys = []  # neighbors that still exist
+        neighbor_pos_leaves = {}  # Will be filled when we download neighbors
         for nk in neighbor_keys:
-            info = neighbor_search.get(nk)
-            if info is not None and info[0] is not None:
-                neighbor_graph_leaves.append(info[0])  # graph_leaf
-                neighbor_pos_leaves[nk] = info[1]  # pos_leaf
-                valid_neighbor_keys.append(nk)
+            gl = center_adjacency[nk]
+            if isinstance(gl, tuple):
+                gl = gl[0]
+            neighbor_graph_leaves.append(gl)
         
-        # Update K to reflect only valid neighbors
-        K = len(valid_neighbor_keys)
-        
-        # Pad with dummy leaves for obliviousness
+        # Pad with dummy leaves for obliviousness (total = max_degree)
         dummy_count = max(0, self._max_deg - K)
         dummy_leaves = [secrets.randbelow(self._leaf_range) for _ in range(dummy_count)]
         all_graph_leaves = neighbor_graph_leaves + dummy_leaves
-        
+
         # RL paths for meta ORAMs
         # graph_meta: max_degree neighbors, each has up to max_degree-1 other neighbors
         graph_meta_rl_count = self._max_deg * (self._max_deg - 1)
-        graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + neighbor_graph_leaves
+        graph_meta_rl_paths = (
+            self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False)
+            + all_graph_leaves
+        )
         
         # pos_meta: max_degree neighbors + 1 center need to update their pos_leaf
         pos_meta_rl_paths = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True)
@@ -814,8 +801,9 @@ class Grove:
             if data.key in neighbor_keys:
                 downloaded_neighbors[data.key] = data
         
-        # Apply graph_meta duplications to downloaded neighbors
+        # Apply graph_meta duplications only to neighbors read by this operation
         temp_stash = []
+        type2_applied = {}
         for dup in self._graph_meta.stash:
             if dup.key in downloaded_neighbors:
                 neighbor_data = downloaded_neighbors[dup.key]
@@ -828,15 +816,23 @@ class Grove:
                         if source_key in adjacency_dict:
                             del adjacency_dict[source_key]
                     else:
-                        if source_key in adjacency_dict:
-                            adjacency_dict[source_key] = new_graph_leaf
+                        adjacency_dict[source_key] = new_graph_leaf
                 else:
                     # Type 2: PosMap update
                     if len(vertex_value) >= 3:
+                        old_pos_leaf = vertex_value[2]
                         neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                        type2_applied[dup.key] = (old_pos_leaf, dup.value)
             else:
                 temp_stash.append(dup)
         self._graph_meta.stash = temp_stash
+        
+        # Check for Type 2 dups in stash that didn't match (stale paths)
+        type2_in_stash = [(d.key, d.leaf, d.value) for d in self._graph_meta.stash 
+                          if d.key in neighbor_keys and not isinstance(d.value, tuple)]
+        if type2_applied or type2_in_stash:
+            print(f"DEBUG neighbor({center_key}): Type2 applied={list(type2_applied.keys())}, "
+                  f"Type2 in stash (not matched)={[(k, l) for k, l, v in type2_in_stash]}")
         
         # Prepare result and duplications
         graph_meta_duplications = []
@@ -849,7 +845,7 @@ class Grove:
             else:
                 neighbor_vertex_data, neighbor_adjacency = neighbor_data.value
                 neighbor_pos_leaf = None
-            
+
             # Step 5: Update center's new path in this neighbor's adjacency
             if center_key in neighbor_adjacency:
                 neighbor_adjacency[center_key] = center_new_graph_leaf
@@ -861,6 +857,10 @@ class Grove:
             # Step 6: Create duplications for this neighbor's other neighbors
             for other_key, other_graph_leaf in neighbor_adjacency.items():
                 if other_key != center_key:  # Center already updated locally
+                    if isinstance(other_graph_leaf, tuple):
+                        other_graph_leaf = other_graph_leaf[0]
+                    if other_graph_leaf is None or other_graph_leaf < 0:
+                        continue
                     dup = Data(key=other_key, leaf=other_graph_leaf, 
                               value=(neighbor_key, neighbor_new_graph_leaf))
                     graph_meta_duplications.append(dup)
@@ -871,14 +871,13 @@ class Grove:
             graph_meta_duplications.append(dup_to_center)
             
             # Step 7: Create pos_meta duplication (Graph ORAM -> PosMap)
-            # Use pos_leaf from batch_search, not from vertex data
-            actual_pos_leaf = neighbor_pos_leaves.get(neighbor_key)
-            if actual_pos_leaf is not None:
-                pos_dup = Data(key=neighbor_key, leaf=actual_pos_leaf, value=neighbor_new_graph_leaf)
+            # Use pos_leaf from downloaded neighbor's value[2]
+            if neighbor_pos_leaf is not None:
+                pos_dup = Data(key=neighbor_key, leaf=neighbor_pos_leaf, value=neighbor_new_graph_leaf)
                 pos_meta_duplications.append(pos_dup)
             
-            # Update neighbor's value with pos_leaf
-            neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency, actual_pos_leaf)
+            # Update neighbor's value (keep the same pos_leaf)
+            neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency, neighbor_pos_leaf)
             
             neighbor_result[neighbor_key] = (neighbor_vertex_data, neighbor_adjacency)
         
@@ -894,7 +893,8 @@ class Grove:
         self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
         self._pos_omap.add_meta_duplications(pos_meta_duplications)
         
-        # pos_meta de-duplication
+        # De-duplication
+        self.graph_meta_de_duplication()
         self.pos_meta_de_duplication()
         self._pos_omap.meta_de_duplication()
         
