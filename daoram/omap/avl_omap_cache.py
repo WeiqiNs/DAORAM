@@ -4,17 +4,18 @@ from typing import Any, Dict, List, Set, Tuple
 
 from daoram.dependency import Data, Encryptor, InteractServer
 from daoram.omap import AVLOmap
+from daoram.oram import MulPathOram
 
 
 class AVLOmapCached(AVLOmap):
     """
-    AVL OMAP with stash caching optimization.
+    AVL OMAP with stash caching optimization and internal meta ORAM.
 
     Key differences from AVLOmap:
     1. Checks stash before fetching from server (cache hit avoids ORAM access)
     2. Nodes stay in local at end of operation, flushed to stash at start of next
     3. Reduced interaction rounds: insert/search use h rounds, delete uses 2h rounds
-    # Todo: Do insert and search use h+1 rounds for indistinguishability?
+    4. Internal meta ORAM for delayed duplication (Graph ORAM -> PosMap updates)
     """
 
     def __init__(self,
@@ -26,7 +27,14 @@ class AVLOmapCached(AVLOmap):
                  filename: str = None,
                  bucket_size: int = 4,
                  stash_scale: int = 7,
-                 encryptor: Encryptor = None):
+                 encryptor: Encryptor = None,
+                 enable_meta: bool = False):
+        """
+        Initialize AVLOmapCached with optional internal meta ORAM.
+        
+        :param enable_meta: If True, create an internal meta ORAM for delayed duplication.
+                           This is used for Graph ORAM -> PosMap updates.
+        """
         super().__init__(
             num_data=num_data,
             key_size=key_size,
@@ -38,6 +46,67 @@ class AVLOmapCached(AVLOmap):
             stash_scale=stash_scale,
             encryptor=encryptor,
         )
+        
+        # Internal meta ORAM for delayed duplication
+        self._enable_meta = enable_meta
+        self._meta: MulPathOram = None
+        if enable_meta:
+            self._meta = MulPathOram(
+                num_data=num_data,
+                data_size=data_size,
+                client=client,
+                name=f"{name}_meta",
+                filename=None,  # Meta ORAM uses memory storage
+                bucket_size=bucket_size,
+                stash_scale=stash_scale,
+                encryptor=encryptor,
+            )
+
+    def init_server_storage(self, data=None) -> None:
+        """
+        Initialize the server storage for AVLOmapCached and its internal meta ORAM.
+        
+        :param data: A list of key-value pairs for the AVL OMAP.
+        """
+        # Initialize parent AVL OMAP storage.
+        super().init_server_storage(data=data)
+        
+        # Initialize internal meta ORAM storage if enabled.
+        if self._enable_meta and self._meta is not None:
+            self._meta.init_server_storage()
+
+    def add_meta_duplications(self, duplications: List[Data]) -> None:
+        """
+        Add duplications to the internal meta ORAM stash.
+        
+        Duplications are used for delayed updates (Graph ORAM -> PosMap).
+        Format: Data(key=vertex_key, leaf=pos_leaf, value=new_graph_leaf)
+        
+        New duplications are added to the FRONT of stash (highest priority).
+        
+        :param duplications: List of Data objects representing delayed updates.
+        """
+        if not self._enable_meta or self._meta is None:
+            return
+        # Prepend new duplications (highest priority)
+        self._meta.stash = duplications + self._meta.stash
+    
+    def meta_de_duplication(self) -> None:
+        """
+        Remove duplicate entries from meta ORAM stash.
+        
+        For each key, keeps only the FIRST dup encountered (highest priority).
+        Priority: stash order (front = highest, from process_read_result).
+        """
+        if not self._enable_meta or self._meta is None:
+            return
+        seen_keys = set()
+        temp_stash = []
+        for data in self._meta.stash:
+            if data.key not in seen_keys:
+                seen_keys.add(data.key)
+                temp_stash.append(data)
+        self._meta.stash = temp_stash
 
     def _move_node_to_local(self, key: Any, leaf: int, parent_key: Any = None) -> None:
         """
@@ -55,16 +124,18 @@ class AVLOmapCached(AVLOmap):
             # Cache miss - fetch from server
             super()._move_node_to_local(key=key, leaf=leaf, parent_key=parent_key)
 
-    def insert(self, key: Any, value: Any = None) -> None:
+    def insert(self, key: Any, value: Any = None, return_pos_leaf: bool = False) -> Any:
         """
         Given key-value pair, insert the pair to the tree with caching.
 
         :param key: The search key of interest.
         :param value: The value to insert.
+        :param return_pos_leaf: If True, return the node's leaf in the underlying ORAM.
+        :return: None, or pos_leaf if return_pos_leaf is True.
         """
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height)
-            return
+            return None if return_pos_leaf else None
 
         data_block = self._get_avl_data(key=key, value=value)
 
@@ -72,7 +143,7 @@ class AVLOmapCached(AVLOmap):
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
             self._perform_dummy_operation(num_round=self._max_height)
-            return
+            return data_block.leaf if return_pos_leaf else None
 
         # Flush cached nodes to stash at start
         self._flush_local_to_stash()
@@ -80,15 +151,28 @@ class AVLOmapCached(AVLOmap):
         # Get root and traverse (uses overridden _move_node_to_local for cache benefit)
         self._move_node_to_local(key=self.root[0], leaf=self.root[1], parent_key=None)
         current_key = self.root[0]
+        target_node = None  # Track the node for pos_leaf
 
         while True:
             node = self._local.get(current_key)
-            if node.key < key:
+            if node.key == key:
+                # Key already exists - update value instead of inserting duplicate.
+                node.value.value = value
+                target_node = node
+                # Update height and leaves, then balance (same as normal insert).
+                self._update_height()
+                self._local.update_all_leaves(self._get_new_leaf)
+                self._balance_local()
+                num_retrieved = len(self._local)
+                self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
+                return target_node.leaf if return_pos_leaf else None
+            elif node.key < key:
                 if node.value.r_key is not None:
                     self._move_node_to_local(key=node.value.r_key, leaf=node.value.r_leaf, parent_key=current_key)
                     current_key = node.value.r_key
                 else:
                     node.value.r_key = data_block.key
+                    target_node = data_block
                     break
             else:
                 if node.value.l_key is not None:
@@ -96,6 +180,7 @@ class AVLOmapCached(AVLOmap):
                     current_key = node.value.l_key
                 else:
                     node.value.l_key = data_block.key
+                    target_node = data_block
                     break
 
         self._local.add(node=data_block, parent_key=current_key)
@@ -106,19 +191,22 @@ class AVLOmapCached(AVLOmap):
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
+        
+        return target_node.leaf if return_pos_leaf else None
 
-    def search(self, key: Any, value: Any = None) -> Any:
+    def search(self, key: Any, value: Any = None, return_pos_leaf: bool = False) -> Any:
         """
         Given a search key, return its corresponding value with caching.
 
         If the input value is not None, the value corresponding to the search tree will be updated.
         :param key: The search key of interest.
         :param value: The updated value.
-        :return: The (old) value corresponding to the search key.
+        :param return_pos_leaf: If True, also return the node's leaf in the underlying ORAM.
+        :return: The (old) value, or (value, pos_leaf) if return_pos_leaf is True.
         """
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height)
-            return None
+            return (None, None) if return_pos_leaf else None
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
@@ -146,11 +234,16 @@ class AVLOmapCached(AVLOmap):
                     break
             node = self._local.get(current_key)
 
-        search_value = node.value.value if node.key == key else None
-        if value is not None and node.key == key:
+        found = node.key == key
+        search_value = node.value.value if found else None
+        if value is not None and found:
             node.value.value = value
 
         self._local.update_all_leaves(self._get_new_leaf)
+        
+        # Get the pos_leaf after leaf reassignment
+        pos_leaf = node.leaf if found else None
+        
         root_node = self._local.get_root()
         self.root = (root_node.key, root_node.leaf)
 
@@ -158,6 +251,8 @@ class AVLOmapCached(AVLOmap):
         num_retrieved = len(self._local)
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
 
+        if return_pos_leaf:
+            return (search_value, pos_leaf)
         return search_value
 
     def fast_search(self, key: Any, value: Any = None) -> Any:
@@ -237,7 +332,8 @@ class AVLOmapCached(AVLOmap):
                 return node
         return None
 
-    def batch_search(self, keys: List[Any]) -> Dict[Any, Any]:
+    def batch_search(self, keys: List[Any], return_pos_leaf: bool = False,
+                     return_visited_nodes: bool = False) -> Dict[Any, Any]:
         """
         Search for multiple keys in the oblivious AVL tree using level-by-level reading.
 
@@ -253,13 +349,26 @@ class AVLOmapCached(AVLOmap):
         - Evict parents (they go to intersection of read path and new leaf path)
 
         :param keys: List of keys to search for.
+        :param return_pos_leaf: If True, return (value, pos_leaf) tuples.
+        :param return_visited_nodes: If True, also return all visited nodes' info.
         :return: Dict mapping each key to its corresponding value (None if not found).
+                 If return_pos_leaf is True, returns {key: (value, pos_leaf)}.
+                 If return_visited_nodes is True, returns:
+                   (results, visited_nodes_map, total_paths_read)
+                 where visited_nodes_map is {node_key: (new_pos_leaf, graph_leaf)}
+                 containing both the new pos_leaf and the stored graph_leaf for all visited nodes.
         """
         if not keys:
-            return {}
+            return ({}, {}, 0) if return_visited_nodes else {}
 
         k = len(keys)
         results: Dict[Any, Any] = {key: None for key in keys}
+        # Track pos_leaf for each key if needed
+        pos_leaf_map: Dict[Any, int] = {} if return_pos_leaf else None
+        # Track all visited nodes and their new pos_leaf if needed
+        visited_nodes_map: Dict[Any, int] = {} if return_visited_nodes else None
+        # Track total paths read for obliviousness calculation
+        total_paths_read: int = 0 if return_visited_nodes else None
 
         # Handle empty tree case
         if self.root is None:
@@ -294,10 +403,13 @@ class AVLOmapCached(AVLOmap):
                 self._client.add_write_path(label=self._name, data=evicted)
                 self._client.execute()
 
-            return results
+            return (results, {}, 0) if return_visited_nodes else results
 
         # Flush local to stash at start
         self._flush_local_to_stash()
+        
+        # Keep pending meta duplications in stash - they will be applied during search
+        # when we encounter nodes with matching keys (no need to write then re-read)
 
         # Track keys we've seen in stash to avoid duplicates
         keys_in_stash: Set[Any] = {node.key for node in self._stash}
@@ -372,11 +484,23 @@ class AVLOmapCached(AVLOmap):
                         tmp += 1
 
                 leaves_this_level = all_leaves
+                
+                # Track total paths read for obliviousness
+                if total_paths_read is not None:
+                    total_paths_read += len(all_leaves)
 
-                # Read paths from server
+                # Read paths from server (and meta ORAM if enabled)
                 self._client.add_read_path(label=self._name, leaves=all_leaves)
+                if self._enable_meta and self._meta is not None:
+                    self._meta.queue_read(leaves=all_leaves)
                 result = self._client.execute()
                 path_data = result.results[self._name]
+
+                # Process meta ORAM results if enabled
+                if self._enable_meta and self._meta is not None:
+                    self._meta.process_read_result(result)
+                    # De-duplicate: keep only the first (highest priority) dup for each key
+                    self.meta_de_duplication()
 
                 # Decrypt the path
                 path = self.decrypt_path_data(path=path_data)
@@ -406,6 +530,30 @@ class AVLOmapCached(AVLOmap):
                             else:
                                 self._stash.append(data)
                                 keys_in_stash.add(data.key)
+                
+                # Apply meta duplications to update AVL node values (graph_leaf)
+                # Meta duplication format: Data(key=vertex_key, leaf=pos_leaf, value=new_graph_leaf)
+                # After de-duplication, each key has only one dup (the highest priority one)
+                if self._enable_meta and self._meta is not None:
+                    meta_temp_stash = []
+                    for meta_data in self._meta.stash:
+                        applied = False
+                        # Check if the node is in level_local_nodes (just retrieved)
+                        if meta_data.key in level_local_nodes:
+                            node = level_local_nodes[meta_data.key]
+                            node.value.value = meta_data.value
+                            applied = True
+                        else:
+                            # Check if the node is in stash (AVL stash, not meta stash)
+                            stash_idx = self._find_in_stash(meta_data.key)
+                            if stash_idx >= 0:
+                                self._stash[stash_idx].value.value = meta_data.value
+                                applied = True
+                        
+                        if not applied:
+                            # Node not found yet, keep the duplication for later
+                            meta_temp_stash.append(meta_data)
+                    self._meta.stash = meta_temp_stash
 
             # Determine which child nodes will be visited next level
             children_to_visit: Set[Any] = set()
@@ -428,6 +576,9 @@ class AVLOmapCached(AVLOmap):
                 # Check if this is the target key
                 if node.key == keys[i]:
                     results[keys[i]] = node.value.value
+                    # Track the node for pos_leaf capture after leaf reassignment
+                    if pos_leaf_map is not None:
+                        pos_leaf_map[keys[i]] = node  # Store the node object temporarily
                     finished[i] = True
                     continue
 
@@ -501,6 +652,21 @@ class AVLOmapCached(AVLOmap):
                 else:
                     # Root or node without pre-allocation - assign new leaf
                     node.leaf = self._get_new_leaf()
+                
+                # CRITICAL: Update pending meta duplications to use the new leaf
+                # Otherwise dup will be written to old path and won't be found later
+                if self._enable_meta and self._meta is not None:
+                    for dup in self._meta.stash:
+                        if dup.key == node.key:
+                            dup.leaf = node.leaf
+                
+                # Track visited nodes' new pos_leaf AND their stored graph_leaf
+                # node.key: vertex key in PosMap
+                # node.leaf: new pos_leaf (position in PosMap ORAM)
+                # node.value.value: graph_leaf (position in Graph ORAM, stored in AVL node)
+                if visited_nodes_map is not None:
+                    graph_leaf = node.value.value if node.value else None
+                    visited_nodes_map[node.key] = (node.leaf, graph_leaf)
 
             # Move level_local nodes to stash for eviction
             for node in level_local_nodes.values():
@@ -512,10 +678,31 @@ class AVLOmapCached(AVLOmap):
             if self.root is not None and root_key in level_local_nodes:
                 self.root = (root_key, level_local_nodes[root_key].leaf)
 
+            # Capture pos_leaf for found keys AFTER leaf reassignment
+            if pos_leaf_map is not None:
+                for key in list(pos_leaf_map.keys()):
+                    node = pos_leaf_map[key]
+                    if isinstance(node, Data):
+                        pos_leaf_map[key] = node.leaf  # Replace node with its new leaf
+
             # Evict this level using the paths we read
             if leaves_this_level:
                 evicted = self._evict_stash(leaves=leaves_this_level)
                 self._client.add_write_path(label=self._name, data=evicted)
+                # Also write meta ORAM if enabled - use same paths as read
+                if self._enable_meta and self._meta is not None:
+                    self._meta.queue_write(leaves=leaves_this_level)
                 self._client.execute()
 
+        # Return results with pos_leaf if requested
+        if return_visited_nodes:
+            if return_pos_leaf:
+                final_results = {key: (results[key], pos_leaf_map.get(key)) for key in keys}
+            else:
+                final_results = results
+            # Return (results, visited_nodes_map, total_paths_read)
+            return (final_results, visited_nodes_map, total_paths_read)
+        
+        if return_pos_leaf:
+            return {key: (results[key], pos_leaf_map.get(key)) for key in keys}
         return results

@@ -192,9 +192,14 @@ class TreeBaseOram(ABC):
         )
 
         # Fill the data to leaf according to the position map.
+        failed_count = 0
         for key, leaf in self._pos_map.items():
             value = data_map[key] if data_map else os.urandom(self._data_size)
-            tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
+            success = tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
+            if not success:
+                failed_count += 1
+        if failed_count > 0:
+            print(f"Warning: {failed_count} items failed to insert during init_server_storage")
 
         # Encrypt the tree storage if needed.
         if self._encryptor:

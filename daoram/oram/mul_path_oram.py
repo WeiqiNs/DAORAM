@@ -67,7 +67,7 @@ class MulPathOram(PathOram):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: A dictionary storing {key: data}.
+        :param data_map: A dictionary storing {key: data}. If None/empty, creates empty storage.
         :param path_map: Optional dictionary mapping {key: leaf}. If provided, uses these
                          keys and leaves. If not provided, falls back to integer keys (0 to num_data-1).
         """
@@ -75,11 +75,14 @@ class MulPathOram(PathOram):
             # Use provided path_map for noninteger keys (can be empty)
             for key, leaf in path_map.items():
                 self._pos_map[key] = leaf
+        elif data_map:
+            # Only create pos_map entries for actual data
+            self._pos_map = {key: self._get_new_leaf() for key in data_map.keys()}
         else:
-            # Fall back to integer keys for backwards compatibility
-            self._pos_map = {i: self._get_new_leaf() for i in range(self._num_data)}
+            # Empty storage - no pos_map entries needed
+            self._pos_map = {}
 
-        # Call parent implementation
+        # Call parent implementation (will create empty storage if data_map is None/empty)
         super().init_server_storage(data_map=data_map)
 
     def queue_read(self, leaves: List[int]) -> None:
