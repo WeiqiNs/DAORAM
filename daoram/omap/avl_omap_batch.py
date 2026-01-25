@@ -1,6 +1,6 @@
 """AVL OMAP with batch operations for multiple keys."""
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 
 from daoram.dependency import Data, Encryptor, InteractServer
 from daoram.omap.avl_omap_cache import AVLOmapCached

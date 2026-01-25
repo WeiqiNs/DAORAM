@@ -155,7 +155,16 @@ class Grove:
     def get_rl_leaf(self, count: int) -> List[int]:
         """Get the next 'count' number of RL leaves."""
         # Compute the next "count" number of leaves.
-        leaves = [int(format(self._counter + i, f"0{self._level}b")[::-1], 2) for i in range(count)]
+        # Use level-1 bits since leaf range is [0, 2^(level-1)).
+        bits = self._level - 1
+        mask = (1 << bits) - 1  # Mask to truncate to 'bits' bits
+        leaves = []
+        for i in range(count):
+            # Truncate counter+i to 'bits' bits, then reverse
+            val = (self._counter + i) & mask
+            # Reverse the bits: convert to binary, pad to 'bits' chars, reverse, convert back
+            reversed_val = int(format(val, f"0{bits}b")[::-1], 2)
+            leaves.append(reversed_val)
         # Update the counter.
         self._counter += count
         # Return the leaves.
@@ -163,18 +172,18 @@ class Grove:
 
     def pos_meta_de_duplication(self):
         """Remove the duplications in position meta oram tree."""
-        # Record the delayed duplications that have been read.
-        existing_dd = []
+        # Record the keys that have been seen.
+        existing_keys = set()
         # Set the temporary stash.
         temp_stash = []
 
-        # For data in the pos_map stash, record the new ones.
+        # For data in the pos_meta stash, keep only the first (newest) entry per key.
         for data in self._pos_meta.stash:
-            # If not previously read, add to both existing and stash.
-            if (data.key, data.value[0]) not in existing_dd:
-                existing_dd.append((data.key, data.value[0]))
+            # If not previously seen, add to both existing and stash.
+            if data.key not in existing_keys:
+                existing_keys.add(data.key)
                 temp_stash.append(data)
-            # If read, just ignore it.
+            # If already seen, just ignore it (keep the newer one).
 
         # Update the stash with duplications removed.
         self._pos_meta.stash = temp_stash
@@ -204,54 +213,99 @@ class Grove:
         :param keys: List of vertex keys to look up.
         :return: Dict mapping vertex key to its value.
         """
-        # Batch OMAP search to get paths for all keys.
+        # Batch OMAP search to get paths for all keys (may be stale).
         key_path_dict = self._pos_omap.batch_search(keys=keys)
 
-        # Read vertices from graph ORAM.
-        return self.lookup_without_omap(key_path_dict)
+        # Save original OMAP paths - we'll store duplications at these paths
+        # so future lookups can find them when OMAP returns the same stale value.
+        omap_paths = dict(key_path_dict)
 
-    def lookup_without_omap(self, key_path_dict: Dict[Any, int]) -> Dict[Any, Any]:
+        # Read from pos_meta at: RL paths + the paths returned by OMAP.
+        # (duplications are stored at vertex's old_leaf, which is what OMAP returns)
+        stale_leaves = list(key_path_dict.values())
+        pos_meta_rl_paths = self.get_rl_leaf(count=self._max_deg * len(keys))
+        self._pos_meta.queue_read(leaves=pos_meta_rl_paths + stale_leaves)
+        result = self._client.execute()
+        self._pos_meta.process_read_result(result)
+
+        # De-duplicate pos_meta.
+        self.pos_meta_de_duplication()
+
+        # Find updates relevant to our keys and apply them.
+        remaining_stash = []
+        for data in self._pos_meta.stash:
+            if data.key in keys:
+                # Update the path with the fresh value from pos_meta.
+                key_path_dict[data.key] = data.value  # value = new_leaf
+            else:
+                remaining_stash.append(data)
+        self._pos_meta.stash = remaining_stash
+
+        # DON'T write pos_meta here - lookup_without_omap() will handle the write
+        # after adding new duplications. _tmp_leaves from queue_read() persists.
+
+        # Continue with lookup using corrected paths, passing original OMAP paths
+        # for storing new duplications.
+        return self.lookup_without_omap(key_path_dict, omap_paths)
+
+    def lookup_without_omap(self, key_path_dict: Dict[Any, int],
+                             omap_paths: Dict[Any, int] = None) -> Dict[Any, Any]:
         """
         Read multiple vertices from graph ORAM given their paths.
 
         :param key_path_dict: Dict mapping vertex key to its path (leaf).
+        :param omap_paths: Original OMAP paths for storing pos_meta duplications.
+                          If None, uses key_path_dict paths (for direct calls without OMAP).
         :return: Dict mapping vertex key to its value.
         """
         leaves = list(key_path_dict.values())
 
-        # Get the next degree number of rl paths.
-        rl_path = self.get_rl_leaf(count=self._max_deg * len(leaves)) + leaves
+        # Get the next degree number of rl paths for graph_meta.
+        # (pos_meta is handled in lookup())
+        graph_meta_rl_paths = self.get_rl_leaf(count=self._max_deg * len(leaves))
 
-        # Queue reads for both ORAMs.
+        # Queue reads for graph_oram and graph_meta.
         self._graph_oram.queue_read(leaves=leaves)
-        self._graph_meta.queue_read(leaves=rl_path)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + leaves)
         result = self._client.execute()
 
         # Process read results.
         self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
 
         # Locate keys of interest and assign new paths.
         data_of_interest = {}
-        duplications = []
+        graph_duplications = []
+        pos_duplications = []
         for data in self._graph_oram.stash:
             if data.key in key_path_dict:
                 data_of_interest[data.key] = data.value
-                data.leaf = secrets.randbelow(self._leaf_range)
-                # Generate delayed duplications.
-                duplications += [
-                    Data(key=neighbor, leaf=leaf, value=(data.key, data.leaf))
+                new_path = secrets.randbelow(self._leaf_range)
+                data.leaf = new_path
+
+                # Generate duplication for _pos_meta at the OMAP path.
+                # This ensures future lookups find the update when OMAP returns the same stale path.
+                # If omap_paths not provided (direct call), use key_path_dict path.
+                store_at_path = omap_paths[data.key] if omap_paths else key_path_dict[data.key]
+                pos_duplications.append(
+                    Data(key=data.key, leaf=store_at_path, value=new_path)
+                )
+
+                # Generate duplications for _graph_meta (notify neighbors).
+                graph_duplications += [
+                    Data(key=neighbor, leaf=leaf, value=(data.key, new_path))
                     for neighbor, leaf in data.value[1].items()
                 ]
 
-        # Process the meta block paths.
-        self._graph_meta.process_read_result(result)
-        # Add the new duplications to the front.
-        self._graph_meta.stash = duplications + self._graph_meta.stash
+        # Add the new duplications to the front of stashes.
+        self._graph_meta.stash = graph_duplications + self._graph_meta.stash
+        self._pos_meta.stash = pos_duplications + self._pos_meta.stash
 
-        # Perform de duplication within graph meta.
+        # Perform de-duplication.
         self.graph_meta_de_duplication()
+        self.pos_meta_de_duplication()
 
-        # Perform further de duplication by inspecting whether graph oram has recipients.
+        # Perform further de-duplication by inspecting whether graph oram has recipients.
         retrieved_vertices = {data.key: index for index, data in enumerate(self._graph_oram.stash)}
 
         # Check if recipients exist.
@@ -271,9 +325,13 @@ class Grove:
         # Update graph meta stash.
         self._graph_meta.stash = temp_stash
 
-        # Queue writes for both ORAMs.
+        # Queue writes for graph_oram, graph_meta, and pos_meta.
+        # Note: _pos_meta.queue_write() uses _tmp_leaves set by lookup()'s queue_read().
+        # If called directly (not through lookup()), _pos_meta._tmp_leaves may be empty.
         self._graph_oram.queue_write()
         self._graph_meta.queue_write()
+        if self._pos_meta._tmp_leaves:
+            self._pos_meta.queue_write()
         self._client.execute()
 
         return data_of_interest
@@ -294,13 +352,45 @@ class Grove:
         # Get neighbor keys from vertex[2] (could be dict or list).
         neighbor_keys = list(vertex[2].keys()) if isinstance(vertex[2], dict) else list(vertex[2])
 
+        if not neighbor_keys:
+            # No neighbors - just insert the new vertex without pos_meta handling.
+            self._graph_oram.queue_read(leaves=[new_path])
+            result = self._client.execute()
+            self._graph_oram.process_read_result(result)
+
+            self._graph_oram.stash.append(
+                Data(key=vertex[0], leaf=new_path, value=(vertex[1], {}))
+            )
+
+            self._graph_oram.queue_write()
+            self._client.execute()
+            return
+
         # Use batch_search to get paths for all neighbors.
         neighbor_path_map = self._pos_omap.batch_search(keys=neighbor_keys)
+        omap_neighbor_paths = dict(neighbor_path_map)  # Save original OMAP paths
 
-        # Build adjacency dict for the new vertex: {neighbor_key: neighbor_leaf}.
+        # Read pos_meta to get updated paths for neighbors.
+        stale_leaves = list(neighbor_path_map.values())
+        pos_meta_rl_paths = self.get_rl_leaf(count=self._max_deg * len(neighbor_keys))
+        self._pos_meta.queue_read(leaves=pos_meta_rl_paths + stale_leaves)
+        result = self._client.execute()
+        self._pos_meta.process_read_result(result)
+        self.pos_meta_de_duplication()
+
+        # Apply pos_meta updates to get correct neighbor paths.
+        remaining_stash = []
+        for data in self._pos_meta.stash:
+            if data.key in neighbor_keys:
+                neighbor_path_map[data.key] = data.value
+            else:
+                remaining_stash.append(data)
+        self._pos_meta.stash = remaining_stash
+
+        # Build adjacency dict for the new vertex using corrected paths.
         new_vertex_adjacency = {k: neighbor_path_map[k] for k in neighbor_keys}
 
-        # Collect all leaves to retrieve: new vertex path + all neighbor paths.
+        # Collect all leaves to retrieve: new vertex path + all corrected neighbor paths.
         all_leaves = [new_path] + list(neighbor_path_map.values())
 
         # Queue read and execute.
@@ -316,7 +406,8 @@ class Grove:
         # Build index of vertices in stash for quick lookup.
         stash_index = {data.key: i for i, data in enumerate(self._graph_oram.stash)}
 
-        # Update each neighbor's adjacency list to include the new vertex.
+        # Update each neighbor's adjacency list and create pos_meta duplications.
+        pos_duplications = []
         for neighbor_key in neighbor_keys:
             if neighbor_key in stash_index:
                 idx = stash_index[neighbor_key]
@@ -324,10 +415,20 @@ class Grove:
                 # Add the new vertex to neighbor's adjacency list.
                 neighbor_data.value[1][vertex[0]] = new_path
                 # Assign new random leaf for the neighbor.
-                neighbor_data.leaf = secrets.randbelow(self._leaf_range)
+                new_neighbor_path = secrets.randbelow(self._leaf_range)
+                neighbor_data.leaf = new_neighbor_path
+                # Create pos_meta duplication at OMAP path (so future lookups find the update).
+                pos_duplications.append(
+                    Data(key=neighbor_key, leaf=omap_neighbor_paths[neighbor_key], value=new_neighbor_path)
+                )
 
-        # Queue write and execute.
+        # Add pos_meta duplications to stash.
+        self._pos_meta.stash = pos_duplications + self._pos_meta.stash
+        self.pos_meta_de_duplication()
+
+        # Queue writes for graph_oram and pos_meta.
         self._graph_oram.queue_write()
+        self._pos_meta.queue_write()
         self._client.execute()
 
     def delete(self, key: Any) -> None:
