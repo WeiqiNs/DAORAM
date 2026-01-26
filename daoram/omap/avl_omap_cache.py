@@ -559,9 +559,6 @@ class AVLOmapCached(AVLOmap):
 
         # Flush local to stash at start
         self._flush_local_to_stash()
-        
-        # Keep pending meta duplications in stash - they will be applied during search
-        # when we encounter nodes with matching keys (no need to write then re-read)
 
         # Track keys we've seen in stash to avoid duplicates
         keys_in_stash: Set[Any] = {node.key for node in self._stash}
@@ -659,7 +656,6 @@ class AVLOmapCached(AVLOmap):
                 # Process meta ORAM results if enabled
                 if self._enable_meta and self._meta is not None:
                     self._meta.process_read_result(result)
-                    # De-duplicate: keep only the first (highest priority) dup for each key
                     self.meta_de_duplication()
 
                 # Decrypt the path
@@ -702,19 +698,22 @@ class AVLOmapCached(AVLOmap):
                 
             # Apply meta duplications to update AVL node values (graph_leaf)
             # Meta duplication format: Data(key=vertex_key, leaf=pos_leaf, value=new_graph_leaf)
-            # Apply to level_local_nodes (nodes retrieved this level, either from storage or stash)
+            # CRITICAL: Only apply dup when:
+            # 1. The node is in level_local_nodes (retrieved this level)
+            # 2. The dup.leaf is in unique_leaves (the path was actually read)
+            # This ensures we only apply dup to nodes whose complete dup history was read.
             if self._enable_meta and self._meta is not None:
+                unique_leaves_set = set(unique_leaves) if unique_leaves else set()
                 meta_temp_stash = []
                 for meta_data in self._meta.stash:
                     applied = False
-                    # Apply to nodes in level_local_nodes (operation targets for this level)
-                    if meta_data.key in level_local_nodes:
+                    # Only apply if both conditions are met
+                    if meta_data.key in level_local_nodes and meta_data.leaf in unique_leaves_set:
                         node = level_local_nodes[meta_data.key]
                         node.value.value = meta_data.value
                         applied = True
                     
                     if not applied:
-                        # Node not in level_local_nodes, keep the duplication for later
                         meta_temp_stash.append(meta_data)
                 self._meta.stash = meta_temp_stash
 

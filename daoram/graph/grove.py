@@ -218,12 +218,14 @@ class Grove:
 
         self._graph_meta.stash = temp_stash
 
-    def lookup(self, keys: List[Any]) -> Dict[Any, Any]:
+    def lookup(self, keys: List[Any], return_visited_nodes: bool = False) -> Dict[Any, Any]:
         """
         Perform lookup operation on graph for multiple keys.
 
         :param keys: List of vertex keys to look up.
-        :return: Dict mapping vertex key to (vertex_data, adjacency_dict).
+        :param return_visited_nodes: If True, also return visited_nodes_map.
+        :return: Dict mapping vertex key to (vertex_data, adjacency_dict, new_graph_leaf).
+                 If return_visited_nodes is True, returns (result, visited_nodes_map).
         """
         # Batch OMAP search to get graph_leaf for all keys.
         # Also get all visited nodes' info for updating Graph ORAM.
@@ -248,7 +250,11 @@ class Grove:
         pos_meta_extra_paths = max(0, total_posmap_paths - len(keys))
         
         # Read vertices from graph ORAM, passing visited nodes info.
-        return self.lookup_without_omap(key_graph_leaf_dict, visited_nodes_map, pos_meta_extra_paths)
+        result = self.lookup_without_omap(key_graph_leaf_dict, visited_nodes_map, pos_meta_extra_paths)
+        
+        if return_visited_nodes:
+            return result, visited_nodes_map
+        return result
 
     def lookup_without_omap(self, key_graph_leaf_dict: Dict[Any, int],
                                visited_nodes_map: Dict[Any, tuple] = None,
@@ -294,6 +300,20 @@ class Grove:
         # pos_meta_rl_path: for _pos_omap._meta (Graph ORAM -> PosMap updates)
         # = len(keys), because this many vertices are downloaded and their graph_leaf changes
         pos_meta_rl_path = self.get_rl_leaf(count=len(leaves), for_pos_meta=True)
+
+        # CRITICAL FIX: Before reading graph ORAM, create dups for ALL visited AVL nodes
+        # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
+        # of _graph_meta.stash (highest priority) so they will be applied when vertices
+        # are downloaded, even if the vertex's recorded graph_leaf is stale.
+        avl_pos_update_dups = []
+        for vertex_key, (new_pos_leaf, vertex_graph_leaf) in visited_nodes_map.items():
+            if vertex_graph_leaf is not None:
+                # Type 2 dup: notify vertex about its AVL node's new pos_leaf
+                avl_pos_update_dups.append(
+                    Data(key=vertex_key, leaf=vertex_graph_leaf, value=new_pos_leaf)
+                )
+        # Prepend to stash (highest priority - these are the freshest updates)
+        self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
 
         # Queue reads for graph ORAM and meta ORAMs.
         # Note: _pos_meta is the same as _pos_omap._meta, which is handled internally by batch_search.
@@ -487,6 +507,18 @@ class Grove:
         graph_meta_rl_count = self._max_deg * (self._max_deg - 1) + avl_nodes_not_downloaded
         # Graph Meta path should match Graph ORAM paths (to apply dup to downloaded neighbors)
         graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + all_graph_leaves
+        
+        # CRITICAL FIX: Before reading Graph ORAM, create dups for ALL visited AVL nodes
+        # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
+        # of _graph_meta.stash (highest priority) so they will be applied when vertices
+        # are downloaded, even if the vertex's recorded graph_leaf is stale.
+        avl_pos_update_dups = []
+        for vertex_key, (new_pos_leaf_val, vertex_graph_leaf) in visited_nodes_map.items():
+            if vertex_graph_leaf is not None:
+                avl_pos_update_dups.append(
+                    Data(key=vertex_key, leaf=vertex_graph_leaf, value=new_pos_leaf_val)
+                )
+        self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
         
         # Queue reads for Graph ORAM and Graph Meta ORAM.
         # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
@@ -725,8 +757,8 @@ class Grove:
         # For simplicity, handle one center vertex at a time
         center_key = keys[0]
         
-        # Step 1: Lookup the center vertex
-        center_result = self.lookup([center_key])
+        # Step 1: Lookup the center vertex (also get visited_nodes_map)
+        center_result, center_visited_nodes = self.lookup([center_key], return_visited_nodes=True)
         if center_key not in center_result:
             return {}
         
@@ -742,10 +774,6 @@ class Grove:
         if K == 0:
             return {}
 
-        # Do NOT touch PosMap here; use center's stored neighbor paths only.
-        visited_nodes_map = {}
-        pos_meta_extra_paths = 0
-        
         # Use graph_leaf from center_adjacency (should be up-to-date after lookup's dup processing)
         neighbor_graph_leaves = []
         neighbor_pos_leaves = {}  # Will be filled when we download neighbors
@@ -771,6 +799,20 @@ class Grove:
             + all_graph_leaves
         )
         
+        # CRITICAL FIX: Before reading Graph ORAM, create dups for ALL visited AVL nodes
+        # from the lookup step. These dups notify vertices about their pos_leaf changes.
+        # Put them at the FRONT of _graph_meta.stash (highest priority) so they will be
+        # applied when neighbors are downloaded, even if the neighbor's recorded graph_leaf is stale.
+        avl_pos_update_dups = []
+        for vertex_key, (new_pos_leaf, vertex_graph_leaf) in center_visited_nodes.items():
+            if vertex_graph_leaf is not None:
+                # Type 2 dup: notify vertex about its AVL node's new pos_leaf
+                avl_pos_update_dups.append(
+                    Data(key=vertex_key, leaf=vertex_graph_leaf, value=new_pos_leaf)
+                )
+        # Prepend to stash (highest priority - these are the freshest updates)
+        self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
+
         # Step 3: Queue reads for Graph ORAM and Graph Meta ORAM
         # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
         self._graph_oram.queue_read(leaves=all_graph_leaves)
