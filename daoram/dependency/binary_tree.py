@@ -112,7 +112,7 @@ class BinaryTree:
         for index in indices:
             path.update(BinaryTree.get_path_indices(index=index))
 
-        return sorted(list(path), reverse=True)
+        return sorted(list(path), reverse=False)  # From root to leaf
 
     @staticmethod
     def get_mul_path_dict(level: int, indices: List[int]) -> PathData:
