@@ -121,6 +121,16 @@ class MulPathOram(PathOram):
                 # Add all real data to the stash.
                 self._stash.append(data)
 
+        # De-duplicate stash, keeping the NEWEST version (front-most)
+        # Tree items were appended to the back, so they are the oldest.
+        seen_keys = set()
+        new_stash = []
+        for data in self._stash:
+            if data.key not in seen_keys:
+                seen_keys.add(data.key)
+                new_stash.append(data)
+        self._stash = new_stash
+
         # Check if the stash overflows.
         if len(self._stash) > self._stash_size:
             raise OverflowError(

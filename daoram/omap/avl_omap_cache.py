@@ -88,9 +88,26 @@ class AVLOmapCached(AVLOmap):
         """
         if not self._enable_meta or self._meta is None:
             return
+        
+        # Apply updates to local cache AND stash immediately to ensure consistency
+        # We start with stash to ensure we catch everything, then local logic overwrites if needed?
+        # No, duplicate logic applies to all instances.
+        
+        for dup in duplications:
+            # Update local cache
+            if self._local:
+                node = self._local.get(dup.key)
+                if node is not None:
+                    node.value.value = dup.value
+            
+            # Update stash
+            for node in self._stash:
+                if node.key == dup.key:
+                    node.value.value = dup.value
+
         # Prepend new duplications (highest priority)
         self._meta.stash = duplications + self._meta.stash
-    
+
     def meta_de_duplication(self) -> None:
         """
         Remove duplicate entries from meta ORAM stash.
@@ -110,29 +127,56 @@ class AVLOmapCached(AVLOmap):
 
     def _flush_local_to_stash(self) -> None:
         """
-        Override to apply meta duplications to stash nodes before flush.
+        Override to apply meta duplications to local and stash nodes before flush.
         
         This ensures that any pending dups in _meta.stash are applied to their
-        corresponding nodes in _stash before those nodes are potentially written
-        back to storage.
+        corresponding nodes in _local or _stash before those nodes are potentially 
+        written back to storage.
         """
-        # First, apply meta duplications to nodes in _stash
         if self._enable_meta and self._meta is not None:
             temp_meta_stash = []
+            handled_keys = set()
             for dup in self._meta.stash:
+                if dup.key in handled_keys:
+                    # Older update for a key that was already handled by a newer update.
+                    # We can discard this pending update as it's obsolete.
+                    continue
+
                 applied = False
-                for node in self._stash:
-                    if node.key == dup.key:
-                        node.value.value = dup.value
-                        applied = True
-                        break
-                if not applied:
-                    # Dup target not in stash, keep for later
+                # Check local cache first
+                node = self._local.get(dup.key)
+                if node is not None:
+                    node.value.value = dup.value
+                    applied = True
+                else:
+                    # Check stash
+                    for node in self._stash:
+                        if node.key == dup.key:
+                            node.value.value = dup.value
+                            applied = True
+                            # We don't break because there might be duplicate keys in stash (path + stash versions)
+                            # though _find_in_stash only finds one. Updating all is safer.
+                
+                if applied:
+                    handled_keys.add(dup.key)
+                else:
+                    # Dup target not in local or stash, keep for later
                     temp_meta_stash.append(dup)
             self._meta.stash = temp_meta_stash
         
-        # Then do the normal flush
-        super()._flush_local_to_stash()
+        # Then do the normal flush, but handle duplicates to avoid stale reads
+        # super()._flush_local_to_stash() -> This blindly extends stash, which is BAD if find_in_stash scans from start.
+        
+        if self._local:
+            local_nodes = list(self._local.nodes.values())
+            # Remove keys present in local from stash (since local is newer)
+            local_keys = set(self._local.nodes.keys())
+            self._stash = [d for d in self._stash if d.key not in local_keys]
+            # Now append local nodes (which are now the only copy in stash)
+            self._stash.extend(local_nodes)
+            # Clear local - Re-initialize using same class
+            self._local = self._local.__class__()
+
 
     def _move_node_to_local(self, key: Any, leaf: int, parent_key: Any = None) -> None:
         """
@@ -165,13 +209,17 @@ class AVLOmapCached(AVLOmap):
                 if data.key == key:
                     if cache_hit:
                         # Node already in stash, add path version to stash (will be deduped later)
-                        self._stash.append(data)
+                        # Actually, better to only add if not in stash to save space/confusion
+                        if self._find_in_stash(data.key) < 0:
+                            self._stash.append(data)
                     else:
                         # Node not in stash, add to local
                         self._local.add(node=data, parent_key=parent_key)
                         found_in_path = True
                 else:
-                    self._stash.append(data)
+                    # Only append if not already in stash (stash is always fresher)
+                    if self._find_in_stash(data.key) < 0:
+                        self._stash.append(data)
         
         if len(self._stash) > self._stash_size:
             raise OverflowError(f"Stash overflow in {self._name}")
@@ -199,8 +247,12 @@ class AVLOmapCached(AVLOmap):
             else:
                 raise KeyError(f"The search key {key} is not found.")
         
-        # Apply pending meta dup for this node
-        self._apply_meta_dup_to_local_node(key)
+        # Apply pending meta dup for this node, but ONLY if we didn't load from stash.
+        # If loaded from stash (cache_hit), it's already the most up-to-date version 
+        # (updated during _flush_local_to_stash), so we must NOT overwrite it with 
+        # potentially older evaded updates from _meta.stash.
+        if not cache_hit:
+            self._apply_meta_dup_to_local_node(key)
         
         # ALWAYS write back (for obliviousness)
         # Evict and write AVL ORAM
@@ -221,9 +273,13 @@ class AVLOmapCached(AVLOmap):
         if node is None:
             return
         temp_stash = []
+        applied = False
         for dup in self._meta.stash:
             if dup.key == key:
-                node.value.value = dup.value
+                if not applied:
+                    node.value.value = dup.value
+                    applied = True
+                # Discard duplicate/obsolete updates for this key
             else:
                 temp_stash.append(dup)
         self._meta.stash = temp_stash
@@ -292,12 +348,13 @@ class AVLOmapCached(AVLOmap):
                 self._sync_meta_dup_leaves()  # Sync dup.leaf with node's new leaf
                 self._balance_local()
                 
-                # Collect visited nodes info (excluding the newly inserted key)
+                # Collect visited nodes info
                 visited_nodes_map = {}
                 if return_visited_nodes:
                     for n in self._local.nodes.values():
-                        if n.key != key:  # Exclude the inserted key itself
-                            visited_nodes_map[n.key] = (n.leaf, n.value.value)
+                        # Track new pos_leaf AND stored graph_leaf
+                        graph_leaf = n.value.value if n.value else None
+                        visited_nodes_map[n.key] = (n.leaf, graph_leaf)
                 
                 num_retrieved = len(self._local)
                 self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
@@ -327,12 +384,12 @@ class AVLOmapCached(AVLOmap):
         self._sync_meta_dup_leaves()  # Sync dup.leaf with node's new leaf
         self._balance_local()
 
-        # Collect visited nodes info (excluding the newly inserted key)
+        # Collect visited nodes info
         visited_nodes_map = {}
         if return_visited_nodes:
             for n in self._local.nodes.values():
-                if n.key != key:  # Exclude the inserted key itself
-                    visited_nodes_map[n.key] = (n.leaf, n.value.value)
+                graph_leaf = n.value.value if n.value else None
+                visited_nodes_map[n.key] = (n.leaf, graph_leaf)
 
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
@@ -342,7 +399,8 @@ class AVLOmapCached(AVLOmap):
             return (target_node.leaf, visited_nodes_map)
         return target_node.leaf if return_pos_leaf else None
 
-    def search(self, key: Any, value: Any = None, return_pos_leaf: bool = False) -> Any:
+    def search(self, key: Any, value: Any = None, return_pos_leaf: bool = False,
+               return_visited_nodes: bool = False) -> Any:
         """
         Given a search key, return its corresponding value with caching.
 
@@ -350,10 +408,12 @@ class AVLOmapCached(AVLOmap):
         :param key: The search key of interest.
         :param value: The updated value.
         :param return_pos_leaf: If True, also return the node's leaf in the underlying ORAM.
+        :param return_visited_nodes: If True, return visited nodes map.
         :return: The (old) value, or (value, pos_leaf) if return_pos_leaf is True.
         """
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height)
+            if return_visited_nodes: return (None, {}) if not return_pos_leaf else ((None, None), {})
             return (None, None) if return_pos_leaf else None
 
         # If the current root is empty, we can't perform search.
@@ -393,12 +453,23 @@ class AVLOmapCached(AVLOmap):
         # Get the pos_leaf after leaf reassignment
         pos_leaf = node.leaf if found else None
         
+        # Collect visited nodes info
+        visited_nodes_map = {}
+        if return_visited_nodes:
+            for n in self._local.nodes.values():
+                graph_leaf = n.value.value if n.value else None
+                visited_nodes_map[n.key] = (n.leaf, graph_leaf)
+
         root_node = self._local.get_root()
         self.root = (root_node.key, root_node.leaf)
 
         # Dummy ops only - local stays cached for next operation
         num_retrieved = len(self._local)
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
+
+        if return_visited_nodes:
+            res = (search_value, pos_leaf) if return_pos_leaf else search_value
+            return (res, visited_nodes_map)
 
         if return_pos_leaf:
             return (search_value, pos_leaf)
@@ -408,8 +479,8 @@ class AVLOmapCached(AVLOmap):
         """Fast search is identical to search in cached version."""
         return self.search(key=key, value=value)
 
-    def delete(self, key: Any) -> Any:
-        """Delete with caching: flush at start, keep in local at end."""
+    def delete(self, key: Any, return_visited_nodes: bool = False) -> Any:
+        """Delete with caching and visited nodes return."""
         if self.root is None:
             raise ValueError("Cannot delete from an empty tree.")
 
@@ -430,12 +501,19 @@ class AVLOmapCached(AVLOmap):
                 else:
                     # Key not found
                     self._local.update_all_leaves(self._get_new_leaf)
-                    self._sync_meta_dup_leaves()  # Sync dup.leaf with node's new leaf
+                    self._sync_meta_dup_leaves()
                     root_node = self._local.get_root()
                     self.root = (root_node.key, root_node.leaf)
+                    
+                    visited_nodes_map = {}
+                    if return_visited_nodes:
+                        for n in self._local.nodes.values():
+                            graph_leaf = n.value.value if n.value else None
+                            visited_nodes_map[n.key] = (n.leaf, graph_leaf)
+                    
                     num_retrieved = len(self._local)
                     self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
-                    return None
+                    return (None, visited_nodes_map) if return_visited_nodes else None
             else:
                 if node.value.l_key is not None:
                     self._move_node_to_local(key=node.value.l_key, leaf=node.value.l_leaf, parent_key=current_key)
@@ -444,12 +522,19 @@ class AVLOmapCached(AVLOmap):
                 else:
                     # Key not found
                     self._local.update_all_leaves(self._get_new_leaf)
-                    self._sync_meta_dup_leaves()  # Sync dup.leaf with node's new leaf
+                    self._sync_meta_dup_leaves()
                     root_node = self._local.get_root()
                     self.root = (root_node.key, root_node.leaf)
+                    
+                    visited_nodes_map = {}
+                    if return_visited_nodes:
+                        for n in self._local.nodes.values():
+                            graph_leaf = n.value.value if n.value else None
+                            visited_nodes_map[n.key] = (n.leaf, graph_leaf)
+                            
                     num_retrieved = len(self._local)
                     self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
-                    return None
+                    return (None, visited_nodes_map) if return_visited_nodes else None
 
         # At this point, node contains the key to delete
         node_key = node.key
@@ -459,18 +544,25 @@ class AVLOmapCached(AVLOmap):
         deleted_value, early_returned = self._delete_node_from_local(node, node_key, parent_key)
         if early_returned:
             self._perform_dummy_operation(num_round=2 * self._max_height)
-            return deleted_value
+            return (deleted_value, {}) if return_visited_nodes else deleted_value
 
         self._update_height()
         self._local.update_all_leaves(self._get_new_leaf)
-        self._sync_meta_dup_leaves()  # Sync dup.leaf with node's new leaf
+        self._sync_meta_dup_leaves()
         self._balance_local(is_delete=True)
 
-        # Dummy ops only - local stays cached for next operation
+        # Collect visited nodes info
+        visited_nodes_map = {}
+        if return_visited_nodes:
+            for n in self._local.nodes.values():
+                graph_leaf = n.value.value if n.value else None
+                visited_nodes_map[n.key] = (n.leaf, graph_leaf)
+
+        # Dummy ops only
         num_retrieved = len(self._local)
         self._perform_dummy_operation(num_round=2 * self._max_height - num_retrieved)
 
-        return deleted_value
+        return (deleted_value, visited_nodes_map) if return_visited_nodes else deleted_value
 
     def _find_node_in_stash_no_remove(self, node_key: Any) -> Data:
         """
@@ -685,8 +777,10 @@ class AVLOmapCached(AVLOmap):
                                 level_local_nodes[data.key] = data
                         else:
                             if stash_idx >= 0:
-                                # Refresh existing stash copy with latest data
-                                self._stash[stash_idx] = data
+                                # Node is already in stash. Since stash is write-back buffer,
+                                # it is always fresher than or equal to server data.
+                                # DO NOT overwrite it with path data.
+                                pass
                             else:
                                 self._stash.append(data)
                                 keys_in_stash.add(data.key)
@@ -698,20 +792,26 @@ class AVLOmapCached(AVLOmap):
                 
             # Apply meta duplications to update AVL node values (graph_leaf)
             # Meta duplication format: Data(key=vertex_key, leaf=pos_leaf, value=new_graph_leaf)
-            # CRITICAL: Only apply dup when:
-            # 1. The node is in level_local_nodes (retrieved this level)
-            # 2. The dup.leaf is in unique_leaves (the path was actually read)
-            # This ensures we only apply dup to nodes whose complete dup history was read.
+            # CRITICAL: Only apply dup when the node is in level_local_nodes (retrieved this level).
+            # We relax the condition on dup.leaf matching unique_leaves because dup.leaf might be stale
+            # (pointing to old location) if node moved due to rotations, but if we found the node by key,
+            # we must apply the pending update.
             if self._enable_meta and self._meta is not None:
-                unique_leaves_set = set(unique_leaves) if unique_leaves else set()
                 meta_temp_stash = []
+                handled_keys = set()
                 for meta_data in self._meta.stash:
                     applied = False
-                    # Only apply if both conditions are met
-                    if meta_data.key in level_local_nodes and meta_data.leaf in unique_leaves_set:
+                    
+                    # If we already applied a newer update for this key, discard older ones
+                    if meta_data.key in handled_keys:
+                        # We discard it (don't append to temp_stash)
+                        continue
+
+                    if meta_data.key in level_local_nodes:
                         node = level_local_nodes[meta_data.key]
                         node.value.value = meta_data.value
                         applied = True
+                        handled_keys.add(meta_data.key)
                     
                     if not applied:
                         meta_temp_stash.append(meta_data)
