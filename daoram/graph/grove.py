@@ -623,29 +623,37 @@ class Grove:
     def delete(self, key: Any) -> None:
         """
         Delete a vertex from the graph using duplication-based neighbor notification.
-        
+
         Instead of downloading all neighbors, we send duplications to notify them
         that this vertex has been deleted (using new_graph_leaf = -1 as deletion marker).
 
         :param key: The key of the vertex to delete.
+
+        For obliviousness:
+        1. Read max_degree paths from Graph ORAM (1 real + max_degree-1 dummy)
+        2. Read max_degree RL paths + vertex path from Graph Meta
+        3. Create max_degree deletion duplications (K real + max_degree-K dummy)
         """
         # Step 1: Delete from PosMap ORAM (search with value=None performs lazy deletion)
         # This also returns the vertex's graph_leaf
         vertex_graph_leaf = self._pos_omap.delete(key=key)
-        
-        # Step 2: Get RL paths for graph_meta (to notify neighbors via duplication)
-        # We need max_degree paths for obliviousness
+
+        # Step 2: Get RL paths for graph_meta
         graph_meta_rl_paths = self.get_rl_leaf(count=self._max_deg, for_pos_meta=False)
-        
+
         # Step 3: Queue reads for Graph ORAM and Graph Meta
-        self._graph_oram.queue_read(leaves=[vertex_graph_leaf])
-        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
-        
+        # Read max_degree paths from Graph ORAM for obliviousness (1 real + dummy)
+        dummy_graph_leaves = [secrets.randbelow(self._leaf_range) for _ in range(self._max_deg - 1)]
+        all_graph_leaves = [vertex_graph_leaf] + dummy_graph_leaves
+
+        self._graph_oram.queue_read(leaves=all_graph_leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + all_graph_leaves)
+
         # Execute reads
         result = self._client.execute()
         self._graph_oram.process_read_result(result)
         self._graph_meta.process_read_result(result)
-        
+
         # Step 4: Find the vertex in stash and get its neighbors
         vertex_data = None
         vertex_idx = None
@@ -654,55 +662,70 @@ class Grove:
                 vertex_data = data
                 vertex_idx = i
                 break
-        
+
         if vertex_data is None:
-            # Vertex not found, write back and return
+            # Vertex not found, perform deduplication and write back
+            self.graph_meta_de_duplication()
             self._graph_oram.queue_write()
-            self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+            self._graph_meta.queue_write()
             self._client.execute()
             return
-        
+
         # Get neighbor info: {neighbor_key: graph_leaf}
         neighbor_adjacency = vertex_data.value[1]
         neighbor_keys = list(neighbor_adjacency.keys())
 
-        # Step 5: Apply duplications only to the target vertex (the one we operate on),
-        # and discard dups targeting the deleted vertex.
+        # Step 5: Apply duplications to the deleted vertex first (to get updated adjacency),
+        # then discard dups targeting the deleted vertex.
+        # First apply any pending dups to update neighbor_adjacency with latest paths
+        for dup in self._graph_meta.stash:
+            if dup.key == key:
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    source_key, new_graph_leaf = dup.value
+                    if new_graph_leaf < 0:
+                        if source_key in neighbor_adjacency:
+                            del neighbor_adjacency[source_key]
+                    else:
+                        neighbor_adjacency[source_key] = new_graph_leaf
+
+        # Now discard dups targeting the deleted vertex
         temp_stash = []
         for dup in self._graph_meta.stash:
             if dup.key == key:
-                # This dup targets the deleted vertex, discard it
                 continue
             temp_stash.append(dup)
         self._graph_meta.stash = temp_stash
-        
+
         # Step 6: Create deletion duplications for all neighbors
         # Use new_graph_leaf = -1 to indicate deletion
         DELETION_MARKER = -1
         deletion_dups = []
-        for i, neighbor_key in enumerate(neighbor_keys):
+        for neighbor_key in neighbor_adjacency.keys():
             neighbor_graph_leaf = neighbor_adjacency[neighbor_key]
             if isinstance(neighbor_graph_leaf, tuple):
                 neighbor_graph_leaf = neighbor_graph_leaf[0]
             # Duplication format: Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(deleted_key, DELETION_MARKER))
             dup = Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(key, DELETION_MARKER))
             deletion_dups.append(dup)
-        
+
         # Pad with dummy dups for obliviousness (total = max_degree)
         dummy_leaf = secrets.randbelow(self._leaf_range)
         for _ in range(self._max_deg - len(deletion_dups)):
             dummy_dup = Data(key=None, leaf=dummy_leaf, value=(None, DELETION_MARKER))
             deletion_dups.append(dummy_dup)
-        
+
         # Add deletion dups to graph_meta stash (prepend for highest priority)
         self._graph_meta.stash = deletion_dups + self._graph_meta.stash
-        
+
         # Step 7: Remove the deleted vertex from graph_oram stash
         del self._graph_oram.stash[vertex_idx]
-        
-        # Step 8: Write back
+
+        # Step 8: Perform deduplication
+        self.graph_meta_de_duplication()
+
+        # Step 9: Write back
         self._graph_oram.queue_write()
-        self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+        self._graph_meta.queue_write()
         self._client.execute()
 
     def neighbor(self, keys: List[Any]) -> dict:

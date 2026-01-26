@@ -1,15 +1,34 @@
+"""
+GraphOS: Oblivious graph data structure using ORAM.
+
+This is a simpler implementation compared to Grove - it doesn't use delayed duplication.
+Instead, it directly downloads and updates neighbor information.
+
+Data model:
+- Each vertex is stored as: key="V{vertex_id}", value=(vertex_data, neighbor_count)
+- Each edge is stored as: key="E{vertex_id}{edge_num}", value=neighbor_vertex_id
+- OMAP stores: vertex/edge key -> ORAM path
+"""
+
 import math
 import random
 import secrets
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
-from daoram.dependency import InteractServer, Data
-from daoram.dependency.graph import Graph
+from daoram.dependency import InteractServer, Data, Encryptor
 from daoram.omap.avl_omap_cache import AVLOmapCached
 from daoram.oram.mul_path_oram import MulPathOram
 
 
 class GraphOS:
+    """
+    Oblivious graph data structure using ORAM.
+
+    Stores vertices and edges separately:
+    - Vertices: "V{id}" -> (data, neighbor_count)
+    - Edges: "E{id}{num}" -> neighbor_id
+    """
+
     def __init__(self,
                  max_deg: int,
                  num_data: int,
@@ -19,286 +38,419 @@ class GraphOS:
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  filename: str = None,
-                 aes_key: bytes = None,
-                 num_key_bytes: int = 16,
-                 use_encryption: bool = True):
+                 encryptor: Encryptor = None):
         """
-        Initializes the GraphOS.
+        Initialize GraphOS.
 
-        :param max_deg: The maximum number of neighbors a vertex can have.
-        :param num_data: The number of data points the oram should store.
-        :param key_size: The number of bytes the random dummy key should have.
-        :param data_size: The number of bytes the random dummy data should have.
-        :param client: The instance we use to interact with server.
-        :param filename: The filename to save the oram data to.
-        :param bucket_size: The number of data each bucket should have.
-        :param stash_scale: The scaling scale of the stash.
-        :param aes_key: The key to use for the AES instance.
-        :param num_key_bytes: The number of bytes the aes key should have.
-        :param use_encryption: A boolean indicating whether to use encryption.
+        :param max_deg: Maximum number of neighbors a vertex can have.
+        :param num_data: Number of data points the ORAM should store.
+        :param key_size: Number of bytes for random dummy keys.
+        :param data_size: Number of bytes for random dummy data.
+        :param client: Instance to interact with server.
+        :param bucket_size: Number of data items per bucket.
+        :param stash_scale: Scaling factor for stash size.
+        :param filename: Filename to persist ORAM data.
+        :param encryptor: Encryptor instance for encryption.
         """
-        # Store the maximum degree of the graph.
-        self.max_deg: int = max_deg
+        # Store configuration.
+        self._client = client
+        self._max_deg: int = max_deg
 
-        # Compute the level of the binary tree needed.
+        # Compute tree parameters.
         self._level: int = int(math.ceil(math.log(num_data, 2))) + 1
-
-        # Compute the range of possible leafs [0, leaf_range).
         self._leaf_range: int = pow(2, self._level - 1)
 
-        # Initialize the OMAP.
+        # Initialize the OMAP for key -> path mapping.
         self._omap = AVLOmapCached(
             client=client,
-            aes_key=aes_key,
             num_data=num_data,
             key_size=key_size,
             data_size=data_size,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
-            num_key_bytes=num_key_bytes,
-            use_encryption=use_encryption,
-            filename=f"{filename}_avl" if filename else None
+            encryptor=encryptor,
+            filename=f"{filename}_avl" if filename else None,
         )
 
-        # Initialize the multi-path ORAM.
+        # Initialize the multi-path ORAM for actual data storage.
         self._oram = MulPathOram(
             client=client,
-            aes_key=aes_key,
             num_data=num_data,
-            data_size=key_size,
+            data_size=data_size,
             bucket_size=bucket_size,
             stash_scale=stash_scale,
-            num_key_bytes=num_key_bytes,
-            use_encryption=use_encryption,
-            filename=f"{filename}_mp" if filename else None
+            encryptor=encryptor,
+            name="graphos_oram",
+            filename=f"{filename}_mp" if filename else None,
         )
 
-    def init_server_storage(self, graph: Graph):
-        """Initialize the graphos server storage."""
-        # Sample the path number for each key.
-        path_map = {vertex: secrets.randbelow(self._leaf_range) for vertex in graph}
-        # Store them in the OMAP.
-        self._omap.init_server_storage(data=[(key, value) for key, value in path_map.items()])
-        # Prepare the correct data item.
-        data = [Data(key=key, value=value, leaf=path_map[key]) for key, value in graph.items()]
-        # Initialize the multiple path ORAM.
-        self._oram.init_server_storage(data=data)
+    def init_server_storage(self, graph: Dict[Any, Any] = None) -> None:
+        """
+        Initialize the GraphOS server storage.
 
-    def lookup(self, key: List[Any], update: int = None) -> dict:
+        :param graph: Optional dict mapping vertex_id -> (vertex_data, {neighbor_id: edge_data}).
+                      If None, initializes empty storage.
+        """
+        if graph is None:
+            self._omap.init_server_storage()
+            self._oram.init_server_storage()
+            return
+
+        # Prepare OMAP entries and ORAM data.
+        omap_data = []
+        oram_data = []
+
+        for vertex_id, (vertex_data, neighbors) in graph.items():
+            # Sample path for this vertex.
+            vertex_path = secrets.randbelow(self._leaf_range)
+            vertex_key = f"V{vertex_id}"
+
+            # OMAP: vertex_key -> path
+            omap_data.append((vertex_key, vertex_path))
+
+            # ORAM: vertex data with neighbor count
+            # Value format: (vertex_data, neighbor_count)
+            neighbor_count = len(neighbors) if neighbors else 0
+            oram_data.append(Data(
+                key=vertex_key,
+                value=(vertex_data, neighbor_count),
+                leaf=vertex_path
+            ))
+
+            # Add edges.
+            for edge_num, neighbor_id in enumerate(neighbors.keys(), start=1):
+                edge_path = secrets.randbelow(self._leaf_range)
+                edge_key = f"E{vertex_id}_{edge_num}"
+
+                # OMAP: edge_key -> path
+                omap_data.append((edge_key, edge_path))
+
+                # ORAM: edge points to neighbor
+                oram_data.append(Data(
+                    key=edge_key,
+                    value=neighbor_id,
+                    leaf=edge_path
+                ))
+
+        # Initialize storage.
+        self._omap.init_server_storage(data=omap_data)
+        self._oram.init_server_storage(data=oram_data)
+
+    def lookup(self, keys: List[Any], update_count: int = None) -> Dict[Any, Any]:
         """
         Perform lookup on input vertices.
 
-        :param key: A list of vertices of interest.
-        :param update: If update is not None, it is added to the vertex value (for updating counts).
-        :return: The values corresponding to the vertices of interest.
+        :param keys: List of vertex keys to look up.
+        :param update_count: If not None, add this to vertex neighbor count.
+        :return: Dict mapping vertex_key -> (vertex_data, neighbor_count).
         """
-        # Sample the new leaves for each key.
-        new_leaves = {key: secrets.randbelow(self._leaf_range) for _ in key}
+        if not keys:
+            return {}
 
-        # Find the leaves, result are the paths of keys of interest.
-        leaves = self._omap.search(key=key, value=new_leaves.values())
+        # Sample new leaves for each key.
+        new_leaves = {k: secrets.randbelow(self._leaf_range) for k in keys}
 
-        # Retrieve the paths of interest.
-        self._oram.retrieve_path(leaves=leaves)
+        # Search OMAP for current paths, updating to new paths.
+        # Filter out keys that don't exist (OMAP returns None or raises exception).
+        key_to_path = {}
+        for k in keys:
+            try:
+                path = self._omap.search(key=k, value=new_leaves[k])
+                if path is not None:
+                    key_to_path[k] = path
+            except (KeyError, ValueError):
+                # Key doesn't exist in OMAP
+                pass
 
-        # Get a dictionary for returned result.
-        result = {}
+        if not key_to_path:
+            return {}
 
-        # Obtain the stash.
-        stash = self._oram.stash
+        leaves = list(key_to_path.values())
 
-        # Retrieve the desired keys.
-        for data in stash:
-            if data.key in key:
-                # Save the result.
-                result[data.key] = data.value
-                # Update the data leaf.
+        # Retrieve paths from ORAM.
+        self._oram.queue_read(leaves=leaves)
+        result = self._client.execute()
+        self._oram.process_read_result(result)
+
+        # Find requested data in stash.
+        lookup_result = {}
+        for data in self._oram.stash:
+            if data.key in key_to_path:
+                lookup_result[data.key] = data.value
+                # Update leaf to new random path.
                 data.leaf = new_leaves[data.key]
-                # If update is not None, update the last position (counter) by 1.
-                if update is not None:
-                    data.value[:-1] += update
-
-        # Update the stash.
-        self._oram.stash = stash
+                # Update count if requested.
+                if update_count is not None and isinstance(data.value, tuple):
+                    vertex_data, count = data.value
+                    data.value = (vertex_data, count + update_count)
 
         # Write back.
-        self._oram.evict_path(leaves=leaves)
+        self._oram.queue_write()
+        self._client.execute()
 
-        return result
+        return lookup_result
 
-    def neighbor(self, key: List[Any]) -> dict:
+    def neighbor(self, keys: List[Any]) -> Dict[Any, Any]:
         """
-        Perform a neighbor query, for each key in the input list, download all its neighbors.
+        Perform neighbor query for each vertex in the input list.
 
-        :param key: A list of vertices of interest.
-        :return: The neighbors of the vertice of interest and their values.
+        :param keys: List of vertex IDs to find neighbors for.
+        :return: Dict mapping neighbor_vertex_key -> (vertex_data, neighbor_count).
         """
-        # For each key first find its value and get their number of neighbors.
-        num_neighbors = self.lookup(key=[f"V{each_key}" for each_key in key])
+        if not keys:
+            return {}
 
-        # Get the number of edges for each vertice and prepare keys.
-        search_keys = []
+        # First get vertex info (including neighbor count).
+        vertex_keys = [f"V{k}" for k in keys]
+        vertex_info = self.lookup(keys=vertex_keys)
 
-        # Loop through the retrieved keys.
-        for key in num_neighbors:
-            # Number of neighbors is the last position.
-            num_edge = num_neighbors[key][-1]
-            for i in range(1, num_edge + 1):
-                search_keys.append(f"E{key}{i}")
+        # Collect edge keys to fetch.
+        edge_keys = []
+        for vkey, value in vertex_info.items():
+            if isinstance(value, tuple) and len(value) >= 2:
+                vertex_id = vkey[1:]  # Remove "V" prefix
+                neighbor_count = value[1]
+                for i in range(1, neighbor_count + 1):
+                    edge_keys.append(f"E{vertex_id}_{i}")
 
-        # Get the value corresponding to the edges.
-        neighbors = self.lookup(key=search_keys)
+        if not edge_keys:
+            return {}
 
-        # Loop through the retrieved neighbors.
-        new_search_key = []
-        for key in neighbors:
-            new_search_key.append(f"V{neighbors[key]}")
+        # Get edge values (neighbor IDs).
+        edge_info = self.lookup(keys=edge_keys)
 
-        # Finally search for the neighbors.
-        return self.lookup(key=new_search_key)
+        # Collect neighbor vertex keys.
+        neighbor_vertex_keys = []
+        for edge_key, neighbor_id in edge_info.items():
+            neighbor_vertex_keys.append(f"V{neighbor_id}")
+
+        if not neighbor_vertex_keys:
+            return {}
+
+        # Get neighbor vertex data.
+        return self.lookup(keys=neighbor_vertex_keys)
 
     def insert(self, vertex: tuple) -> None:
         """
         Insert a new vertex to the graph.
 
-        :param vertex: the vertex to add, in format of (key, value, neighbors).
+        :param vertex: Tuple of (vertex_id, vertex_data, neighbors).
+                       neighbors is a dict {neighbor_id: edge_data} or list of neighbor IDs.
         """
-        # First sample the path to put the value in ORAM.
-        path_for_value = secrets.randbelow(self._leaf_range)
+        vertex_id, vertex_data, neighbors = vertex
 
-        # First insert the new vertex and then update the corresponding neighbors.
-        self._omap.insert(vertex[0], path_for_value)
+        # Convert list to dict if needed.
+        if isinstance(neighbors, list):
+            neighbors = {n: None for n in neighbors}
 
-        # Grab a path and add the value.
-        self._oram.retrieve_path(leaves=[secrets.randbelow(self._leaf_range)])
+        # Sample path for new vertex.
+        vertex_path = secrets.randbelow(self._leaf_range)
+        vertex_key = f"V{vertex_id}"
 
-        # Add the value to stash.
-        self._oram.stash.append(Data(key=f"V{vertex[0]}", value=vertex[1], leaf=path_for_value))
+        # Insert vertex key -> path into OMAP.
+        self._omap.insert(key=vertex_key, value=vertex_path)
 
-        # Retrieve the neighbor vertex and add their value by 1.
-        neighbors = self.lookup(key=[f"V{neighbor}" for neighbor in vertex[2]], update=1)
+        # Read a dummy path and add vertex to stash.
+        dummy_path = secrets.randbelow(self._leaf_range)
+        self._oram.queue_read(leaves=[dummy_path])
+        result = self._client.execute()
+        self._oram.process_read_result(result)
 
-        # Finally insert the edge values for all neighbors.
-        insert_keys = [f"E{key}{value[-1] + 1}" for key, value in neighbors.items()]
-        # Sample paths for these keys.
-        leaves = [secrets.randbelow(self._leaf_range) for _ in insert_keys]
-        # Insert keys and their ORAM paths to OMAP.
-        self._omap.insert(key=insert_keys, value=leaves)
+        # Add vertex to stash with neighbor count.
+        self._oram.stash.append(Data(
+            key=vertex_key,
+            value=(vertex_data, len(neighbors)),
+            leaf=vertex_path
+        ))
 
-        # Download paths.
-        download_paths = [secrets.randbelow(self._leaf_range) for _ in insert_keys]
-        self._oram.retrieve_path(leaves=download_paths)
-        # Add to stash.
-        self._oram.stash += [
-            Data(key=each_key, value=vertex[0], leaf=leaves[index]) for index, each_key in enumerate(insert_keys)
-        ]
-        # Perform eviction.
-        self._oram.evict_path(leaves=download_paths)
+        # Also add edges from new vertex to each neighbor.
+        for edge_num, neighbor_id in enumerate(neighbors.keys(), start=1):
+            edge_key = f"E{vertex_id}_{edge_num}"
+            edge_path = secrets.randbelow(self._leaf_range)
+
+            # Insert edge to OMAP.
+            self._omap.insert(key=edge_key, value=edge_path)
+
+            # Add edge to stash.
+            self._oram.stash.append(Data(
+                key=edge_key,
+                value=neighbor_id,
+                leaf=edge_path
+            ))
+
+        # Write back.
+        self._oram.queue_write()
+        self._client.execute()
+
+        if not neighbors:
+            return
+
+        # For each neighbor, update their count and create edge pointing back to new vertex.
+        for neighbor_id in neighbors.keys():
+            neighbor_key = f"V{neighbor_id}"
+
+            # Get current neighbor info and increment count.
+            # We need to get the OLD count to know the edge number.
+            new_leaf = secrets.randbelow(self._leaf_range)
+            old_path = self._omap.search(key=neighbor_key, value=new_leaf)
+
+            if old_path is None:
+                continue
+
+            # Read neighbor from ORAM.
+            self._oram.queue_read(leaves=[old_path])
+            result = self._client.execute()
+            self._oram.process_read_result(result)
+
+            # Find neighbor in stash and update count.
+            old_count = 0
+            for data in self._oram.stash:
+                if data.key == neighbor_key:
+                    neighbor_data, old_count = data.value
+                    # Increment count.
+                    data.value = (neighbor_data, old_count + 1)
+                    # Update leaf.
+                    data.leaf = new_leaf
+                    break
+
+            # Create edge: E{neighbor_id}_{new_edge_num} -> vertex_id
+            new_edge_num = old_count + 1
+            edge_key = f"E{neighbor_id}_{new_edge_num}"
+            edge_path = secrets.randbelow(self._leaf_range)
+
+            # Insert edge to OMAP.
+            self._omap.insert(key=edge_key, value=edge_path)
+
+            # Add edge to stash.
+            self._oram.stash.append(Data(
+                key=edge_key,
+                value=vertex_id,
+                leaf=edge_path
+            ))
+
+            # Write back.
+            self._oram.queue_write()
+            self._client.execute()
 
     def delete(self, key: Any) -> None:
-        # First remove the key (lazily) from the omap and get vertex value.
-        delete_path = self._omap.search(key=key, value=-1)
+        """
+        Delete a vertex from the graph.
 
-        # Download the desired path.
-        self._oram.retrieve_path(leaves=[delete_path])
+        :param key: Vertex ID to delete.
+        """
+        vertex_key = f"V{key}"
 
-        # Find the value in stash.
-        value, temp_stash = None, []
+        # Delete from OMAP and get path.
+        delete_path = self._omap.delete(key=vertex_key)
+
+        # Download the path.
+        self._oram.queue_read(leaves=[delete_path])
+        result = self._client.execute()
+        self._oram.process_read_result(result)
+
+        # Find and remove vertex from stash.
+        vertex_value = None
+        temp_stash = []
         for data in self._oram.stash:
-            if data.key == key:
-                # Store the value.
-                value = data.value
+            if data.key == vertex_key:
+                vertex_value = data.value
             else:
-                # Add to temp stash if not the correct one.
                 temp_stash.append(data)
-
-        # Update the stash.
         self._oram.stash = temp_stash
-        self._oram.evict_path(leaves=[delete_path])
 
-        # Delete the edges as well.
-        edge_keys = [f"E{key}{i}" for i in range(1, value[-1] + 1)]
-        edge_paths = self._omap.search(key=edge_keys, value=[-1 for _ in edge_keys])
+        # Write back.
+        self._oram.queue_write()
+        self._client.execute()
 
-        # Download the desired path.
-        self._oram.retrieve_path(edge_paths)
+        if vertex_value is None:
+            return
 
-        # Find the desired values in stash.
-        vertices, temp_stash = [], []
-        for data in self._oram.stash:
-            if data.key in edge_keys:
-                # Store the vertex value.
-                vertices.append(f"V{data.value}")
-            else:
-                # Add to temp stash.
-                temp_stash.append(data)
+        # Get neighbor count.
+        neighbor_count = vertex_value[1] if isinstance(vertex_value, tuple) else 0
 
-        # Update the stash.
-        self._oram.stash = temp_stash
-        self._oram.evict_path(leaves=[edge_paths])
+        # Delete edges.
+        edge_keys = [f"E{key}_{i}" for i in range(1, neighbor_count + 1)]
+        neighbor_ids = []
 
-        # Finally update the count.
-        # For fairness, we assume a simple edit here; the edge to delete can be postponed during neighbor traversal.
-        vertices_path = self._omap.search(key=vertices)
-        # Download the vertices.
-        self._oram.retrieve_path(leaves=vertices_path)
-        # Update the vertice values.
-        for data in self._oram.stash:
-            if data.key in edge_keys:
-                # Store the vertex value.
-                data.value[-1] -= 1
+        for edge_key in edge_keys:
+            # Delete edge from OMAP.
+            edge_path = self._omap.delete(key=edge_key)
 
-            # Add to temp stash.
-            temp_stash.append(data)
-        # Write them back.
-        self._oram.evict_path(leaves=vertices_path)
+            # Download edge path.
+            self._oram.queue_read(leaves=[edge_path])
+            result = self._client.execute()
+            self._oram.process_read_result(result)
 
-    def t_hop(self, key: Any, num_hop: int) -> dict:
-        """Perform the t-hop query, for each hop we find all neighbor of current retrieved nodes."""
-        # Set an empty dictionary.
+            # Find and remove edge, save neighbor ID.
+            temp_stash = []
+            for data in self._oram.stash:
+                if data.key == edge_key:
+                    neighbor_ids.append(data.value)
+                else:
+                    temp_stash.append(data)
+            self._oram.stash = temp_stash
+
+            # Write back.
+            self._oram.queue_write()
+            self._client.execute()
+
+        # Update neighbor counts (decrement by 1).
+        if neighbor_ids:
+            neighbor_keys = [f"V{n}" for n in neighbor_ids]
+            self.lookup(keys=neighbor_keys, update_count=-1)
+
+    def t_hop(self, key: Any, num_hop: int) -> Dict[Any, Any]:
+        """
+        Perform t-hop query: find all vertices within num_hop hops.
+
+        :param key: Starting vertex ID.
+        :param num_hop: Number of hops to traverse.
+        :return: Dict mapping vertex_key -> (vertex_data, neighbor_count).
+        """
         result = {}
-
-        # Set the initial key as a dictionary.
         keys_to_search = [key]
 
-        # For each hop, we will grab all neighbors and keep looking for neighbors with all neighbors.
         for _ in range(num_hop):
-            # Get all neighbors and current search keys.
-            temp_result = self.neighbor(key=keys_to_search)
+            if not keys_to_search:
+                break
 
-            # Reset keys_to_search to empty.
+            # Get neighbors of current frontier.
+            temp_result = self.neighbor(keys=keys_to_search)
+
+            # Reset frontier.
             keys_to_search = []
 
-            # For the ones that aren't in result already, keep searching.
-            for key, value in temp_result.items():
-                if key not in result:
-                    # Add it to search key.
-                    keys_to_search.append(key)
-                    # Add it to result.
-                    result[key] = value
+            # Add new vertices to result and frontier.
+            for vkey, value in temp_result.items():
+                if vkey not in result:
+                    keys_to_search.append(vkey[1:])  # Remove "V" prefix
+                    result[vkey] = value
 
-        # Return the result dictionary.
         return result
 
-    def t_traversal(self, key: Any, num_hop: int) -> dict:
-        """Perform the t-hop query, for each hop we find all neighbor of current retrieved nodes."""
-        # Set an empty dictionary.
+    def t_traversal(self, key: Any, num_hop: int) -> Dict[Any, Any]:
+        """
+        Perform t-hop traversal: randomly walk through the graph.
+
+        :param key: Starting vertex ID.
+        :param num_hop: Number of hops to traverse.
+        :return: Dict mapping vertex_key -> (vertex_data, neighbor_count).
+        """
         result = {}
+        current_key = key
 
-        # Set the initial key as a dictionary.
-        keys_to_search = [key]
-
-        # For each hop, we will grab all neighbors and keep looking for neighbors with all neighbors.
         for _ in range(num_hop):
-            # Get all neighbors and current search keys.
-            temp_result = self.neighbor(key=keys_to_search)
+            # Get neighbors of current vertex.
+            temp_result = self.neighbor(keys=[current_key])
 
-            # Select a random key to keep searching.
-            key_of_interest = random.choice(list(temp_result.keys()))
-            result[key_of_interest] = temp_result[key_of_interest]
+            if not temp_result:
+                break
 
-            # Update the key to search.
-            keys_to_search = [key_of_interest]
+            # Select random neighbor.
+            random_key = random.choice(list(temp_result.keys()))
+            result[random_key] = temp_result[random_key]
 
-        # Return the result dictionary.
+            # Move to random neighbor.
+            current_key = random_key[1:]  # Remove "V" prefix
+
         return result
