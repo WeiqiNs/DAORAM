@@ -920,15 +920,17 @@ class Grove:
         visited_pos_leaves = list(set(v[0] for v in center_visited_nodes.values() if v[0] is not None))
         pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True) + visited_pos_leaves
         
-        # Create dups for visited AVL nodes (EXCLUDING center_key) to notify vertices
-        # about their pos_leaf changes. We exclude center_key because lookup() already
-        # created and applied its type 2 dup in lookup_without_omap. The center_visited_nodes
-        # contains the OLD graph_leaf for center_key, but the vertex has already moved to
-        # a new graph_leaf, so creating a dup with the old leaf would be incorrect.
+        # Create dups for visited AVL nodes to notify vertices about their pos_leaf changes.
+        # IMPORTANT: Skip these keys because they will be handled differently:
+        # 1. center_key: Its Type 2 dup was already created and applied in lookup_without_omap
+        # 2. neighbor_keys: These vertices will be downloaded and have their stored_pos_leaf
+        #    directly updated (see lines ~1006-1057). Creating a dup with the OLD graph_leaf
+        #    would be incorrect since the vertex will get a NEW graph_leaf after download.
         avl_pos_update_dups = []
+        neighbor_keys_set = set(neighbor_keys)
         for vertex_key, (new_pos_leaf, vertex_graph_leaf) in center_visited_nodes.items():
-            # Skip center_key - its type 2 dup was already handled by lookup()
-            if vertex_key == center_key:
+            # Skip center_key and neighbor_keys
+            if vertex_key == center_key or vertex_key in neighbor_keys_set:
                 continue
             if vertex_graph_leaf is not None:
                 # Type 2 dup: notify vertex about its AVL node's new pos_leaf
@@ -995,10 +997,24 @@ class Grove:
         
         for neighbor_key, neighbor_data in downloaded_neighbors.items():
             if len(neighbor_data.value) == 3:
-                neighbor_vertex_data, neighbor_adjacency, neighbor_pos_leaf = neighbor_data.value
+                neighbor_vertex_data, neighbor_adjacency, stored_pos_leaf = neighbor_data.value
             else:
                 neighbor_vertex_data, neighbor_adjacency = neighbor_data.value
-                neighbor_pos_leaf = None
+                stored_pos_leaf = None
+            
+            # Determine the most up-to-date pos_leaf for this neighbor.
+            # Priority order:
+            # 1. If Type 2 dup was applied (in type2_applied), use the new pos_leaf
+            # 2. If neighbor was visited during lookup(center), use that pos_leaf
+            # 3. Otherwise, use the stored pos_leaf from vertex
+            if neighbor_key in type2_applied:
+                # Type 2 dup was applied, stored_pos_leaf is already updated
+                neighbor_pos_leaf = stored_pos_leaf
+            elif neighbor_key in center_visited_nodes:
+                # AVL node was visited during lookup(center)
+                neighbor_pos_leaf = center_visited_nodes[neighbor_key][0]
+            else:
+                neighbor_pos_leaf = stored_pos_leaf
 
             # Step 5: Update center's new path in this neighbor's adjacency
             if center_key in neighbor_adjacency:
@@ -1039,7 +1055,7 @@ class Grove:
                 pos_dup = Data(key=neighbor_key, leaf=neighbor_pos_leaf, value=neighbor_new_graph_leaf)
                 pos_meta_duplications.append(pos_dup)
             
-            # Update neighbor's value (keep the same pos_leaf)
+            # Update neighbor's value with the most up-to-date pos_leaf
             neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency, neighbor_pos_leaf)
             
             neighbor_result[neighbor_key] = (neighbor_vertex_data, neighbor_adjacency)
