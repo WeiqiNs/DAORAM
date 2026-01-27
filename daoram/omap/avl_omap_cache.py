@@ -102,10 +102,17 @@ class AVLOmapCached(AVLOmap):
             return
         seen_keys = set()
         temp_stash = []
+        removed_count = 0
         for data in self._meta.stash:
             if data.key not in seen_keys:
                 seen_keys.add(data.key)
                 temp_stash.append(data)
+            else:
+                removed_count += 1
+                if getattr(self, '_debug_dedup', False):
+                    print(f"  [DEDUP] Removing dup: key={data.key}, leaf={data.leaf}, value={data.value}")
+        if getattr(self, '_debug_dedup', False) and removed_count > 0:
+            print(f"  [DEDUP] Removed {removed_count} duplicate(s) from meta stash")
         self._meta.stash = temp_stash
 
     def _flush_local_to_stash(self) -> None:
@@ -184,6 +191,9 @@ class AVLOmapCached(AVLOmap):
                 for data in bucket:
                     if data.key is not None:
                         self._meta.stash.append(data)
+            # CRITICAL: De-duplication BEFORE applying dups!
+            # This ensures only the first (highest priority) dup for each key is kept.
+            self.meta_de_duplication()
         
         # Now handle where the node actually comes from
         if cache_hit:
@@ -655,8 +665,16 @@ class AVLOmapCached(AVLOmap):
 
                 # Process meta ORAM results if enabled
                 if self._enable_meta and self._meta is not None:
+                    if getattr(self, '_debug_dedup', False):
+                        print(f"  [Level {level}] Before process_read_result, meta stash size: {len(self._meta.stash)}")
                     self._meta.process_read_result(result)
+                    if getattr(self, '_debug_dedup', False):
+                        print(f"  [Level {level}] After process_read_result, meta stash size: {len(self._meta.stash)}")
+                        for d in self._meta.stash:
+                            print(f"    stash: key={d.key}, leaf={d.leaf}, value={d.value}")
                     self.meta_de_duplication()
+                    if getattr(self, '_debug_dedup', False):
+                        print(f"  [Level {level}] After dedup, meta stash size: {len(self._meta.stash)}")
 
                 # Decrypt the path
                 path = self.decrypt_path_data(path=path_data)

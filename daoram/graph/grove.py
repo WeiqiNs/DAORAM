@@ -298,8 +298,12 @@ class Grove:
         ) + leaves
         
         # pos_meta_rl_path: for _pos_omap._meta (Graph ORAM -> PosMap updates)
-        # = len(keys), because this many vertices are downloaded and their graph_leaf changes
-        pos_meta_rl_path = self.get_rl_leaf(count=len(leaves), for_pos_meta=True)
+        # Must include:
+        # 1. RL paths for obliviousness
+        # 2. visited nodes' new_pos_leaf (where pos_meta dups will be written)
+        # This ensures dups are written to correct paths and can be read later.
+        visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
+        pos_meta_rl_path = self.get_rl_leaf(count=len(leaves), for_pos_meta=True) + visited_pos_leaves
 
         # CRITICAL FIX: Before reading graph ORAM, create dups for ALL visited AVL nodes
         # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
@@ -316,17 +320,22 @@ class Grove:
         self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
 
         # Queue reads for graph ORAM and meta ORAMs.
-        # Note: _pos_meta is the same as _pos_omap._meta, which is handled internally by batch_search.
-        # We don't need to separately queue read for _pos_meta here.
+        # Also read _pos_meta using pos_meta_rl_path to ensure dups are properly handled.
         self._graph_oram.queue_read(leaves=leaves)
         self._graph_meta.queue_read(leaves=graph_meta_rl_path)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
         
         result = self._client.execute()
 
         # Process read results.
         self._graph_oram.process_read_result(result)
         self._graph_meta.process_read_result(result)
-        # _pos_meta is handled internally by _pos_omap during batch_search
+        self._pos_meta.process_read_result(result)
+        
+        # CRITICAL: De-duplication BEFORE applying dups!
+        # This ensures only the first (highest priority) dup for each (key, source) is kept.
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
 
         # IMPORTANT: First apply graph_meta duplications to update adjacency_dict,
         # THEN create new duplications using the UPDATED adjacency_dict.
@@ -337,12 +346,23 @@ class Grove:
                                if data.key in key_graph_leaf_dict}
         
         # Step 1: Apply existing graph_meta duplications to OPERATION TARGETS only
-        # Only apply dup to vertices we're actually operating on, not items read due to bucket overlap
+        # CRITICAL: Only apply dup when:
+        # 1. dup.key is in target_keys (we're operating on this vertex)
+        # 2. dup.key is in retrieved_vertices (vertex was downloaded)
+        # 3. dup.leaf is in graph_meta_rl_path (the dup's path was actually read)
+        # Condition 3 ensures we only apply dups whose complete history was read from storage.
         target_keys = set(key_graph_leaf_dict.keys())
         retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
+        graph_meta_leaves_set = set(graph_meta_rl_path)
+        
         temp_meta_stash = []
         for dup in self._graph_meta.stash:
-            if dup.key in target_keys and dup.key in retrieved_vertices:
+            cond1 = dup.key in target_keys
+            cond2 = dup.key in retrieved_vertices
+            cond3 = dup.leaf in graph_meta_leaves_set
+            
+            # Check all three conditions
+            if cond1 and cond2 and cond3:
                 idx = retrieved_vertices[dup.key]
                 vertex_value = self._graph_oram.stash[idx].value
                 
@@ -398,12 +418,19 @@ class Grove:
             # 1. Neighbor updates -> _graph_meta
             # NOW adjacency_dict has the LATEST neighbor graph_leaf values!
             for neighbor_key, neighbor_graph_leaf in adjacency_dict.items():
-                if isinstance(neighbor_graph_leaf, tuple):
-                    neighbor_graph_leaf = neighbor_graph_leaf[0]
-                graph_meta_duplications.append(
-                    Data(key=neighbor_key, leaf=neighbor_graph_leaf, 
-                         value=(data.key, new_graph_leaf))
-                )
+                # If neighbor is also downloaded in this operation, update directly
+                if neighbor_key in downloaded_vertices:
+                    neighbor_data = downloaded_vertices[neighbor_key]
+                    neighbor_adjacency = neighbor_data.value[1]
+                    neighbor_adjacency[data.key] = new_graph_leaf
+                else:
+                    # Neighbor not downloaded, create dup to notify it later
+                    if isinstance(neighbor_graph_leaf, tuple):
+                        neighbor_graph_leaf = neighbor_graph_leaf[0]
+                    graph_meta_duplications.append(
+                        Data(key=neighbor_key, leaf=neighbor_graph_leaf, 
+                             value=(data.key, new_graph_leaf))
+                    )
             
             # 2. Graph ORAM -> PosMap update -> _pos_omap._meta
             if new_pos_leaf is not None:
@@ -433,9 +460,10 @@ class Grove:
         # The remaining duplications in _graph_meta.stash are for vertices not in stash.
 
         # Queue writes for graph ORAM and meta ORAMs.
-        # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
+        # Use the same RL paths that were used for reading.
         self._graph_oram.queue_write()
         self._graph_meta.queue_write()
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
         self._client.execute()
 
         return data_of_interest
@@ -508,6 +536,11 @@ class Grove:
         # Graph Meta path should match Graph ORAM paths (to apply dup to downloaded neighbors)
         graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + all_graph_leaves
         
+        # pos_meta RL paths: for Graph ORAM -> PosMap updates
+        # Must include visited nodes' new_pos_leaf (where pos_meta dups will be written)
+        visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
+        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg, for_pos_meta=True) + visited_pos_leaves
+        
         # CRITICAL FIX: Before reading Graph ORAM, create dups for ALL visited AVL nodes
         # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
         # of _graph_meta.stash (highest priority) so they will be applied when vertices
@@ -520,16 +553,21 @@ class Grove:
                 )
         self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
         
-        # Queue reads for Graph ORAM and Graph Meta ORAM.
-        # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
+        # Queue reads for Graph ORAM and meta ORAMs.
         self._graph_oram.queue_read(leaves=all_graph_leaves)
         self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
         
         result = self._client.execute()
 
         # Process read results.
         self._graph_oram.process_read_result(result)
         self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
+        
+        # CRITICAL: De-duplication BEFORE applying dups!
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
 
         # Build index of downloaded neighbors (operation targets).
         downloaded_vertices = {data.key: data for data in self._graph_oram.stash 
@@ -537,13 +575,15 @@ class Grove:
         
         # IMPORTANT: First apply graph_meta duplications to OPERATION TARGETS (downloaded neighbors),
         # THEN create new duplications using the UPDATED adjacency_dict.
-        # Only apply dup to downloaded neighbors, not all items in stash.
+        # CRITICAL: Only apply dup when dup.leaf is in graph_meta_rl_paths (the path was read).
         target_keys = set(key_graph_leaf_dict.keys())
         downloaded_indices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)
                               if data.key in target_keys}
+        graph_meta_leaves_set = set(graph_meta_rl_paths)
         temp_meta_stash = []
         for dup in self._graph_meta.stash:
-            if dup.key in downloaded_indices:
+            # Check both conditions: key is downloaded AND dup.leaf path was read
+            if dup.key in downloaded_indices and dup.leaf in graph_meta_leaves_set:
                 idx = downloaded_indices[dup.key]
                 vertex_value = self._graph_oram.stash[idx].value
                 
@@ -605,16 +645,26 @@ class Grove:
                 neighbor_new_pos_leaf = neighbor_old_pos_leaf
             neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency_dict, neighbor_new_pos_leaf)
             
-            # Type 1: Notify neighbor's neighbors about neighbor's new graph_leaf -> _graph_meta
+            # Type 1: Notify neighbor's neighbors about neighbor's new graph_leaf
             # We tell nn_key (neighbor's neighbor) that neighbor_key's path changed
             for nn_key, nn_graph_leaf in neighbor_adjacency_dict.items():
                 if nn_key == vertex[0]:  # Skip the new vertex itself
                     continue
-                if isinstance(nn_graph_leaf, tuple):
-                    nn_graph_leaf = nn_graph_leaf[0]
-                graph_meta_duplications.append(
-                    Data(key=nn_key, leaf=nn_graph_leaf, value=(neighbor_key, neighbor_new_graph_leaf))
-                )
+                
+                # If nn_key is also downloaded in this operation, update directly instead of creating dup
+                # This is correct because dups have already been applied in Step 5
+                if nn_key in downloaded_vertices:
+                    nn_data = downloaded_vertices[nn_key]
+                    nn_adjacency = nn_data.value[1]
+                    nn_adjacency[neighbor_key] = neighbor_new_graph_leaf
+                else:
+                    # nn_key not downloaded, create dup to notify it later
+                    # Use nn_graph_leaf from adjacency_dict (may be stale, but it's the best we have)
+                    if isinstance(nn_graph_leaf, tuple):
+                        nn_graph_leaf = nn_graph_leaf[0]
+                    graph_meta_duplications.append(
+                        Data(key=nn_key, leaf=nn_graph_leaf, value=(neighbor_key, neighbor_new_graph_leaf))
+                    )
             
             # Type 2: Notify PosMap about neighbor's new graph_leaf -> _pos_omap._meta
             if neighbor_new_pos_leaf is not None:
@@ -646,39 +696,74 @@ class Grove:
         
         # Note: Duplications have already been applied in the step before Step 6.
 
-        # Step 8: Queue writes for Graph ORAM and Graph Meta ORAM.
-        # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
+        # Step 8: Queue writes for Graph ORAM and meta ORAMs.
         self._graph_oram.queue_write()
         self._graph_meta.queue_write()
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
         self._client.execute()
 
     def delete(self, key: Any) -> None:
         """
         Delete a vertex from the graph using duplication-based neighbor notification.
         
-        Instead of downloading all neighbors, we send duplications to notify them
-        that this vertex has been deleted (using new_graph_leaf = -1 as deletion marker).
+        Uses batch_search (not delete) on PosMap to find the vertex's graph_leaf.
+        The AVL node is NOT deleted - only the vertex in Graph ORAM is removed.
+        Neighbors are notified via duplication (using new_graph_leaf = -1 as deletion marker).
 
         :param key: The key of the vertex to delete.
         """
-        # Step 1: Delete from PosMap ORAM (search with value=None performs lazy deletion)
-        # This also returns the vertex's graph_leaf
-        vertex_graph_leaf = self._pos_omap.delete(key=key)
+        # Step 1: Use batch_search to find the vertex's graph_leaf (like lookup)
+        # This also returns visited_nodes_map for creating Type 2 dups
+        search_results, visited_nodes_map, total_avl_paths = self._pos_omap.batch_search(
+            keys=[key], return_pos_leaf=True, return_visited_nodes=True
+        )
         
-        # Step 2: Get RL paths for graph_meta (to notify neighbors via duplication)
-        # We need max_degree paths for obliviousness
+        if key not in search_results or search_results[key] is None:
+            # Key not found in PosMap, nothing to delete
+            return
+        
+        # batch_search with return_pos_leaf=True returns (graph_leaf, pos_leaf)
+        vertex_graph_leaf = search_results[key]
+        if isinstance(vertex_graph_leaf, tuple):
+            vertex_graph_leaf = vertex_graph_leaf[0]
+        
+        # Step 2: Prepare paths for reading
+        # graph_meta RL paths for neighbor notification dups
         graph_meta_rl_paths = self.get_rl_leaf(count=self._max_deg, for_pos_meta=False)
+        all_graph_leaves = [vertex_graph_leaf]
         
-        # Step 3: Queue reads for Graph ORAM and Graph Meta
-        self._graph_oram.queue_read(leaves=[vertex_graph_leaf])
-        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+        # pos_meta RL paths (like lookup)
+        visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
+        pos_meta_rl_path = self.get_rl_leaf(count=1, for_pos_meta=True) + visited_pos_leaves
+        
+        # Step 3: Create Type 2 dups for visited AVL nodes (like lookup)
+        # Notify vertices about their AVL node's new pos_leaf
+        avl_pos_update_dups = []
+        for vertex_key, (new_pos_leaf, vertex_graph_leaf_avl) in visited_nodes_map.items():
+            if vertex_key == key:
+                continue  # Skip the deleted vertex
+            if vertex_graph_leaf_avl is not None:
+                avl_pos_update_dups.append(
+                    Data(key=vertex_key, leaf=vertex_graph_leaf_avl, value=new_pos_leaf)
+                )
+        self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
+        
+        # Step 4: Queue reads for Graph ORAM, Graph Meta, and PosMap Meta
+        self._graph_oram.queue_read(leaves=all_graph_leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths + all_graph_leaves)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
         
         # Execute reads
         result = self._client.execute()
         self._graph_oram.process_read_result(result)
         self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
         
-        # Step 4: Find the vertex in stash and get its neighbors
+        # De-duplication BEFORE processing dups
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Step 5: Find the vertex in stash and get its neighbors
         vertex_data = None
         vertex_idx = None
         for i, data in enumerate(self._graph_oram.stash):
@@ -688,9 +773,10 @@ class Grove:
                 break
         
         if vertex_data is None:
-            # Vertex not found, write back and return
+            # Vertex not found in Graph ORAM, write back and return
             self._graph_oram.queue_write()
-            self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+            self._graph_meta.queue_write(leaves=graph_meta_rl_paths + all_graph_leaves)
+            self._pos_meta.queue_write(leaves=pos_meta_rl_path)
             self._client.execute()
             return
         
@@ -698,43 +784,73 @@ class Grove:
         neighbor_adjacency = vertex_data.value[1]
         neighbor_keys = list(neighbor_adjacency.keys())
 
-        # Step 5: Apply duplications only to the target vertex (the one we operate on),
-        # and discard dups targeting the deleted vertex.
+        # Step 6: Apply graph_meta dups (like lookup)
+        graph_meta_leaves_set = set(graph_meta_rl_paths + all_graph_leaves)
         temp_stash = []
         for dup in self._graph_meta.stash:
             if dup.key == key:
-                # This dup targets the deleted vertex, discard it
+                # Discard dups targeting the deleted vertex
                 continue
-            temp_stash.append(dup)
+            if dup.leaf in graph_meta_leaves_set:
+                # Apply dup to downloaded vertex
+                for data in self._graph_oram.stash:
+                    if data.key == dup.key:
+                        if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                            # Type 1: neighbor update
+                            source_key, new_graph_leaf = dup.value
+                            if new_graph_leaf == -1:
+                                # Deletion marker - remove from adjacency
+                                if source_key in data.value[1]:
+                                    del data.value[1][source_key]
+                            else:
+                                data.value[1][source_key] = new_graph_leaf
+                        else:
+                            # Type 2: pos_leaf update
+                            vertex_value = data.value
+                            if len(vertex_value) >= 3:
+                                data.value = (vertex_value[0], vertex_value[1], dup.value)
+                        break
+                # Dup applied, don't keep
+            else:
+                temp_stash.append(dup)
         self._graph_meta.stash = temp_stash
         
-        # Step 6: Create deletion duplications for all neighbors
-        # Use new_graph_leaf = -1 to indicate deletion
+        # Step 7: Create deletion dups for all neighbors
         DELETION_MARKER = -1
-        deletion_dups = []
-        for i, neighbor_key in enumerate(neighbor_keys):
+        graph_meta_duplications = []
+        
+        for neighbor_key in neighbor_keys:
             neighbor_graph_leaf = neighbor_adjacency[neighbor_key]
             if isinstance(neighbor_graph_leaf, tuple):
                 neighbor_graph_leaf = neighbor_graph_leaf[0]
-            # Duplication format: Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(deleted_key, DELETION_MARKER))
+            # Type 1 dup: notify neighbor about deletion
             dup = Data(key=neighbor_key, leaf=neighbor_graph_leaf, value=(key, DELETION_MARKER))
-            deletion_dups.append(dup)
+            graph_meta_duplications.append(dup)
         
-        # Pad with dummy dups for obliviousness (total = max_degree)
+        # Pad with dummy dups for obliviousness
         dummy_leaf = secrets.randbelow(self._leaf_range)
-        for _ in range(self._max_deg - len(deletion_dups)):
-            dummy_dup = Data(key=None, leaf=dummy_leaf, value=(None, DELETION_MARKER))
-            deletion_dups.append(dummy_dup)
+        while len(graph_meta_duplications) < self._max_deg:
+            graph_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=(None, DELETION_MARKER)))
         
-        # Add deletion dups to graph_meta stash (prepend for highest priority)
-        self._graph_meta.stash = deletion_dups + self._graph_meta.stash
+        # Note: No pos_meta dups needed for delete because:
+        # - The deleted vertex is removed, no need to update its AVL node
+        # - Visited AVL nodes' corresponding vertices were NOT downloaded, 
+        #   so their graph_leaf didn't change
         
-        # Step 7: Remove the deleted vertex from graph_oram stash
+        # Step 8: Remove the deleted vertex from graph_oram stash
         del self._graph_oram.stash[vertex_idx]
         
-        # Step 8: Write back
+        # Add new dups to stash
+        self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
+        
+        # De-duplication after adding new dups
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Step 10: Write back
         self._graph_oram.queue_write()
-        self._graph_meta.queue_write(leaves=graph_meta_rl_paths + [vertex_graph_leaf])
+        self._graph_meta.queue_write(leaves=graph_meta_rl_paths + all_graph_leaves)
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
         self._client.execute()
 
     def neighbor(self, keys: List[Any]) -> dict:
@@ -799,12 +915,21 @@ class Grove:
             + all_graph_leaves
         )
         
-        # CRITICAL FIX: Before reading Graph ORAM, create dups for ALL visited AVL nodes
-        # from the lookup step. These dups notify vertices about their pos_leaf changes.
-        # Put them at the FRONT of _graph_meta.stash (highest priority) so they will be
-        # applied when neighbors are downloaded, even if the neighbor's recorded graph_leaf is stale.
+        # pos_meta RL paths: for Graph ORAM -> PosMap updates
+        # Must include visited nodes' new_pos_leaf from center_visited_nodes
+        visited_pos_leaves = list(set(v[0] for v in center_visited_nodes.values() if v[0] is not None))
+        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True) + visited_pos_leaves
+        
+        # Create dups for visited AVL nodes (EXCLUDING center_key) to notify vertices
+        # about their pos_leaf changes. We exclude center_key because lookup() already
+        # created and applied its type 2 dup in lookup_without_omap. The center_visited_nodes
+        # contains the OLD graph_leaf for center_key, but the vertex has already moved to
+        # a new graph_leaf, so creating a dup with the old leaf would be incorrect.
         avl_pos_update_dups = []
         for vertex_key, (new_pos_leaf, vertex_graph_leaf) in center_visited_nodes.items():
+            # Skip center_key - its type 2 dup was already handled by lookup()
+            if vertex_key == center_key:
+                continue
             if vertex_graph_leaf is not None:
                 # Type 2 dup: notify vertex about its AVL node's new pos_leaf
                 avl_pos_update_dups.append(
@@ -813,18 +938,20 @@ class Grove:
         # Prepend to stash (highest priority - these are the freshest updates)
         self._graph_meta.stash = avl_pos_update_dups + self._graph_meta.stash
 
-        # Step 3: Queue reads for Graph ORAM and Graph Meta ORAM
-        # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
+        # Step 3: Queue reads for Graph ORAM and meta ORAMs
         self._graph_oram.queue_read(leaves=all_graph_leaves)
         self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
         
         result = self._client.execute()
         
         self._graph_oram.process_read_result(result)
         self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
         
-        # De-duplication for graph_meta
+        # De-duplication for meta ORAMs
         self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
         
         # Step 4: Apply duplications and process neighbors
         downloaded_neighbors = {}
@@ -833,10 +960,13 @@ class Grove:
                 downloaded_neighbors[data.key] = data
         
         # Apply graph_meta duplications only to neighbors read by this operation
+        # CRITICAL: Only apply dup when dup.leaf is in graph_meta_rl_paths (the path was read).
+        graph_meta_leaves_set = set(graph_meta_rl_paths)
         temp_stash = []
         type2_applied = {}
         for dup in self._graph_meta.stash:
-            if dup.key in downloaded_neighbors:
+            # Check both conditions: key is downloaded AND dup.leaf path was read
+            if dup.key in downloaded_neighbors and dup.leaf in graph_meta_leaves_set:
                 neighbor_data = downloaded_neighbors[dup.key]
                 vertex_value = neighbor_data.value
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
@@ -880,7 +1010,16 @@ class Grove:
             
             # Step 6: Create duplications for this neighbor's other neighbors
             for other_key, other_graph_leaf in neighbor_adjacency.items():
-                if other_key != center_key:  # Center already updated locally
+                if other_key == center_key:  # Center already updated locally
+                    continue
+                
+                # If other_key is also a downloaded neighbor, update directly
+                if other_key in downloaded_neighbors:
+                    other_data = downloaded_neighbors[other_key]
+                    other_adjacency = other_data.value[1]
+                    other_adjacency[neighbor_key] = neighbor_new_graph_leaf
+                else:
+                    # other_key not downloaded, create dup to notify it later
                     if isinstance(other_graph_leaf, tuple):
                         other_graph_leaf = other_graph_leaf[0]
                     if other_graph_leaf is None or other_graph_leaf < 0:
@@ -919,13 +1058,12 @@ class Grove:
         
         # De-duplication
         self.graph_meta_de_duplication()
-        self.pos_meta_de_duplication()
         self._pos_omap.meta_de_duplication()
         
-        # Step 8: Write back
-        # Note: _pos_meta is _pos_omap._meta, handled internally by _pos_omap
+        # Step 8: Write back using the same RL paths
         self._graph_oram.queue_write()
         self._graph_meta.queue_write(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
         self._client.execute()
         
         return neighbor_result
