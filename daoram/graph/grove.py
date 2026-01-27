@@ -1142,6 +1142,25 @@ class Grove:
         # Use -1 as dummy key (assuming normal keys are non-negative integers)
         self.neighbor([-1])
 
+    def _get_layer_size(self, hop: int) -> int:
+        """
+        Get the maximum number of vertices at a given hop layer for obliviousness.
+        
+        Layer 1: D (neighbors of start)
+        Layer 2: D * (D-1) (each layer-1 vertex has D-1 new neighbors)
+        Layer t: D * (D-1)^(t-1)
+        
+        :param hop: The hop number (1-indexed).
+        :return: Maximum number of vertices at this layer.
+        """
+        D = self._max_deg
+        if hop <= 0:
+            return 1
+        elif hop == 1:
+            return D
+        else:
+            return D * ((D - 1) ** (hop - 1))
+
     def t_hop(self, key: Any, num_hop: int) -> dict:
         """
         Perform the t-hop query, finding all neighbors within t hops.
@@ -1152,7 +1171,7 @@ class Grove:
         Optimized: Only 1 batch_search to get the starting vertex.
         Subsequent hops use graph_leaf from adjacency_dict directly (no batch_search needed).
         
-        For obliviousness, each layer reads exactly D paths from graph ORAM,
+        For obliviousness, layer t reads D*(D-1)^(t-1) paths from graph ORAM,
         padded with dummy paths if needed.
 
         :param key: Starting vertex key.
@@ -1170,10 +1189,10 @@ class Grove:
         
         if not start_found:
             # Key not found - still need to execute dummy operations for obliviousness
-            for hop in range(num_hop):
-                # Read D dummy paths per hop
-                dummy_leaves = [random.randint(0, self._leaf_range - 1) for _ in range(D)]
-                self._t_hop_read_layer(dummy_leaves, {}, set())
+            for hop in range(1, num_hop + 1):
+                layer_size = self._get_layer_size(hop)
+                dummy_leaves = [random.randint(0, self._leaf_range - 1) for _ in range(layer_size)]
+                self._t_hop_read_layer(dummy_leaves, {}, set(), layer_size)
             return result
         
         # BFS: track visited keys and frontier (keys with known graph_leaf to explore)
@@ -1188,18 +1207,19 @@ class Grove:
                     gl = gl[0]
                 frontier[nk] = gl
         
-        for hop in range(num_hop):
-            # Download frontier vertices (up to D) using their known graph_leaf
-            # No batch_search needed - we already have graph_leaf from adjacency_dict
-            keys_to_download = list(frontier.keys())[:D]
+        for hop in range(1, num_hop + 1):
+            layer_size = self._get_layer_size(hop)
+            
+            # Download frontier vertices using their known graph_leaf
+            keys_to_download = list(frontier.keys())[:layer_size]
             leaves_to_download = [frontier[k] for k in keys_to_download]
             
             # Pad with dummy leaves for obliviousness
-            while len(leaves_to_download) < D:
+            while len(leaves_to_download) < layer_size:
                 leaves_to_download.append(random.randint(0, self._leaf_range - 1))
             
             # Read this layer
-            downloaded = self._t_hop_read_layer(leaves_to_download, frontier, visited)
+            downloaded = self._t_hop_read_layer(leaves_to_download, frontier, visited, layer_size)
             
             # Update result and prepare next frontier
             next_frontier = {}
@@ -1218,22 +1238,27 @@ class Grove:
         
         return result
     
-    def _t_hop_read_layer(self, leaves: List[int], key_leaf_map: dict, visited: set) -> dict:
+    def _t_hop_read_layer(self, leaves: List[int], key_leaf_map: dict, visited: set, 
+                          layer_size: int = None) -> dict:
         """
         Read one layer of vertices for t-hop query.
         
-        :param leaves: List of graph_leaf values to read (padded to D).
+        :param leaves: List of graph_leaf values to read (padded to layer_size).
         :param key_leaf_map: Dict mapping key -> graph_leaf for real vertices.
         :param visited: Set of already visited keys.
+        :param layer_size: Number of vertices at this layer (for padding). Default D.
         :return: Dict of downloaded vertices {key: (vertex_data, adjacency_dict, new_graph_leaf)}.
         """
         D = self._max_deg
+        if layer_size is None:
+            layer_size = D
         
-        # RL paths for meta ORAMs (similar to neighbor function)
-        graph_meta_rl_count = D * D
+        # RL paths for meta ORAMs
+        # Each downloaded vertex may notify up to D neighbors -> layer_size * D dups
+        graph_meta_rl_count = layer_size * D
         graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + leaves
         visited_pos_leaves_padded = self._pad_visited_pos_leaves([])
-        pos_meta_rl_path = self.get_rl_leaf(count=D, for_pos_meta=True) + visited_pos_leaves_padded
+        pos_meta_rl_path = self.get_rl_leaf(count=layer_size, for_pos_meta=True) + visited_pos_leaves_padded
         
         # Read from graph ORAM and meta ORAMs
         self._graph_oram.queue_read(leaves=leaves)
@@ -1344,11 +1369,12 @@ class Grove:
                     Data(key=vertex_key, leaf=pos_leaf_for_dup, value=new_graph_leaf)
                 )
         
-        # Pad duplications
+        # Pad duplications based on layer_size
+        # Each vertex notifies up to D neighbors -> layer_size * D dups
         dummy_leaf = secrets.randbelow(self._leaf_range)
-        while len(graph_meta_duplications) < D * D:
+        while len(graph_meta_duplications) < layer_size * D:
             graph_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=(None, 0)))
-        while len(pos_meta_duplications) < D:
+        while len(pos_meta_duplications) < layer_size:
             pos_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=0))
         
         # Add duplications
@@ -1369,42 +1395,78 @@ class Grove:
 
     def t_traversal(self, key: Any, num_hop: int) -> dict:
         """
-        Perform t-hop traversal, randomly selecting one neighbor per hop.
+        Perform t-traversal (random walk) starting from a vertex.
         
-        Starting from the given vertex, randomly walk through the graph for num_hop steps.
-        Each step randomly selects one neighbor to visit next.
+        At each step:
+        1. Download ALL neighbors of current vertex (padded to D paths)
+        2. Randomly select one neighbor to continue
+        3. Repeat for num_hop steps
         
-        For obliviousness, always executes exactly num_hop neighbor queries,
-        even if current vertex has no neighbors (uses dummy queries).
+        Optimized: Only 1 batch_search to get the starting vertex.
+        Subsequent hops use graph_leaf from adjacency_dict directly.
+        
+        For obliviousness, each step reads D paths from graph ORAM.
 
         :param key: Starting vertex key.
         :param num_hop: Number of hops to traverse.
         :return: Dict mapping vertex key to (vertex_data, adjacency_dict) for visited vertices.
         """
+        D = self._max_deg
+        
         if num_hop <= 0:
             return self.lookup([key])
         
-        # Start with the initial vertex
+        # Step 1: Only ONE batch_search to get the starting vertex
         result = self.lookup([key])
         start_found = key in result and result[key] is not None
         
-        current_key = key if start_found else None
+        if not start_found:
+            # Key not found - still need to execute dummy operations for obliviousness
+            for hop in range(num_hop):
+                dummy_leaves = [random.randint(0, self._leaf_range - 1) for _ in range(D)]
+                self._t_hop_read_layer(dummy_leaves, {}, set(), layer_size=D)
+            return result
+        
+        # Track visited vertices
+        visited = {key}
+        current_key = key
+        current_data = result[key]
         
         for hop in range(num_hop):
-            if current_key is not None:
-                # Real neighbor query
-                neighbors = self.neighbor([current_key])
-                
-                if neighbors:
-                    # Randomly select one neighbor
-                    next_key = random.choice(list(neighbors.keys()))
-                    result[next_key] = neighbors[next_key]
-                    current_key = next_key
-                else:
-                    # No neighbors, switch to dummy queries
-                    current_key = None
+            _, current_adjacency, _ = current_data
+            
+            # Build key_leaf_map for ALL neighbors
+            key_leaf_map = {}
+            leaves = []
+            for nk, gl in current_adjacency.items():
+                if isinstance(gl, tuple):
+                    gl = gl[0]
+                if gl is not None and gl >= 0:
+                    key_leaf_map[nk] = gl
+                    leaves.append(gl)
+            
+            # Pad leaves to D
+            while len(leaves) < D:
+                leaves.append(random.randint(0, self._leaf_range - 1))
+            
+            # Download all neighbors
+            downloaded = self._t_hop_read_layer(leaves, key_leaf_map, visited, layer_size=D)
+            
+            # Add all downloaded neighbors to result
+            for vertex_key, vertex_data in downloaded.items():
+                visited.add(vertex_key)
+                result[vertex_key] = vertex_data
+            
+            if downloaded:
+                # Randomly select one downloaded neighbor to continue
+                next_key = random.choice(list(downloaded.keys()))
+                current_key = next_key
+                current_data = downloaded[next_key]
             else:
-                # Dummy neighbor query for obliviousness
-                self._dummy_neighbor()
+                # No neighbors downloaded, do dummy for remaining hops
+                for remaining in range(hop + 1, num_hop):
+                    dummy_leaves = [random.randint(0, self._leaf_range - 1) for _ in range(D)]
+                    self._t_hop_read_layer(dummy_leaves, {}, visited, layer_size=D)
+                break
         
         return result
