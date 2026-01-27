@@ -908,33 +908,30 @@ class Grove:
         
         # Step 1: Lookup the center vertex (also get visited_nodes_map)
         center_result, center_visited_nodes = self.lookup([center_key], return_visited_nodes=True)
-        if center_key not in center_result:
-            return {}
         
-        # lookup now returns (vertex_data, adjacency_dict, new_graph_leaf)
-        center_data, center_adjacency, center_new_graph_leaf = center_result[center_key]
+        # For obliviousness, we must execute the full access pattern even if key doesn't exist
+        center_found = center_key in center_result and center_result[center_key] is not None
         
-        # adjacency_dict format: {neighbor_key: neighbor_graph_leaf}
-        # After lookup(center), center_adjacency should have up-to-date neighbor graph_leaf
-        # because lookup applies graph_meta duplications before creating new ones.
-        neighbor_keys = list(center_adjacency.keys())
+        if center_found:
+            # lookup returns (vertex_data, adjacency_dict, new_graph_leaf)
+            center_data, center_adjacency, center_new_graph_leaf = center_result[center_key]
+            neighbor_keys = list(center_adjacency.keys())
+            
+            # CRITICAL: Remove Type2 dups created by lookup() for neighbor_keys.
+            neighbor_keys_set = set(neighbor_keys)
+            cleaned_stash = []
+            for dup in self._graph_meta.stash:
+                if isinstance(dup.value, tuple) or dup.key not in neighbor_keys_set:
+                    cleaned_stash.append(dup)
+            self._graph_meta.stash = cleaned_stash
+        else:
+            # Key not found - use empty adjacency for dummy operations
+            center_adjacency = {}
+            center_new_graph_leaf = None
+            neighbor_keys = []
+            neighbor_keys_set = set()
         
-        # CRITICAL: Remove Type2 dups created by lookup() for neighbor_keys.
-        # lookup() creates Type2 dups for ALL visited AVL nodes using the OLD graph_leaf
-        # stored in AVL. But neighbors will be downloaded and get NEW graph_leaf values,
-        # so those dups would have incorrect leaf values. We'll handle neighbors directly
-        # by updating their stored_pos_leaf from center_visited_nodes (see lines ~1006-1057).
-        neighbor_keys_set = set(neighbor_keys)
-        cleaned_stash = []
-        for dup in self._graph_meta.stash:
-            # Keep dup if: it's not a Type2 dup OR key is not a neighbor
-            if isinstance(dup.value, tuple) or dup.key not in neighbor_keys_set:
-                cleaned_stash.append(dup)
-        self._graph_meta.stash = cleaned_stash
         K = len(neighbor_keys)
-        
-        if K == 0:
-            return {}
 
         # Use graph_leaf from center_adjacency (should be up-to-date after lookup's dup processing)
         neighbor_graph_leaves = []
@@ -1132,48 +1129,243 @@ class Grove:
         
         return neighbor_result
 
+    def _dummy_neighbor(self) -> None:
+        """
+        Perform a dummy neighbor query for obliviousness padding.
+        
+        Uses -1 as dummy key which is guaranteed not to exist in the graph.
+        This executes the same access pattern as a real neighbor query:
+        - Full lookup (PosMap search + graph ORAM read) with de-duplication and eviction
+        - Full neighbor download (D paths) with de-duplication and eviction
+        - Returns nothing since key doesn't exist
+        """
+        # Use -1 as dummy key (assuming normal keys are non-negative integers)
+        self.neighbor([-1])
+
     def t_hop(self, key: Any, num_hop: int) -> dict:
         """
         Perform the t-hop query, finding all neighbors within t hops.
         
         Returns all vertices reachable within num_hop hops from the starting vertex.
         The starting vertex is included in the result.
+        
+        Optimized: Only 1 batch_search to get the starting vertex.
+        Subsequent hops use graph_leaf from adjacency_dict directly (no batch_search needed).
+        
+        For obliviousness, each layer reads exactly D paths from graph ORAM,
+        padded with dummy paths if needed.
 
         :param key: Starting vertex key.
         :param num_hop: Number of hops to traverse.
         :return: Dict mapping vertex key to (vertex_data, adjacency_dict) for all vertices found.
         """
+        D = self._max_deg
+        
         if num_hop <= 0:
-            # Just return the starting vertex
             return self.lookup([key])
         
-        # First, lookup the starting vertex
+        # Step 1: Only ONE batch_search to get the starting vertex
         result = self.lookup([key])
-        if key not in result:
-            return {}
+        start_found = key in result and result[key] is not None
         
-        # BFS: keys we've seen and keys to explore next
+        if not start_found:
+            # Key not found - still need to execute dummy operations for obliviousness
+            for hop in range(num_hop):
+                # Read D dummy paths per hop
+                dummy_leaves = [random.randint(0, self._leaf_range - 1) for _ in range(D)]
+                self._t_hop_read_layer(dummy_leaves, {}, set())
+            return result
+        
+        # BFS: track visited keys and frontier (keys with known graph_leaf to explore)
         visited = {key}
-        frontier = [key]
+        # Frontier: dict of {key: graph_leaf} for vertices to download
+        # Start with neighbors of the starting vertex
+        start_data, start_adjacency, _ = result[key]
+        frontier = {}
+        for nk, gl in start_adjacency.items():
+            if nk not in visited:
+                if isinstance(gl, tuple):
+                    gl = gl[0]
+                frontier[nk] = gl
         
         for hop in range(num_hop):
-            next_frontier = []
+            # Download frontier vertices (up to D) using their known graph_leaf
+            # No batch_search needed - we already have graph_leaf from adjacency_dict
+            keys_to_download = list(frontier.keys())[:D]
+            leaves_to_download = [frontier[k] for k in keys_to_download]
             
-            for center_key in frontier:
-                # Get neighbors of this vertex
-                neighbors = self.neighbor([center_key])
-                
-                for neighbor_key, neighbor_value in neighbors.items():
-                    if neighbor_key not in visited:
-                        visited.add(neighbor_key)
-                        next_frontier.append(neighbor_key)
-                        result[neighbor_key] = neighbor_value
+            # Pad with dummy leaves for obliviousness
+            while len(leaves_to_download) < D:
+                leaves_to_download.append(random.randint(0, self._leaf_range - 1))
+            
+            # Read this layer
+            downloaded = self._t_hop_read_layer(leaves_to_download, frontier, visited)
+            
+            # Update result and prepare next frontier
+            next_frontier = {}
+            for vertex_key, vertex_data in downloaded.items():
+                visited.add(vertex_key)
+                result[vertex_key] = vertex_data
+                # Add this vertex's unvisited neighbors to next frontier
+                _, adjacency, _ = vertex_data
+                for nk, gl in adjacency.items():
+                    if nk not in visited and nk not in next_frontier:
+                        if isinstance(gl, tuple):
+                            gl = gl[0]
+                        next_frontier[nk] = gl
             
             frontier = next_frontier
-            if not frontier:
-                break  # No more vertices to explore
         
         return result
+    
+    def _t_hop_read_layer(self, leaves: List[int], key_leaf_map: dict, visited: set) -> dict:
+        """
+        Read one layer of vertices for t-hop query.
+        
+        :param leaves: List of graph_leaf values to read (padded to D).
+        :param key_leaf_map: Dict mapping key -> graph_leaf for real vertices.
+        :param visited: Set of already visited keys.
+        :return: Dict of downloaded vertices {key: (vertex_data, adjacency_dict, new_graph_leaf)}.
+        """
+        D = self._max_deg
+        
+        # RL paths for meta ORAMs (similar to neighbor function)
+        graph_meta_rl_count = D * D
+        graph_meta_rl_paths = self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False) + leaves
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves([])
+        pos_meta_rl_path = self.get_rl_leaf(count=D, for_pos_meta=True) + visited_pos_leaves_padded
+        
+        # Read from graph ORAM and meta ORAMs
+        self._graph_oram.queue_read(leaves=leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
+        
+        result = self._client.execute()
+        
+        self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
+        
+        # De-duplication
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Find downloaded vertices
+        leaf_to_key = {v: k for k, v in key_leaf_map.items()}
+        downloaded = {}
+        graph_meta_leaves_set = set(graph_meta_rl_paths)
+        
+        for data in self._graph_oram.stash:
+            if data.key in key_leaf_map and data.key not in visited:
+                downloaded[data.key] = data
+        
+        # Apply graph_meta duplications to downloaded vertices
+        # Track which vertices had Type 2 dup applied (their pos_leaf is now up-to-date)
+        temp_stash = []
+        type2_applied = {}  # {vertex_key: new_pos_leaf}
+        for dup in self._graph_meta.stash:
+            applied = False
+            if dup.key in downloaded and dup.leaf in graph_meta_leaves_set:
+                vertex_data = downloaded[dup.key]
+                vertex_value = vertex_data.value
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    # Type 1: Neighbor update
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf = dup.value
+                    if new_graph_leaf < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        adjacency_dict[source_key] = new_graph_leaf
+                    applied = True
+                else:
+                    # Type 2: PosMap update - pos_leaf from AVL changed
+                    if len(vertex_value) >= 3:
+                        vertex_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                        type2_applied[dup.key] = dup.value  # Record the new pos_leaf
+                        applied = True
+            if not applied:
+                temp_stash.append(dup)
+        self._graph_meta.stash = temp_stash
+        
+        # Prepare result and create duplications
+        result_dict = {}
+        graph_meta_duplications = []
+        pos_meta_duplications = []
+        vertex_info = {}  # {key: (vertex_data, adjacency, new_graph_leaf, pos_leaf_for_dup)}
+        
+        # First pass: assign new graph_leaf and collect info
+        for vertex_key, vertex_data in downloaded.items():
+            vertex_value = vertex_data.value
+            if len(vertex_value) >= 3:
+                vertex_vertex_data, adjacency, stored_pos_leaf = vertex_value
+            else:
+                vertex_vertex_data, adjacency = vertex_value
+                stored_pos_leaf = None
+            
+            # Determine the correct pos_leaf for creating pos_meta dup
+            # Priority: type2_applied (freshest) > stored_pos_leaf (may be stale)
+            if vertex_key in type2_applied:
+                pos_leaf_for_dup = type2_applied[vertex_key]
+            else:
+                pos_leaf_for_dup = stored_pos_leaf
+            
+            # Assign new graph_leaf
+            new_graph_leaf = secrets.randbelow(self._leaf_range)
+            vertex_data.leaf = new_graph_leaf
+            
+            # Store for later: update adjacency between co-downloaded vertices
+            # and create Type 1 dups for non-downloaded neighbors
+            vertex_info[vertex_key] = (vertex_data, adjacency, new_graph_leaf, pos_leaf_for_dup)
+            
+            result_dict[vertex_key] = (vertex_vertex_data, adjacency, new_graph_leaf)
+        
+        # Second pass: Create Type 1 dups and update adjacency between co-downloaded vertices
+        for vertex_key, (vertex_data, adjacency, new_graph_leaf, pos_leaf_for_dup) in vertex_info.items():
+            for neighbor_key, neighbor_gl in adjacency.items():
+                if isinstance(neighbor_gl, tuple):
+                    neighbor_gl = neighbor_gl[0]
+                
+                # If neighbor is also downloaded in this batch, update its adjacency directly
+                # (similar to neighbor function's logic)
+                if neighbor_key in vertex_info:
+                    neighbor_data, neighbor_adj, _, _ = vertex_info[neighbor_key]
+                    neighbor_adj[vertex_key] = new_graph_leaf
+                else:
+                    # Neighbor not downloaded, create Type 1 dup to notify it later
+                    if neighbor_gl is not None and neighbor_gl >= 0:
+                        graph_meta_duplications.append(
+                            Data(key=neighbor_key, leaf=neighbor_gl, value=(vertex_key, new_graph_leaf))
+                        )
+            
+            # Create pos_meta dup (notify PosMap of new graph_leaf)
+            if pos_leaf_for_dup is not None:
+                pos_meta_duplications.append(
+                    Data(key=vertex_key, leaf=pos_leaf_for_dup, value=new_graph_leaf)
+                )
+        
+        # Pad duplications
+        dummy_leaf = secrets.randbelow(self._leaf_range)
+        while len(graph_meta_duplications) < D * D:
+            graph_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=(None, 0)))
+        while len(pos_meta_duplications) < D:
+            pos_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=0))
+        
+        # Add duplications
+        self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
+        self._pos_omap.add_meta_duplications(pos_meta_duplications)
+        
+        # De-duplication after adding new dups
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Write back
+        self._graph_oram.queue_write()
+        self._graph_meta.queue_write(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
+        self._client.execute()
+        
+        return result_dict
 
     def t_traversal(self, key: Any, num_hop: int) -> dict:
         """
@@ -1181,6 +1373,9 @@ class Grove:
         
         Starting from the given vertex, randomly walk through the graph for num_hop steps.
         Each step randomly selects one neighbor to visit next.
+        
+        For obliviousness, always executes exactly num_hop neighbor queries,
+        even if current vertex has no neighbors (uses dummy queries).
 
         :param key: Starting vertex key.
         :param num_hop: Number of hops to traverse.
@@ -1191,22 +1386,25 @@ class Grove:
         
         # Start with the initial vertex
         result = self.lookup([key])
-        if key not in result:
-            return {}
+        start_found = key in result and result[key] is not None
         
-        current_key = key
+        current_key = key if start_found else None
         
         for hop in range(num_hop):
-            # Get neighbors of current vertex
-            neighbors = self.neighbor([current_key])
-            
-            if not neighbors:
-                # No neighbors, stop traversal
-                break
-            
-            # Randomly select one neighbor
-            next_key = random.choice(list(neighbors.keys()))
-            result[next_key] = neighbors[next_key]
-            current_key = next_key
+            if current_key is not None:
+                # Real neighbor query
+                neighbors = self.neighbor([current_key])
+                
+                if neighbors:
+                    # Randomly select one neighbor
+                    next_key = random.choice(list(neighbors.keys()))
+                    result[next_key] = neighbors[next_key]
+                    current_key = next_key
+                else:
+                    # No neighbors, switch to dummy queries
+                    current_key = None
+            else:
+                # Dummy neighbor query for obliviousness
+                self._dummy_neighbor()
         
         return result
