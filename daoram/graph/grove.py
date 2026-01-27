@@ -44,9 +44,14 @@ class Grove:
         self._max_deg: int = max_deg
         self._num_opr: int = num_opr
         self._graph_depth: int = graph_depth
+        self._num_data: int = num_data
 
         # Compute the level of the binary tree needed.
         self._level: int = int(math.ceil(math.log(num_data, 2))) + 1
+        
+        # Compute AVL tree max height for padding visited_pos_leaves
+        # AVL tree height <= 1.44 * log2(n)
+        self._avl_max_height: int = int(math.ceil(1.44 * math.log2(num_data))) if num_data > 1 else 1
 
         # Compute the range of possible leafs [0, leaf_range).
         self._leaf_range: int = pow(2, self._level - 1)
@@ -149,6 +154,24 @@ class Grove:
             Y += 1
 
         return Y
+
+    def _pad_visited_pos_leaves(self, visited_pos_leaves: List[int]) -> List[int]:
+        """
+        Pad visited_pos_leaves to fixed length for obliviousness.
+        
+        AVL tree height <= 1.44 * log2(n), so we pad to _avl_max_height.
+        Uses random dummy leaves for padding.
+        
+        :param visited_pos_leaves: Actual visited pos leaves.
+        :return: Padded list of exactly _avl_max_height leaves.
+        """
+        result = list(visited_pos_leaves)
+        while len(result) < self._avl_max_height:
+            # Add random dummy leaf that's not already in the list
+            dummy = random.randint(0, self._leaf_range - 1)
+            if dummy not in result:
+                result.append(dummy)
+        return result[:self._avl_max_height]  # Truncate if somehow exceeds
 
     def get_rl_leaf(self, count: int, for_pos_meta: bool = False) -> List[int]:
         """
@@ -302,8 +325,10 @@ class Grove:
         # 1. RL paths for obliviousness
         # 2. visited nodes' new_pos_leaf (where pos_meta dups will be written)
         # This ensures dups are written to correct paths and can be read later.
+        # Pad to fixed length (_avl_max_height) for obliviousness.
         visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
-        pos_meta_rl_path = self.get_rl_leaf(count=len(leaves), for_pos_meta=True) + visited_pos_leaves
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves(visited_pos_leaves)
+        pos_meta_rl_path = self.get_rl_leaf(count=len(leaves), for_pos_meta=True) + visited_pos_leaves_padded
 
         # CRITICAL FIX: Before reading graph ORAM, create dups for ALL visited AVL nodes
         # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
@@ -538,8 +563,10 @@ class Grove:
         
         # pos_meta RL paths: for Graph ORAM -> PosMap updates
         # Must include visited nodes' new_pos_leaf (where pos_meta dups will be written)
+        # Pad to fixed length (_avl_max_height) for obliviousness.
         visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
-        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg, for_pos_meta=True) + visited_pos_leaves
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves(visited_pos_leaves)
+        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg, for_pos_meta=True) + visited_pos_leaves_padded
         
         # CRITICAL FIX: Before reading Graph ORAM, create dups for ALL visited AVL nodes
         # to notify vertices about their pos_leaf changes. Put these dups at the FRONT
@@ -733,8 +760,10 @@ class Grove:
         all_graph_leaves = [vertex_graph_leaf]
         
         # pos_meta RL paths (like lookup)
+        # Pad to fixed length (_avl_max_height) for obliviousness.
         visited_pos_leaves = list(set(v[0] for v in visited_nodes_map.values() if v[0] is not None))
-        pos_meta_rl_path = self.get_rl_leaf(count=1, for_pos_meta=True) + visited_pos_leaves
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves(visited_pos_leaves)
+        pos_meta_rl_path = self.get_rl_leaf(count=1, for_pos_meta=True) + visited_pos_leaves_padded
         
         # Step 3: Create Type 2 dups for visited AVL nodes (like lookup)
         # Notify vertices about their AVL node's new pos_leaf
@@ -791,8 +820,10 @@ class Grove:
             if dup.key == key:
                 # Discard dups targeting the deleted vertex
                 continue
+            
+            applied = False
             if dup.leaf in graph_meta_leaves_set:
-                # Apply dup to downloaded vertex
+                # Try to apply dup to downloaded vertex
                 for data in self._graph_oram.stash:
                     if data.key == dup.key:
                         if isinstance(dup.value, tuple) and len(dup.value) == 2:
@@ -809,9 +840,11 @@ class Grove:
                             vertex_value = data.value
                             if len(vertex_value) >= 3:
                                 data.value = (vertex_value[0], vertex_value[1], dup.value)
+                        applied = True
                         break
-                # Dup applied, don't keep
-            else:
+            
+            # Keep dup if not applied (vertex not in stash or leaf not in read paths)
+            if not applied:
                 temp_stash.append(dup)
         self._graph_meta.stash = temp_stash
         
@@ -885,6 +918,19 @@ class Grove:
         # After lookup(center), center_adjacency should have up-to-date neighbor graph_leaf
         # because lookup applies graph_meta duplications before creating new ones.
         neighbor_keys = list(center_adjacency.keys())
+        
+        # CRITICAL: Remove Type2 dups created by lookup() for neighbor_keys.
+        # lookup() creates Type2 dups for ALL visited AVL nodes using the OLD graph_leaf
+        # stored in AVL. But neighbors will be downloaded and get NEW graph_leaf values,
+        # so those dups would have incorrect leaf values. We'll handle neighbors directly
+        # by updating their stored_pos_leaf from center_visited_nodes (see lines ~1006-1057).
+        neighbor_keys_set = set(neighbor_keys)
+        cleaned_stash = []
+        for dup in self._graph_meta.stash:
+            # Keep dup if: it's not a Type2 dup OR key is not a neighbor
+            if isinstance(dup.value, tuple) or dup.key not in neighbor_keys_set:
+                cleaned_stash.append(dup)
+        self._graph_meta.stash = cleaned_stash
         K = len(neighbor_keys)
         
         if K == 0:
@@ -917,8 +963,10 @@ class Grove:
         
         # pos_meta RL paths: for Graph ORAM -> PosMap updates
         # Must include visited nodes' new_pos_leaf from center_visited_nodes
+        # Pad to fixed length (_avl_max_height) for obliviousness.
         visited_pos_leaves = list(set(v[0] for v in center_visited_nodes.values() if v[0] is not None))
-        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True) + visited_pos_leaves
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves(visited_pos_leaves)
+        pos_meta_rl_path = self.get_rl_leaf(count=self._max_deg + 1, for_pos_meta=True) + visited_pos_leaves_padded
         
         # Create dups for visited AVL nodes to notify vertices about their pos_leaf changes.
         # IMPORTANT: Skip these keys because they will be handled differently:
