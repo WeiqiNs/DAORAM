@@ -1142,6 +1142,252 @@ class Grove:
         # Use -1 as dummy key (assuming normal keys are non-negative integers)
         self.neighbor([-1])
 
+    def edge_lookup(self, key1: Any, key2: Any) -> dict:
+        """
+        Perform lookup on two vertices simultaneously in ONE interaction round.
+        
+        This is equivalent to calling lookup([key1]) and lookup([key2]) but
+        combines them into a single round-trip for efficiency.
+        
+        :param key1: First vertex key
+        :param key2: Second vertex key
+        :return: Dict mapping key to (vertex_data, adjacency_dict, new_graph_leaf)
+        """
+        keys = [key1, key2]
+        
+        # Step 1: Use batch_search to get graph_leaf for both vertices
+        key_graph_leaf_dict, visited_nodes_map, total_posmap_paths = self._pos_omap.batch_search(
+            keys=keys, return_visited_nodes=True
+        )
+        
+        # Filter out keys with None graph_leaf (not found in PosMap)
+        found_keys = {k: v for k, v in key_graph_leaf_dict.items() if v is not None}
+        
+        # Calculate extra paths for non-downloaded vertices
+        pos_meta_extra_paths = max(0, total_posmap_paths - len(found_keys))
+        
+        # Step 2: Call lookup_without_omap to download found vertices in one round
+        result = self.lookup_without_omap(
+            key_graph_leaf_dict=found_keys,
+            visited_nodes_map=visited_nodes_map,
+            pos_meta_extra_paths=pos_meta_extra_paths
+        )
+        
+        return result
+
+    def edge_insertion(self, key1: Any, key2: Any) -> dict:
+        """
+        Perform neighbor query on two center vertices simultaneously.
+        
+        This is equivalent to calling neighbor([key1]) and neighbor([key2]) but
+        downloads all neighbors of both centers in a single round after the lookup phase.
+        
+        Round 1: edge_lookup to get both centers (same as lookup)
+        Round 2: Download all neighbors of both centers (same round count as neighbor)
+        
+        :param key1: First center vertex key
+        :param key2: Second center vertex key
+        :return: Dict mapping neighbor_key to (vertex_data, adjacency_dict)
+        """
+        # Step 1: Lookup both center vertices using edge_lookup
+        # This internally does batch_search + lookup_without_omap
+        center_result = self.edge_lookup(key1, key2)
+        
+        # Check which centers were found
+        center1_found = key1 in center_result and center_result[key1] is not None
+        center2_found = key2 in center_result and center_result[key2] is not None
+        
+        # Collect all neighbors from both centers
+        all_neighbor_keys = set()
+        center_info = {}  # {center_key: (adjacency, new_graph_leaf)}
+        
+        if center1_found:
+            center1_data, center1_adjacency, center1_new_graph_leaf = center_result[key1]
+            all_neighbor_keys.update(center1_adjacency.keys())
+            center_info[key1] = (center1_adjacency, center1_new_graph_leaf)
+            
+            # Remove Type2 dups for neighbors (they will be downloaded)
+            neighbor_keys_set = set(center1_adjacency.keys())
+            cleaned_stash = []
+            for dup in self._graph_meta.stash:
+                if isinstance(dup.value, tuple) or dup.key not in neighbor_keys_set:
+                    cleaned_stash.append(dup)
+            self._graph_meta.stash = cleaned_stash
+        
+        if center2_found:
+            center2_data, center2_adjacency, center2_new_graph_leaf = center_result[key2]
+            all_neighbor_keys.update(center2_adjacency.keys())
+            center_info[key2] = (center2_adjacency, center2_new_graph_leaf)
+            
+            # Remove Type2 dups for neighbors
+            neighbor_keys_set = set(center2_adjacency.keys())
+            cleaned_stash = []
+            for dup in self._graph_meta.stash:
+                if isinstance(dup.value, tuple) or dup.key not in neighbor_keys_set:
+                    cleaned_stash.append(dup)
+            self._graph_meta.stash = cleaned_stash
+        
+        # Remove the center keys from neighbor set (don't download centers again)
+        all_neighbor_keys.discard(key1)
+        all_neighbor_keys.discard(key2)
+        
+        neighbor_keys = list(all_neighbor_keys)
+        
+        # Collect graph_leaf for all neighbors from both adjacencies
+        neighbor_graph_leaves = []
+        neighbor_key_to_leaf = {}
+        for nk in neighbor_keys:
+            gl = None
+            if key1 in center_info and nk in center_info[key1][0]:
+                gl = center_info[key1][0][nk]
+            elif key2 in center_info and nk in center_info[key2][0]:
+                gl = center_info[key2][0][nk]
+            if isinstance(gl, tuple):
+                gl = gl[0]
+            if gl is not None:
+                neighbor_graph_leaves.append(gl)
+                neighbor_key_to_leaf[nk] = gl
+        
+        # Pad with dummy leaves for obliviousness (total = 2 * max_degree)
+        target_count = 2 * self._max_deg
+        dummy_count = max(0, target_count - len(neighbor_graph_leaves))
+        dummy_leaves = [secrets.randbelow(self._leaf_range) for _ in range(dummy_count)]
+        all_graph_leaves = neighbor_graph_leaves + dummy_leaves
+        
+        # RL paths for meta ORAMs
+        graph_meta_rl_count = 2 * self._max_deg * self._max_deg
+        graph_meta_rl_paths = (
+            self.get_rl_leaf(count=graph_meta_rl_count, for_pos_meta=False)
+            + all_graph_leaves
+        )
+        
+        # pos_meta RL paths (no visited_nodes from this round, just RL + padding)
+        visited_pos_leaves_padded = self._pad_visited_pos_leaves([])
+        pos_meta_rl_path = self.get_rl_leaf(count=2 * self._max_deg + 2, for_pos_meta=True) + visited_pos_leaves_padded
+        
+        # Step 2: Queue reads for all neighbors in ONE round
+        self._graph_oram.queue_read(leaves=all_graph_leaves)
+        self._graph_meta.queue_read(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_read(leaves=pos_meta_rl_path)
+        
+        result = self._client.execute()
+        
+        self._graph_oram.process_read_result(result)
+        self._graph_meta.process_read_result(result)
+        self._pos_meta.process_read_result(result)
+        
+        # De-duplication
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Find downloaded neighbors
+        downloaded_neighbors = {}
+        for data in self._graph_oram.stash:
+            if data.key in neighbor_key_to_leaf:
+                downloaded_neighbors[data.key] = data
+        
+        # Apply graph_meta duplications
+        graph_meta_leaves_set = set(graph_meta_rl_paths)
+        temp_stash = []
+        type2_applied = {}
+        for dup in self._graph_meta.stash:
+            if dup.key in downloaded_neighbors and dup.leaf in graph_meta_leaves_set:
+                neighbor_data = downloaded_neighbors[dup.key]
+                vertex_value = neighbor_data.value
+                if isinstance(dup.value, tuple) and len(dup.value) == 2:
+                    adjacency_dict = vertex_value[1]
+                    source_key, new_graph_leaf = dup.value
+                    if new_graph_leaf < 0:
+                        if source_key in adjacency_dict:
+                            del adjacency_dict[source_key]
+                    else:
+                        adjacency_dict[source_key] = new_graph_leaf
+                else:
+                    if len(vertex_value) >= 3:
+                        neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                        type2_applied[dup.key] = dup.value
+            else:
+                temp_stash.append(dup)
+        self._graph_meta.stash = temp_stash
+        
+        # Process neighbors and create duplications
+        graph_meta_duplications = []
+        pos_meta_duplications = []
+        neighbor_result = {}
+        
+        for neighbor_key, neighbor_data in downloaded_neighbors.items():
+            if len(neighbor_data.value) == 3:
+                neighbor_vertex_data, neighbor_adjacency, stored_pos_leaf = neighbor_data.value
+            else:
+                neighbor_vertex_data, neighbor_adjacency = neighbor_data.value
+                stored_pos_leaf = None
+            
+            # Determine pos_leaf
+            neighbor_pos_leaf = stored_pos_leaf
+            
+            # Update centers' new paths in this neighbor's adjacency
+            for center_key, (center_adj, center_new_gl) in center_info.items():
+                if center_key in neighbor_adjacency:
+                    neighbor_adjacency[center_key] = center_new_gl
+            
+            # Assign new graph_leaf
+            neighbor_new_graph_leaf = secrets.randbelow(self._leaf_range)
+            neighbor_data.leaf = neighbor_new_graph_leaf
+            
+            # Create duplications for other neighbors
+            for other_key, other_graph_leaf in neighbor_adjacency.items():
+                if other_key in [key1, key2]:
+                    continue
+                if other_key in downloaded_neighbors:
+                    other_data = downloaded_neighbors[other_key]
+                    other_adjacency = other_data.value[1]
+                    other_adjacency[neighbor_key] = neighbor_new_graph_leaf
+                else:
+                    if isinstance(other_graph_leaf, tuple):
+                        other_graph_leaf = other_graph_leaf[0]
+                    if other_graph_leaf is None or other_graph_leaf < 0:
+                        continue
+                    dup = Data(key=other_key, leaf=other_graph_leaf,
+                              value=(neighbor_key, neighbor_new_graph_leaf))
+                    graph_meta_duplications.append(dup)
+            
+            # Notify both centers about this neighbor's new path
+            for center_key, (_, center_new_gl) in center_info.items():
+                dup_to_center = Data(key=center_key, leaf=center_new_gl,
+                                    value=(neighbor_key, neighbor_new_graph_leaf))
+                graph_meta_duplications.append(dup_to_center)
+            
+            # Create pos_meta duplication
+            if neighbor_pos_leaf is not None:
+                pos_dup = Data(key=neighbor_key, leaf=neighbor_pos_leaf, value=neighbor_new_graph_leaf)
+                pos_meta_duplications.append(pos_dup)
+            
+            neighbor_data.value = (neighbor_vertex_data, neighbor_adjacency, neighbor_pos_leaf)
+            neighbor_result[neighbor_key] = (neighbor_vertex_data, neighbor_adjacency)
+        
+        # Pad duplications
+        dummy_leaf = secrets.randbelow(self._leaf_range)
+        while len(graph_meta_duplications) < 2 * self._max_deg * self._max_deg:
+            graph_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=(None, 0)))
+        while len(pos_meta_duplications) < 2 * self._max_deg + 2:
+            pos_meta_duplications.append(Data(key=None, leaf=dummy_leaf, value=0))
+        
+        # Add duplications to stash
+        self._graph_meta.stash = graph_meta_duplications + self._graph_meta.stash
+        self._pos_omap.add_meta_duplications(pos_meta_duplications)
+        
+        # De-duplication
+        self.graph_meta_de_duplication()
+        self._pos_omap.meta_de_duplication()
+        
+        # Write back
+        self._graph_oram.queue_write()
+        self._graph_meta.queue_write(leaves=graph_meta_rl_paths)
+        self._pos_meta.queue_write(leaves=pos_meta_rl_path)
+        self._client.execute()
+        
+        return neighbor_result
+
     def _get_layer_size(self, hop: int) -> int:
         """
         Get the maximum number of vertices at a given hop layer for obliviousness.
