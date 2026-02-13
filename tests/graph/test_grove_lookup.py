@@ -396,5 +396,305 @@ class TestGroveLookupLargeScale:
         assert success_count == num_lookups, f"Only {success_count}/{num_lookups} lookups succeeded"
 
 
+class TestGroveMassiveLookup:
+    """
+    Stress test: massive lookup operations to verify dedup fix.
+    Uses 2^10 vertices, performs 500+ lookups with various distributions.
+    This is the key test for the dup application dedup bug fix in grove.py.
+    """
+    
+    NUM_VERTICES = 2 ** 10  # 1024 vertices
+    MAX_DEGREE = 10
+    
+    @pytest.fixture
+    def initialized_grove(self):
+        """Initialize Grove with a pre-populated circulant-like graph."""
+        num_data = self.NUM_VERTICES
+        max_deg = self.MAX_DEGREE
+        num_opr = 100
+        key_size = 16
+        data_size = 64
+        
+        client = InteractLocalServer()
+        
+        grove = Grove(
+            max_deg=max_deg,
+            num_opr=num_opr,
+            num_data=num_data,
+            key_size=key_size,
+            data_size=data_size,
+            client=client,
+            encryptor=None,
+            stash_scale=20
+        )
+        
+        # Build a circulant-like graph (each vertex connected to its d nearest neighbors)
+        d = max_deg
+        graph_data: Dict[int, Tuple[str, List[int]]] = {}
+        for v in range(num_data):
+            vertex_data = f"vertex_{v}_data"
+            neighbors = []
+            for offset in range(1, d // 2 + 1):
+                neighbors.append((v + offset) % num_data)
+                neighbors.append((v - offset) % num_data)
+            # Keep only max_deg neighbors
+            neighbors = neighbors[:max_deg]
+            graph_data[v] = (vertex_data, neighbors)
+        
+        leaf_range = grove._leaf_range
+        vertex_graph_leaf: Dict[int, int] = {}
+        vertex_pos_leaf: Dict[int, int] = {}
+        for v in range(num_data):
+            vertex_graph_leaf[v] = secrets.randbelow(leaf_range)
+            vertex_pos_leaf[v] = secrets.randbelow(leaf_range)
+        
+        # Build data structures for initialization
+        data_map = {}
+        path_map = {}
+        for v in range(num_data):
+            vertex_data, neighbors = graph_data[v]
+            adjacency_dict = {n: vertex_graph_leaf[n] for n in neighbors}
+            pos_leaf = vertex_pos_leaf[v]
+            data_map[v] = (vertex_data, adjacency_dict, pos_leaf)
+            path_map[v] = vertex_graph_leaf[v]
+        
+        posmap_data = [(v, vertex_graph_leaf[v]) for v in range(num_data)]
+        
+        grove._pos_omap.init_server_storage(data=posmap_data)
+        grove._graph_oram.init_server_storage(data_map=data_map, path_map=path_map)
+        grove._graph_meta.init_server_storage()
+        grove._pos_meta.init_server_storage()
+        
+        grove._test_graph_data = graph_data
+        grove._test_vertex_graph_leaf = vertex_graph_leaf
+        grove._test_vertex_pos_leaf = vertex_pos_leaf
+        
+        print(f"\n[Stress Test] Initialized Grove: {num_data} vertices, max_degree={max_deg}")
+        return grove
+    
+    def _verify_lookup(self, grove, vertex_key, result, lookup_idx):
+        """Verify a single lookup result. Returns True if correct."""
+        if vertex_key not in result:
+            print(f"  [FAIL] Lookup #{lookup_idx}: vertex {vertex_key} not found in result")
+            return False
+        
+        res = result[vertex_key]
+        # lookup returns (vertex_data, adjacency_dict) or (vertex_data, adjacency_dict, pos_leaf)
+        vertex_data = res[0]
+        adjacency_dict = res[1]
+        expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
+        
+        if vertex_data != expected_data:
+            print(f"  [FAIL] Lookup #{lookup_idx}: vertex {vertex_key} data mismatch: "
+                  f"got '{vertex_data[:30]}', expected '{expected_data[:30]}'")
+            return False
+        
+        got_neighbors = set(adjacency_dict.keys())
+        expected_neighbor_set = set(expected_neighbors)
+        if got_neighbors != expected_neighbor_set:
+            missing = expected_neighbor_set - got_neighbors
+            extra = got_neighbors - expected_neighbor_set
+            print(f"  [FAIL] Lookup #{lookup_idx}: vertex {vertex_key} adjacency mismatch: "
+                  f"missing={missing}, extra={extra}")
+            return False
+        
+        return True
+    
+    def test_massive_uniform_lookups(self, initialized_grove):
+        """500 uniform random lookups - the primary dedup stress test."""
+        grove = initialized_grove
+        num_lookups = 500
+        
+        random.seed(2024)
+        access_sequence = [random.randint(0, self.NUM_VERTICES - 1) for _ in range(num_lookups)]
+        
+        from collections import Counter
+        counts = Counter(access_sequence)
+        print(f"\n[Uniform] {num_lookups} lookups, {len(counts)} unique vertices")
+        print(f"  Most accessed: {counts.most_common(3)}")
+        
+        success = 0
+        first_fail = None
+        for i, vertex_key in enumerate(access_sequence):
+            result = grove.lookup([vertex_key])
+            if self._verify_lookup(grove, vertex_key, result, i):
+                success += 1
+            elif first_fail is None:
+                first_fail = i
+            
+            if (i + 1) % 100 == 0:
+                print(f"  Progress: {i + 1}/{num_lookups}, success so far: {success}/{i + 1}")
+        
+        print(f"\n[Uniform] Result: {success}/{num_lookups} ({100*success/num_lookups:.1f}%)")
+        if first_fail is not None:
+            print(f"  First failure at lookup #{first_fail}")
+        assert success == num_lookups, \
+            f"Only {success}/{num_lookups} uniform lookups succeeded (first fail at #{first_fail})"
+    
+    def test_massive_repeated_single_vertex(self, initialized_grove):
+        """Repeatedly access the SAME vertex 200 times - worst case for dup accumulation."""
+        grove = initialized_grove
+        num_lookups = 200
+        target = 42
+        
+        print(f"\n[Repeated] {num_lookups} lookups on vertex {target}")
+        
+        success = 0
+        first_fail = None
+        for i in range(num_lookups):
+            result = grove.lookup([target])
+            if self._verify_lookup(grove, target, result, i):
+                success += 1
+            elif first_fail is None:
+                first_fail = i
+            
+            if (i + 1) % 50 == 0:
+                print(f"  Progress: {i + 1}/{num_lookups}, success so far: {success}/{i + 1}")
+        
+        print(f"\n[Repeated] Result: {success}/{num_lookups} ({100*success/num_lookups:.1f}%)")
+        assert success == num_lookups, \
+            f"Only {success}/{num_lookups} repeated lookups succeeded (first fail at #{first_fail})"
+    
+    def test_massive_zipf_lookups(self, initialized_grove):
+        """500 Zipf-distributed lookups (heavy skew, alpha=0.99)."""
+        grove = initialized_grove
+        num_lookups = 500
+        
+        random.seed(9999)
+        alpha = 0.99
+        weights = [1.0 / (i + 1) ** alpha for i in range(self.NUM_VERTICES)]
+        total = sum(weights)
+        probs = [w / total for w in weights]
+        access_sequence = random.choices(range(self.NUM_VERTICES), weights=probs, k=num_lookups)
+        
+        from collections import Counter
+        counts = Counter(access_sequence)
+        print(f"\n[Zipf α={alpha}] {num_lookups} lookups, {len(counts)} unique vertices")
+        print(f"  Most accessed: {counts.most_common(5)}")
+        
+        success = 0
+        first_fail = None
+        for i, vertex_key in enumerate(access_sequence):
+            result = grove.lookup([vertex_key])
+            if self._verify_lookup(grove, vertex_key, result, i):
+                success += 1
+            elif first_fail is None:
+                first_fail = i
+            
+            if (i + 1) % 100 == 0:
+                print(f"  Progress: {i + 1}/{num_lookups}, success so far: {success}/{i + 1}")
+        
+        print(f"\n[Zipf] Result: {success}/{num_lookups} ({100*success/num_lookups:.1f}%)")
+        assert success == num_lookups, \
+            f"Only {success}/{num_lookups} Zipf lookups succeeded (first fail at #{first_fail})"
+    
+    def test_massive_sequential_lookups(self, initialized_grove):
+        """Sequentially access vertices 0,1,2,...,N-1 then repeat - 500 total."""
+        grove = initialized_grove
+        num_lookups = 500
+        
+        access_sequence = [i % self.NUM_VERTICES for i in range(num_lookups)]
+        
+        print(f"\n[Sequential] {num_lookups} lookups, cycling through {self.NUM_VERTICES} vertices")
+        
+        success = 0
+        first_fail = None
+        for i, vertex_key in enumerate(access_sequence):
+            result = grove.lookup([vertex_key])
+            if self._verify_lookup(grove, vertex_key, result, i):
+                success += 1
+            elif first_fail is None:
+                first_fail = i
+            
+            if (i + 1) % 100 == 0:
+                print(f"  Progress: {i + 1}/{num_lookups}, success so far: {success}/{i + 1}")
+        
+        print(f"\n[Sequential] Result: {success}/{num_lookups} ({100*success/num_lookups:.1f}%)")
+        assert success == num_lookups, \
+            f"Only {success}/{num_lookups} sequential lookups succeeded (first fail at #{first_fail})"
+    
+    def test_massive_mixed_batch_lookups(self):
+        """300 batch lookups (each batch 2-5 vertices) - tests multi-key dedup."""
+        # Use larger stash_scale for batch operations that generate more dups
+        num_data = self.NUM_VERTICES
+        max_deg = self.MAX_DEGREE
+        client = InteractLocalServer()
+        
+        grove = Grove(
+            max_deg=max_deg,
+            num_opr=100,
+            num_data=num_data,
+            key_size=16,
+            data_size=64,
+            client=client,
+            encryptor=None,
+            stash_scale=200  # Larger stash for batch ops (each batch generates many dups)
+        )
+        
+        # Build circulant graph
+        d = max_deg
+        graph_data = {}
+        for v in range(num_data):
+            neighbors = []
+            for offset in range(1, d // 2 + 1):
+                neighbors.append((v + offset) % num_data)
+                neighbors.append((v - offset) % num_data)
+            neighbors = neighbors[:max_deg]
+            graph_data[v] = (f"vertex_{v}_data", neighbors)
+        
+        leaf_range = grove._leaf_range
+        vertex_graph_leaf = {v: secrets.randbelow(leaf_range) for v in range(num_data)}
+        vertex_pos_leaf = {v: secrets.randbelow(leaf_range) for v in range(num_data)}
+        
+        data_map = {}
+        path_map = {}
+        for v in range(num_data):
+            vd, nb = graph_data[v]
+            data_map[v] = (vd, {n: vertex_graph_leaf[n] for n in nb}, vertex_pos_leaf[v])
+            path_map[v] = vertex_graph_leaf[v]
+        
+        grove._pos_omap.init_server_storage(data=[(v, vertex_graph_leaf[v]) for v in range(num_data)])
+        grove._graph_oram.init_server_storage(data_map=data_map, path_map=path_map)
+        grove._graph_meta.init_server_storage()
+        grove._pos_meta.init_server_storage()
+        
+        grove._test_graph_data = graph_data
+        grove._test_vertex_graph_leaf = vertex_graph_leaf
+        grove._test_vertex_pos_leaf = vertex_pos_leaf
+        
+        print(f"\n[Stress Test] Initialized Grove: {num_data} vertices, stash_scale=50")
+        
+        num_rounds = 300
+        
+        random.seed(7777)
+        
+        print(f"\n[Mixed Batch] {num_rounds} rounds of batch lookups")
+        
+        total_lookups = 0
+        success = 0
+        first_fail = None
+        
+        for round_idx in range(num_rounds):
+            batch_size = random.randint(2, 5)
+            vertex_keys = random.sample(range(self.NUM_VERTICES), batch_size)
+            
+            result = grove.lookup(vertex_keys)
+            
+            for vk in vertex_keys:
+                total_lookups += 1
+                if self._verify_lookup(grove, vk, result, total_lookups):
+                    success += 1
+                elif first_fail is None:
+                    first_fail = total_lookups
+            
+            if (round_idx + 1) % 60 == 0:
+                print(f"  Round {round_idx + 1}/{num_rounds}, "
+                      f"total lookups: {total_lookups}, success: {success}")
+        
+        print(f"\n[Mixed Batch] Result: {success}/{total_lookups} ({100*success/total_lookups:.1f}%)")
+        assert success == total_lookups, \
+            f"Only {success}/{total_lookups} batch lookups succeeded (first fail at #{first_fail})"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

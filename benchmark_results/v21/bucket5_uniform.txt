@@ -1,0 +1,70 @@
+============================================================
+Simplified Grove Graph ORAM Benchmark
+============================================================
+Configuration:
+  vertex_num = 2097152
+  max_degree = 10
+  meta_bucket_size = 5
+  total_accesses = 4194304
+  distribution = uniform
+  checkpoints = [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152]
+============================================================
+Generating 10-regular graph with 2097152 vertices...
+Initializing Graph ORAM (meta_bucket_size=5)...
+Running 4194304 vertex accesses...
+[META_BUCKET_SIZE=5] Progress: 0% | max_stash_size=2
+[META_BUCKET_SIZE=5] Progress: 1% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 2% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 3% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 4% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 5% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 6% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 7% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 8% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 9% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 10% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 11% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 12% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 13% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 14% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 15% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 16% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 17% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 18% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 19% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 20% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 21% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 22% | max_stash_size=5
+[META_BUCKET_SIZE=5] Progress: 23% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 24% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 25% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 26% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 27% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 28% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 29% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 30% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 31% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 32% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 33% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 34% | max_stash_size=8
+[META_BUCKET_SIZE=5] Progress: 35% | max_stash_size=10
+[META_BUCKET_SIZE=5] Progress: 36% | max_stash_size=35
+[META_BUCKET_SIZE=5] Progress: 37% | max_stash_size=35
+[META_BUCKET_SIZE=5] Progress: 38% | max_stash_size=66
+[META_BUCKET_SIZE=5] Progress: 39% | max_stash_size=106
+[META_BUCKET_SIZE=5] Progress: 40% | max_stash_size=212
+[META_BUCKET_SIZE=5] Progress: 41% | max_stash_size=331
+[META_BUCKET_SIZE=5] Progress: 42% | max_stash_size=670
+[META_BUCKET_SIZE=5] Progress: 43% | max_stash_size=942
+[META_BUCKET_SIZE=5] Progress: 44% | max_stash_size=1303
+[META_BUCKET_SIZE=5] Progress: 45% | max_stash_size=1926
+[META_BUCKET_SIZE=5] Progress: 46% | max_stash_size=2531
+[META_BUCKET_SIZE=5] Progress: 47% | max_stash_size=3535
+[META_BUCKET_SIZE=5] Progress: 48% | max_stash_size=4637
+[META_BUCKET_SIZE=5] Progress: 49% | max_stash_size=5625
+[META_BUCKET_SIZE=5] Progress: 50% | max_stash_size=7240
+[META_BUCKET_SIZE=5] Progress: 51% | max_stash_size=8578
+[META_BUCKET_SIZE=5] Progress: 52% | max_stash_size=9788
+[META_BUCKET_SIZE=5] Progress: 53% | max_stash_size=11902
+[META_BUCKET_SIZE=5] Progress: 54% | max_stash_size=13413
+[META_BUCKET_SIZE=5] Progress: 55% | max_stash_size=15508

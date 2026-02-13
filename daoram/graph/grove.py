@@ -21,7 +21,8 @@ class Grove:
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  filename: str = None,
-                 encryptor: Encryptor = None):
+                 encryptor: Encryptor = None,
+                 meta_bucket_size: int = None):
         """
         Initializes the GraphOS.
 
@@ -36,6 +37,7 @@ class Grove:
         :param bucket_size: The number of data each bucket should have.
         :param stash_scale: The scaling scale of the stash.
         :param encryptor: The encryptor to use for encryption.
+        :param meta_bucket_size: The bucket size for meta ORAMs (if None, computed by find_bound).
         """
         # Store the client.
         self._client = client
@@ -60,8 +62,10 @@ class Grove:
         self._graph_counter = 0  # For _graph_meta
         self._pos_counter = 0    # For _pos_meta
 
-        # Compute the bucket size.
-        meta_bucket_size = self.find_bound()
+        # Compute the bucket size (use provided value or compute bound).
+        if meta_bucket_size is None:
+            meta_bucket_size = self.find_bound()
+        self._meta_bucket_size = meta_bucket_size
 
         # Initialize the OMAP with internal meta ORAM.
         # The internal meta (_pos_omap._meta) handles Graph ORAM -> PosMap updates:
@@ -76,7 +80,8 @@ class Grove:
             stash_scale=stash_scale,
             encryptor=encryptor,
             filename=f"{filename}_avl" if filename else None,
-            enable_meta=True  # Enable internal meta for Graph ORAM -> PosMap updates
+            enable_meta=True,  # Enable internal meta for Graph ORAM -> PosMap updates
+            meta_bucket_size=meta_bucket_size
         )
 
         # Initialize the multi-path ORAMs.
@@ -380,33 +385,47 @@ class Grove:
         retrieved_vertices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)}
         graph_meta_leaves_set = set(graph_meta_rl_path)
         
+        # First pass: collect and dedup (keep first = newest for each key)
         temp_meta_stash = []
+        type1_dups = {}  # (vertex_key, source_key) -> dup
+        type2_dups = {}  # vertex_key -> dup
         for dup in self._graph_meta.stash:
             cond1 = dup.key in target_keys
             cond2 = dup.key in retrieved_vertices
             cond3 = dup.leaf in graph_meta_leaves_set
             
-            # Check all three conditions
             if cond1 and cond2 and cond3:
-                idx = retrieved_vertices[dup.key]
-                vertex_value = self._graph_oram.stash[idx].value
-                
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
-                    # Type 1: Neighbor update (adjacency list update)
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf = dup.value
-                    if new_graph_leaf < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        adjacency_dict[source_key] = new_graph_leaf
+                    # Type 1: Neighbor update - dedup by (vertex_key, source_key)
+                    dedup_key = (dup.key, dup.value[0])
+                    if dedup_key not in type1_dups:
+                        type1_dups[dedup_key] = dup
                 elif not isinstance(dup.value, tuple):
-                    # Type 2: PosMap->GraphORAM update (pos_leaf update)
-                    if len(vertex_value) >= 3:
-                        vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
-                        self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+                    # Type 2: PosMap->GraphORAM update - dedup by vertex_key
+                    if dup.key not in type2_dups:
+                        type2_dups[dup.key] = dup
             else:
                 temp_meta_stash.append(dup)
+        
+        # Second pass: apply deduped dups
+        for (vertex_key, source_key), dup in type1_dups.items():
+            idx = retrieved_vertices[vertex_key]
+            vertex_value = self._graph_oram.stash[idx].value
+            adjacency_dict = vertex_value[1]
+            _, new_graph_leaf = dup.value
+            if new_graph_leaf < 0:
+                if source_key in adjacency_dict:
+                    del adjacency_dict[source_key]
+            else:
+                adjacency_dict[source_key] = new_graph_leaf
+        
+        for vertex_key, dup in type2_dups.items():
+            idx = retrieved_vertices[vertex_key]
+            vertex_value = self._graph_oram.stash[idx].value
+            if len(vertex_value) >= 3:
+                vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
+                self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+        
         self._graph_meta.stash = temp_meta_stash
 
         # Step 2: Now create new duplications using the UPDATED adjacency_dict
@@ -607,27 +626,41 @@ class Grove:
         downloaded_indices = {data.key: idx for idx, data in enumerate(self._graph_oram.stash)
                               if data.key in target_keys}
         graph_meta_leaves_set = set(graph_meta_rl_paths)
+        # First pass: collect and dedup (keep first = newest for each key)
         temp_meta_stash = []
+        type1_dups = {}  # (vertex_key, source_key) -> dup
+        type2_dups = {}  # vertex_key -> dup
         for dup in self._graph_meta.stash:
-            # Check both conditions: key is downloaded AND dup.leaf path was read
             if dup.key in downloaded_indices and dup.leaf in graph_meta_leaves_set:
-                idx = downloaded_indices[dup.key]
-                vertex_value = self._graph_oram.stash[idx].value
-                
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf_val = dup.value
-                    if new_graph_leaf_val < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        adjacency_dict[source_key] = new_graph_leaf_val
+                    dedup_key = (dup.key, dup.value[0])
+                    if dedup_key not in type1_dups:
+                        type1_dups[dedup_key] = dup
                 elif not isinstance(dup.value, tuple):
-                    if len(vertex_value) >= 3:
-                        vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
-                        self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+                    if dup.key not in type2_dups:
+                        type2_dups[dup.key] = dup
             else:
                 temp_meta_stash.append(dup)
+        
+        # Second pass: apply deduped dups
+        for (vertex_key, source_key), dup in type1_dups.items():
+            idx = downloaded_indices[vertex_key]
+            vertex_value = self._graph_oram.stash[idx].value
+            adjacency_dict = vertex_value[1]
+            _, new_graph_leaf_val = dup.value
+            if new_graph_leaf_val < 0:
+                if source_key in adjacency_dict:
+                    del adjacency_dict[source_key]
+            else:
+                adjacency_dict[source_key] = new_graph_leaf_val
+        
+        for vertex_key, dup in type2_dups.items():
+            idx = downloaded_indices[vertex_key]
+            vertex_value = self._graph_oram.stash[idx].value
+            if len(vertex_value) >= 3:
+                vertex_data, adjacency_dict = vertex_value[0], vertex_value[1]
+                self._graph_oram.stash[idx].value = (vertex_data, adjacency_dict, dup.value)
+        
         self._graph_meta.stash = temp_meta_stash
         
         # graph_meta_duplications: for neighbor updates and AVL node updates
@@ -1009,30 +1042,43 @@ class Grove:
         # Apply graph_meta duplications only to neighbors read by this operation
         # CRITICAL: Only apply dup when dup.leaf is in graph_meta_rl_paths (the path was read).
         graph_meta_leaves_set = set(graph_meta_rl_paths)
+        # First pass: collect and dedup (keep first = newest for each key)
         temp_stash = []
-        type2_applied = {}
+        type1_dups = {}  # (vertex_key, source_key) -> dup
+        type2_dups = {}  # vertex_key -> dup
         for dup in self._graph_meta.stash:
-            # Check both conditions: key is downloaded AND dup.leaf path was read
             if dup.key in downloaded_neighbors and dup.leaf in graph_meta_leaves_set:
-                neighbor_data = downloaded_neighbors[dup.key]
-                vertex_value = neighbor_data.value
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
-                    # Type 1: Neighbor update
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf = dup.value
-                    if new_graph_leaf < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        adjacency_dict[source_key] = new_graph_leaf
-                else:
-                    # Type 2: PosMap update
-                    if len(vertex_value) >= 3:
-                        old_pos_leaf = vertex_value[2]
-                        neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
-                        type2_applied[dup.key] = (old_pos_leaf, dup.value)
+                    dedup_key = (dup.key, dup.value[0])
+                    if dedup_key not in type1_dups:
+                        type1_dups[dedup_key] = dup
+                elif not isinstance(dup.value, tuple):
+                    if dup.key not in type2_dups:
+                        type2_dups[dup.key] = dup
             else:
                 temp_stash.append(dup)
+        
+        # Second pass: apply deduped dups
+        type2_applied = {}
+        for (vertex_key, source_key), dup in type1_dups.items():
+            neighbor_data = downloaded_neighbors[vertex_key]
+            vertex_value = neighbor_data.value
+            adjacency_dict = vertex_value[1]
+            _, new_graph_leaf = dup.value
+            if new_graph_leaf < 0:
+                if source_key in adjacency_dict:
+                    del adjacency_dict[source_key]
+            else:
+                adjacency_dict[source_key] = new_graph_leaf
+        
+        for vertex_key, dup in type2_dups.items():
+            neighbor_data = downloaded_neighbors[vertex_key]
+            vertex_value = neighbor_data.value
+            if len(vertex_value) >= 3:
+                old_pos_leaf = vertex_value[2]
+                neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                type2_applied[dup.key] = (old_pos_leaf, dup.value)
+        
         self._graph_meta.stash = temp_stash
         
         # Prepare result and duplications
@@ -1288,26 +1334,42 @@ class Grove:
         
         # Apply graph_meta duplications
         graph_meta_leaves_set = set(graph_meta_rl_paths)
+        # First pass: collect and dedup (keep first = newest for each key)
         temp_stash = []
-        type2_applied = {}
+        type1_dups = {}  # (vertex_key, source_key) -> dup
+        type2_dups = {}  # vertex_key -> dup
         for dup in self._graph_meta.stash:
             if dup.key in downloaded_neighbors and dup.leaf in graph_meta_leaves_set:
-                neighbor_data = downloaded_neighbors[dup.key]
-                vertex_value = neighbor_data.value
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf = dup.value
-                    if new_graph_leaf < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        adjacency_dict[source_key] = new_graph_leaf
-                else:
-                    if len(vertex_value) >= 3:
-                        neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
-                        type2_applied[dup.key] = dup.value
+                    dedup_key = (dup.key, dup.value[0])
+                    if dedup_key not in type1_dups:
+                        type1_dups[dedup_key] = dup
+                elif not isinstance(dup.value, tuple):
+                    if dup.key not in type2_dups:
+                        type2_dups[dup.key] = dup
             else:
                 temp_stash.append(dup)
+        
+        # Second pass: apply deduped dups
+        type2_applied = {}
+        for (vertex_key, source_key), dup in type1_dups.items():
+            neighbor_data = downloaded_neighbors[vertex_key]
+            vertex_value = neighbor_data.value
+            adjacency_dict = vertex_value[1]
+            _, new_graph_leaf = dup.value
+            if new_graph_leaf < 0:
+                if source_key in adjacency_dict:
+                    del adjacency_dict[source_key]
+            else:
+                adjacency_dict[source_key] = new_graph_leaf
+        
+        for vertex_key, dup in type2_dups.items():
+            neighbor_data = downloaded_neighbors[vertex_key]
+            vertex_value = neighbor_data.value
+            if len(vertex_value) >= 3:
+                neighbor_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                type2_applied[dup.key] = dup.value
+        
         self._graph_meta.stash = temp_stash
         
         # Process neighbors and create duplications
@@ -1532,31 +1594,42 @@ class Grove:
         
         # Apply graph_meta duplications to downloaded vertices
         # Track which vertices had Type 2 dup applied (their pos_leaf is now up-to-date)
+        # First pass: collect and dedup (keep first = newest for each key)
         temp_stash = []
-        type2_applied = {}  # {vertex_key: new_pos_leaf}
+        type1_dups = {}  # (vertex_key, source_key) -> dup
+        type2_dups = {}  # vertex_key -> dup
         for dup in self._graph_meta.stash:
-            applied = False
             if dup.key in downloaded and dup.leaf in graph_meta_leaves_set:
-                vertex_data = downloaded[dup.key]
-                vertex_value = vertex_data.value
                 if isinstance(dup.value, tuple) and len(dup.value) == 2:
-                    # Type 1: Neighbor update
-                    adjacency_dict = vertex_value[1]
-                    source_key, new_graph_leaf = dup.value
-                    if new_graph_leaf < 0:
-                        if source_key in adjacency_dict:
-                            del adjacency_dict[source_key]
-                    else:
-                        adjacency_dict[source_key] = new_graph_leaf
-                    applied = True
-                else:
-                    # Type 2: PosMap update - pos_leaf from AVL changed
-                    if len(vertex_value) >= 3:
-                        vertex_data.value = (vertex_value[0], vertex_value[1], dup.value)
-                        type2_applied[dup.key] = dup.value  # Record the new pos_leaf
-                        applied = True
-            if not applied:
+                    dedup_key = (dup.key, dup.value[0])
+                    if dedup_key not in type1_dups:
+                        type1_dups[dedup_key] = dup
+                elif not isinstance(dup.value, tuple):
+                    if dup.key not in type2_dups:
+                        type2_dups[dup.key] = dup
+            else:
                 temp_stash.append(dup)
+        
+        # Second pass: apply deduped dups
+        type2_applied = {}  # {vertex_key: new_pos_leaf}
+        for (vertex_key, source_key), dup in type1_dups.items():
+            vertex_data = downloaded[vertex_key]
+            vertex_value = vertex_data.value
+            adjacency_dict = vertex_value[1]
+            _, new_graph_leaf = dup.value
+            if new_graph_leaf < 0:
+                if source_key in adjacency_dict:
+                    del adjacency_dict[source_key]
+            else:
+                adjacency_dict[source_key] = new_graph_leaf
+        
+        for vertex_key, dup in type2_dups.items():
+            vertex_data = downloaded[vertex_key]
+            vertex_value = vertex_data.value
+            if len(vertex_value) >= 3:
+                vertex_data.value = (vertex_value[0], vertex_value[1], dup.value)
+                type2_applied[dup.key] = dup.value  # Record the new pos_leaf
+        
         self._graph_meta.stash = temp_stash
         
         # Prepare result and create duplications

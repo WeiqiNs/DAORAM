@@ -196,6 +196,20 @@ class SequentialDistribution(QueryDistribution):
         self.current = 0
 
 
+class RepeatedDistribution(QueryDistribution):
+    """Repeatedly access the same vertex."""
+    
+    def __init__(self, vertex_num: int, target_vertex: int = 0):
+        self.vertex_num = vertex_num
+        self.target_vertex = target_vertex % vertex_num
+    
+    def sample(self) -> int:
+        return self.target_vertex
+    
+    def reset(self) -> None:
+        pass
+
+
 # ============================================================================
 # D-Regular Graph Generator
 # ============================================================================
@@ -428,6 +442,7 @@ class SimplifiedGraphORAM:
         Apply duplications from meta stash to update vertex's neighbor positions.
         
         Only applies dups where dup.leaf is in the paths we read (similar to Grove).
+        Deduplicates by source_vertex, keeping only the newest (first) dup.
         
         :param vertex_key: The vertex being accessed
         :param vertex_data: The vertex data
@@ -436,22 +451,27 @@ class SimplifiedGraphORAM:
         """
         adjacency = vertex_data.value.copy()
         
-        # Find and apply all relevant duplications
+        # First pass: collect dups for this vertex and dedup by source_vertex
+        dups_to_apply: Dict[int, Data] = {}  # source_vertex -> dup (keep first/newest)
         new_meta_stash = []
+        
         for dup in self._meta_stash:
-            # Only apply if: 1) key matches, 2) dup.leaf is in read paths
             if dup.key == vertex_key:
                 if meta_leaves_set is None or dup.leaf in meta_leaves_set:
-                    # Dup format: value = (source_vertex, new_position)
                     source_vertex, new_pos = dup.value
                     if source_vertex in adjacency:
-                        adjacency[source_vertex] = new_pos
-                    # Remove applied dup (don't add to new stash)
+                        # Keep first (newest) dup for each source_vertex
+                        if source_vertex not in dups_to_apply:
+                            dups_to_apply[source_vertex] = dup
                 else:
-                    # Dup not on read path, keep it
                     new_meta_stash.append(dup)
             else:
                 new_meta_stash.append(dup)
+        
+        # Apply deduped dups
+        for source_vertex, dup in dups_to_apply.items():
+            _, new_pos = dup.value
+            adjacency[source_vertex] = new_pos
         
         self._meta_stash = new_meta_stash
         vertex_data.value = adjacency
@@ -480,6 +500,7 @@ class SimplifiedGraphORAM:
     def _dedup_meta_stash(self) -> None:
         """
         De-duplicate meta stash: keep only the latest dup for each (target, source) pair.
+        Since new dups are prepended to stash (newest first), we keep the first occurrence.
         """
         # Key: (target_vertex, source_vertex) -> latest dup
         latest_dups: Dict[Tuple[int, int], Data] = {}
@@ -489,8 +510,9 @@ class SimplifiedGraphORAM:
                 continue
             source_vertex, new_pos = dup.value
             key = (dup.key, source_vertex)
-            # Later dups overwrite earlier ones (assuming stash order is oldest first)
-            latest_dups[key] = dup
+            # Keep first (newest) dup, ignore later (older) ones
+            if key not in latest_dups:
+                latest_dups[key] = dup
         
         self._meta_stash = list(latest_dups.values())
     
@@ -499,14 +521,18 @@ class SimplifiedGraphORAM:
         return [secrets.randbelow(self._leaf_range) for _ in range(count)]
     
     def _read_paths(self, label: str, leaves: List[int]) -> List[Data]:
-        """Read multiple paths from ORAM and return all real data. Clears buckets after read."""
+        """Read multiple paths from ORAM and return all real data. Clears buckets after read.
+        
+        Reads from root to leaf (newer dups in higher buckets come first).
+        """
         tree = self._graph_tree if label == "graph" else self._meta_tree
         result = []
         visited_indices = set()
         
         for leaf in leaves:
             path_indices = BinaryTree.get_path_indices(tree.start_leaf + leaf)
-            for idx in path_indices:
+            # Reverse to read from root to leaf (higher bucket = newer data = first)
+            for idx in reversed(path_indices):
                 if idx in visited_indices:
                     continue
                 visited_indices.add(idx)
@@ -613,31 +639,37 @@ class SimplifiedGraphORAM:
         # Step 7: Update vertex's leaf and get adjacency
         vertex_data.leaf = new_leaf
         adjacency = vertex_data.value
-        
+
+        # Correctness check: for each neighbor, compare adjacency-stored position and pos_map-stored position
+        for neighbor, pos in adjacency.items():
+            posmap = self._pos_map.get(neighbor, None)
+            if pos != posmap:
+                print(f"[MISMATCH] vertex {vertex_id}: neighbor {neighbor} pos={pos} posmap={posmap}")
+
         # Step 8: Update pos_map for neighbors based on current adjacency
         # (In simplified version, adjacency stores neighbor positions directly)
-        
+
         # Step 9: Create new duplications for neighbors
         new_dups = self._create_duplications(vertex_id, new_leaf, adjacency)
-        
+
         # Step 10: Add new dups to meta stash (at front for recency)
         self._meta_stash = new_dups + self._meta_stash
-        
+
         # Step 11: De-duplicate meta stash
         self._dedup_meta_stash()
-        
+
         # Step 12: Write back graph path
         self._graph_stash = self._write_path("graph", current_leaf, self._graph_stash, self.graph_bucket_size)
-        
+
         # Step 13: Write back meta paths (same D+1 paths we read)
         self._meta_stash = self._write_paths("meta", meta_all_leaves, self._meta_stash, self.meta_bucket_size)
-        
+
         # Step 14: Update statistics (after write)
         self._access_count += 1
         current_meta_stash_size = len(self._meta_stash)
         self._max_meta_stash_after_write = max(self._max_meta_stash_after_write, current_meta_stash_size)
         self._meta_stash_history.append((self._access_count, current_meta_stash_size))
-        
+
         return adjacency
     
     def get_max_meta_stash_at_checkpoints(self, checkpoints: List[int]) -> Dict[int, int]:
@@ -761,6 +793,10 @@ if __name__ == "__main__":
     parser.add_argument("--GRAPH_BUCKET_SIZE", type=int, default=4, help="Graph bucket size")
     parser.add_argument("--TOTAL_ACCESSES", type=int, default=pow(2,21), help="Total accesses")
     parser.add_argument("--SEED", type=int, default=42, help="Random seed")
+    parser.add_argument("--STASH_SCALE", type=int, default=pow(2, 15), help="Stash scale")
+    parser.add_argument("--distribution", type=str, default="uniform", 
+                        choices=["uniform", "repeated", "zipf", "sequential"],
+                        help="Access distribution: uniform, repeated, zipf (theta=0.99), sequential")
     # 兼容原有无效参数（不影响运行）
     parser.add_argument("--operation", type=str, default="lookup")
     parser.add_argument("--num_vertices", type=int, default=128)
@@ -778,7 +814,7 @@ if __name__ == "__main__":
     # ORAM parameters
     META_BUCKET_SIZE = args.META_BUCKET_SIZE # User-specified meta bucket size
     GRAPH_BUCKET_SIZE = args.GRAPH_BUCKET_SIZE # Graph ORAM bucket size
-    STASH_SCALE = 100000000000000            # Stash scale
+    STASH_SCALE = args.STASH_SCALE            # Stash scale
     
     # Benchmark parameters
     TOTAL_ACCESSES = args.TOTAL_ACCESSES     # Total number of vertex accesses
@@ -787,11 +823,18 @@ if __name__ == "__main__":
     # Random seed (set to None for random behavior)
     SEED = args.SEED
     
-    # Query distribution (replace with your own implementation)
-    # Options: UniformDistribution, ZipfDistribution, SequentialDistribution
-    distribution = UniformDistribution(VERTEX_NUM)
-    # distribution = ZipfDistribution(VERTEX_NUM, alpha=1.0)
-    # distribution = SequentialDistribution(VERTEX_NUM)
+    # Query distribution
+    DISTRIBUTION_NAME = args.distribution
+    if DISTRIBUTION_NAME == "uniform":
+        distribution = UniformDistribution(VERTEX_NUM)
+    elif DISTRIBUTION_NAME == "repeated":
+        distribution = RepeatedDistribution(VERTEX_NUM, target_vertex=0)
+    elif DISTRIBUTION_NAME == "zipf":
+        distribution = ZipfDistribution(VERTEX_NUM, alpha=0.99)
+    elif DISTRIBUTION_NAME == "sequential":
+        distribution = SequentialDistribution(VERTEX_NUM)
+    else:
+        raise ValueError(f"Unknown distribution: {DISTRIBUTION_NAME}")
     
     # ========== Run Benchmark ==========
     print("=" * 60)
@@ -802,6 +845,7 @@ if __name__ == "__main__":
     print(f"  max_degree = {MAX_DEGREE}")
     print(f"  meta_bucket_size = {META_BUCKET_SIZE}")
     print(f"  total_accesses = {TOTAL_ACCESSES}")
+    print(f"  distribution = {DISTRIBUTION_NAME}")
     print(f"  checkpoints = {CHECKPOINTS}")
     print("=" * 60)
     

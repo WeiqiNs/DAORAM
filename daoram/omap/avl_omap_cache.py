@@ -28,12 +28,14 @@ class AVLOmapCached(AVLOmap):
                  bucket_size: int = 4,
                  stash_scale: int = 7,
                  encryptor: Encryptor = None,
-                 enable_meta: bool = False):
+                 enable_meta: bool = False,
+                 meta_bucket_size: int = None):
         """
         Initialize AVLOmapCached with optional internal meta ORAM.
         
         :param enable_meta: If True, create an internal meta ORAM for delayed duplication.
                            This is used for Graph ORAM -> PosMap updates.
+        :param meta_bucket_size: Bucket size for meta ORAM (defaults to bucket_size if None).
         """
         super().__init__(
             num_data=num_data,
@@ -57,7 +59,7 @@ class AVLOmapCached(AVLOmap):
                 client=client,
                 name=f"{name}_meta",
                 filename=None,  # Meta ORAM uses memory storage
-                bucket_size=bucket_size,
+                bucket_size=meta_bucket_size if meta_bucket_size is not None else bucket_size,
                 stash_scale=stash_scale,
                 encryptor=encryptor,
             )
