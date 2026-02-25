@@ -1,5 +1,6 @@
 """Defines the OMAP constructed with the B+ tree ODS."""
 
+import logging
 import math
 import os
 from functools import cached_property
@@ -7,6 +8,9 @@ from typing import Any, List, Tuple
 
 from daoram.dependency import BinaryTree, BPlusData, BPlusTree, BPlusTreeNode, Buckets, Data, Helper, InteractServer
 from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+
+
+logger = logging.getLogger(__name__)
 
 
 class BPlusOdsOmap(TreeOdsOmap):
@@ -80,11 +84,10 @@ class BPlusOdsOmap(TreeOdsOmap):
             stored_root = self._client.list_all(label=root_key)
             if stored_root:
                 self._root = stored_root
-                print(f"  [BPlusOdsOmap] Restored root for {self._name}: {self._root}")
+                logger.debug("Restored root for %s: %s", self._name, self._root)
         except Exception:
-            # Metadata might not exist if using old storage file or fresh init
             if not force_reset_caches:
-                 print(f"  [BPlusOdsOmap] Warning: Could not restore root for {self._name} from server.")
+                logger.debug("Could not restore root for %s from server", self._name)
 
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -992,7 +995,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param value: The value to insert.
         """
         if key is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return
 
         # If the current root is empty, we simply set root as this new block.
@@ -1003,7 +1006,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
             # Perform dummy rounds to maintain consistent access pattern.
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return
 
         # Get all nodes we need to visit until finding the key (optimized version).
@@ -1012,7 +1015,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         except KeyError:
             # Tree structure issue during traversal - perform dummy rounds and return
             self._local = []
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return
 
         self._update_peak_client_size()
@@ -1046,7 +1049,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._local = []
 
         # Perform dummy rounds to pad to max_height.
-        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
+        self._perform_dummy_rounds(num_rounds=self.effective_height - rounds_used)
 
     def search(self, key: Any, value: Any = None) -> Any:
         """
@@ -1062,12 +1065,12 @@ class BPlusOdsOmap(TreeOdsOmap):
         :return: The (old) value corresponding to the search key, or None if not found.
         """
         if key is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         # Get all nodes we need to visit until finding the key (optimized version).
@@ -1076,7 +1079,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         except KeyError:
             # Key not found during traversal - perform dummy rounds and return None
             self._local = []
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         self._update_peak_client_size()
@@ -1101,7 +1104,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._update_peak_client_size()
         
         # Perform dummy rounds to pad to max_height.
-        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
+        self._perform_dummy_rounds(num_rounds=self.effective_height - rounds_used)
 
         return search_value
 
@@ -1120,11 +1123,11 @@ class BPlusOdsOmap(TreeOdsOmap):
         :return: The (old) value corresponding to the search key, or None if not found.
         """
         if key is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         if self.root is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         search_value = None
@@ -1134,7 +1137,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         current_node = None
         
         # Build local path by traversing through stash
-        for _ in range(self._max_height):
+        for _ in range(self.effective_height):
             # Find current node in stash
             for data in self._stash:
                 if data.key == current_key:
@@ -1173,7 +1176,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Perform dummy ORAM rounds to maintain access pattern
         # OPTIMIZATION: In Top-Down protocol, 'search_local' is called after 'parallel_search'
         # which already performed h rounds. We shouldn't add another h rounds here.
-        # self._perform_dummy_rounds(num_rounds=self._max_height)
+        # self._perform_dummy_rounds(num_rounds=self.effective_height)
 
         self._update_peak_client_size()
         
@@ -1193,7 +1196,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         :param value: The value to insert.
         """
         if key is None:
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return
 
         # If tree is empty, create root
@@ -1202,14 +1205,14 @@ class BPlusOdsOmap(TreeOdsOmap):
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
             # OPTIMIZATION: Remove forced dummy rounds
-            # self._perform_dummy_rounds(num_rounds=self._max_height)
+            # self._perform_dummy_rounds(num_rounds=self.effective_height)
             return
 
         # Traverse stash from root to leaf, building _local path
         self._local = []
         current_key = self.root[0]
         
-        for _ in range(self._max_height):
+        for _ in range(self.effective_height):
             # Find current node in stash and move to local
             found_idx = None
             for i, data in enumerate(self._stash):
@@ -1271,7 +1274,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         
         # Perform dummy ORAM rounds to maintain access pattern
         # OPTIMIZATION: Remove forced dummy rounds
-        # self._perform_dummy_rounds(num_rounds=self._max_height)
+        # self._perform_dummy_rounds(num_rounds=self.effective_height)
 
         self._update_peak_client_size()
 
@@ -1302,7 +1305,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             raise ValueError("Both OMAPs must share the same client for parallel access.")
         
         client = omap1._client
-        max_height = max(omap1._max_height, omap2._max_height)
+        max_height = max(omap1.effective_height, omap2.effective_height)
         
         # Handle None keys (dummy operations)
         key1_is_none = key1 is None
@@ -1351,7 +1354,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         round_count = 0
         
         # Perform exactly max_height rounds
-        max_height = max(omap1._max_height, omap2._max_height)
+        max_height = max(omap1.effective_height, omap2.effective_height)
         for _ in range(max_height):
             # Prepare read queries for this round
             labels = []
@@ -1640,7 +1643,7 @@ class BPlusOdsOmap(TreeOdsOmap):
              pass
         
         client = omap1._client
-        max_height = max(omap1._max_height, omap2._max_height)
+        max_height = max(omap1.effective_height, omap2.effective_height)
         
         class TraversalState:
             def __init__(self, omap, key, name, needs_sibling=False, is_insert=False):
@@ -2038,7 +2041,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             pass
         
         client = omap1._client
-        max_height = max(omap1._max_height, omap2._max_height)
+        max_height = max(omap1.effective_height, omap2.effective_height)
         
         class TraversalState:
             def __init__(self, omap, key, name, needs_sibling=False):
@@ -2260,9 +2263,6 @@ class BPlusOdsOmap(TreeOdsOmap):
             for state in states:
                 if state.traversing and state.local:
                     node = state.local[-1]
-                    # if round_num == 0:
-                    #     print(f"DEBUG: Root Node name={state.name}. KeysLen: {len(node.value.keys) if node.value.keys else 'None'}, ValsLen: {len(node.value.values) if node.value.values else 'None'}")
-                    
                     omap = state.omap
                     
                     # Assign new leaf (defensive: some nodes may arrive without a leaf)
@@ -2410,7 +2410,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         :return: The (old) value corresponding to the search key.
         """
         if key is None:
-            self._perform_dummy_operation(num_round=self._max_height)
+            self._perform_dummy_operation(num_round=self.effective_height)
 
         # If the current root is empty, we can't perform search.
         if self.root is None:
@@ -2438,7 +2438,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Perform one eviction.
         self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
         # And then the dummy evictions.
-        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=self.effective_height - num_retrieved_nodes)
 
         return search_value
 
@@ -2562,7 +2562,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         # Handle dummy deletion requests
         if key is None:
             # Perform dummy rounds to preserve access pattern
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         if self.root is None:
@@ -2575,7 +2575,7 @@ class BPlusOdsOmap(TreeOdsOmap):
             # Key not found during traversal - perform dummy rounds and return None
             self._local = []
             self._sibling_cache = []
-            self._perform_dummy_rounds(num_rounds=self._max_height)
+            self._perform_dummy_rounds(num_rounds=self.effective_height)
             return None
 
         # Set the last node in local as leaf
@@ -2600,7 +2600,7 @@ class BPlusOdsOmap(TreeOdsOmap):
         self._sibling_cache = []
 
         # Perform dummy rounds to pad to max_height
-        self._perform_dummy_rounds(num_rounds=self._max_height - rounds_used)
+        self._perform_dummy_rounds(num_rounds=self.effective_height - rounds_used)
 
         return deleted_value
 

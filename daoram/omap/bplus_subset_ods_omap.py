@@ -1,5 +1,6 @@
 """Defines the OMAP constructed with the B+ subset tree ODS."""
 
+import logging
 import math
 import os
 from functools import cached_property
@@ -10,6 +11,8 @@ from daoram.dependency import (
     Buckets, Data, Helper, InteractServer
 )
 from daoram.omap.tree_ods_omap import KV_LIST, ROOT, TreeOdsOmap
+
+logger = logging.getLogger(__name__)
 
 
 class BPlusSubsetOdsOmap(TreeOdsOmap):
@@ -88,10 +91,10 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
             stored_root = self._client.list_all(label=root_key)
             if stored_root:
                 self._root = stored_root
-                print(f"  [BPlusSubsetOdsOmap] Restored root for {self._name}: {self._root}")
+                logger.debug("Restored root for %s: %s", self._name, self._root)
         except Exception:
             if not force_reset_caches:
-                 print(f"  [BPlusSubsetOdsOmap] Warning: Could not restore root for {self._name} from server.")
+                logger.debug("Could not restore root for %s from server", self._name)
 
     def update_mul_tree_height(self, num_tree: int) -> None:
         """Suppose the ODS is used to store multiple trees, we update each tree's height.
@@ -759,7 +762,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
             self._stash.append(data_block)
             self.root = (data_block.key, data_block.leaf)
             # Perform at dummy finds and dummy evictions.
-            self._perform_dummy_operation(num_round=3 * self._max_height)
+            self._perform_dummy_operation(num_round=3 * self.effective_height)
             return
 
         # Get all nodes we need to visit until finding the key.
@@ -807,7 +810,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         self._local = []
 
         # Perform the desired number of dummy evictions.
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=3 * self.effective_height - num_retrieved_nodes)
 
     def search(self, key: Any, value: Any = None) -> Tuple[bool, Optional[int]]:
         """
@@ -842,7 +845,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         num_retrieved_nodes = len(self._local)
         self._stash += self._local
         self._local = []
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=3 * self.effective_height - num_retrieved_nodes)
 
         return key_exists, available_element
 
@@ -882,7 +885,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         # Perform one eviction.
         self._client.write_query(label=self._name, leaf=old_leaf, data=self._evict_stash(leaf=old_leaf))
         # And then the dummy evictions.
-        self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=self.effective_height - num_retrieved_nodes)
 
         return key_exists, available_element
 
@@ -1343,7 +1346,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         self._sibling_cache = []
 
         # Perform the desired number of dummy evictions
-        self._perform_dummy_operation(num_round=3 * self._max_height - num_retrieved_nodes)
+        self._perform_dummy_operation(num_round=3 * self.effective_height - num_retrieved_nodes)
 
     def _find_leaf_with_siblings_to_local(self, key: Any) -> None:
         """
@@ -1618,7 +1621,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         paths_collected = {self.root[1]}
         
         # Iteratively collect all needed paths
-        for _ in range(self._max_height + 1):
+        for _ in range(self.effective_height + 1):
             new_paths = set()
             still_need = []
             
@@ -1716,7 +1719,7 @@ class BPlusSubsetOdsOmap(TreeOdsOmap):
         
         # Phase 6: Write back - perform enough evictions to empty stash
         # Use _perform_dummy_operation pattern: read path, add to stash, evict
-        num_evictions = max(len(paths_collected) * 2, 3 * self._max_height)
+        num_evictions = max(len(paths_collected) * 2, 3 * self.effective_height)
         for _ in range(num_evictions):
             if len(self._stash) == 0:
                 break

@@ -1,6 +1,6 @@
 import math
 import pickle
-import random
+import secrets
 
 from daoram.dependency import InteractServer, Aes, PRP, ServerStorage, Prf, Data, Helper, BinaryTree
 from typing import Any, List, Dict, Optional, Tuple
@@ -29,7 +29,9 @@ class TopDownSomap:
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True,
-                 key_size: int = 16):
+                 key_size: int = 16,
+                 key_length: int = 4,
+                 value_length: int = 256):
         """
         Initialize Top-down SOMAP.
 
@@ -51,6 +53,8 @@ class TopDownSomap:
         self._cache_size = cache_size
         self._data_size = data_size
         self._key_size = key_size
+        self._key_length = key_length
+        self._value_length = value_length
         self._client = client
         self._name = name
         self._filename = filename
@@ -68,8 +72,8 @@ class TopDownSomap:
 
         # Initialize cipher for encryption
         self._cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
-        # Initialize cipher for list encryption if encryption is enabled
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._list_pad_length = self._compute_list_pad_length() if use_encryption else 0
         self.PRP = PRP(key=aes_key, n=self._extended_size)
 
         # First compute how many are in the buckets, according to https://eprint.iacr.org/2021/1280.
@@ -158,47 +162,29 @@ class TopDownSomap:
         return self._client
 
 
-    # todo: @weqi check if all ciphertexts have the same length
-    # since the value component of dummy pair is "dummy"
-    def _encrypt_data(self, data: Any) -> Any:
-        """
-        Encrypt data using AES if encryption is enabled.
+    def _compute_list_pad_length(self) -> int:
+        """Compute fixed padding length so all list-encrypted ciphertexts have identical size.
+        Considers both original keys (key_length bytes) and hashed indices (from num_data)."""
+        max_idx = self._extended_size
+        worst_keys = [max_idx, bytes(self._key_length)]
+        s_qw = max(len(pickle.dumps((k, "Dummy"))) for k in worst_keys)
+        s_qr = max(len(pickle.dumps((k, max_idx, "Dummy"))) for k in worst_keys)
+        s_val = len(pickle.dumps(bytes(self._value_length)))
+        s_grp = len(pickle.dumps([max_idx, max_idx]))
+        return max(s_qw, s_qr, s_val, s_grp)
 
-        :param data: The data to encrypt.
-        :return: Encrypted data as bytes.
-        """
+    def _encrypt_data(self, data: Any) -> Any:
         if not self._use_encryption:
             return data
-
-        try:
-            # Serialize the data
-            serialized_data = pickle.dumps(data)
-            # Encrypt the serialized data
-            encrypted_data = self._list_cipher.enc(serialized_data)
-            return encrypted_data
-        except Exception as e:
-            print(f"Error encryption data: {e}")
-            return data
+        serialized = pickle.dumps(data)
+        padded = Helper.pad_pickle(data=serialized, length=self._list_pad_length)
+        return self._list_cipher.enc(padded)
 
     def _decrypt_data(self, encrypted_data: bytes) -> Any:
-        """
-        Decrypt data using AES if encryption is enabled.
-
-        :param encrypted_data: The encrypted data to decrypt.
-        :return: Decrypted data.
-        """
         if not self._use_encryption:
             return encrypted_data
-
-        try:
-            # Decrypt the data
-            decrypted_data = self._list_cipher.dec(encrypted_data)
-            # Deserialize the data
-            data = pickle.loads(decrypted_data)
-            return data
-        except Exception as e:
-            print(f"Error decryption data: {e}")
-            return encrypted_data
+        decrypted = self._list_cipher.dec(encrypted_data)
+        return pickle.loads(Helper.unpad_pickle(data=decrypted))
 
     def _extend_database(self, data_map: dict = None) -> dict:
         """
@@ -532,7 +518,7 @@ class TopDownSomap:
                 return [self._decrypt_data(encrypted_data) for encrypted_data in encrypted_data_list]
             return encrypted_data_list
         else:
-            print(f"error: unknown operation {op}")
+            raise ValueError(f"Unknown operation '{op}'")
         return None
 
     def _collect_group_leaves_retrieve(self, group_index: int, seed: list) -> List[int]:
@@ -555,7 +541,7 @@ class TopDownSomap:
                 uniq_leaves.append(l)
             else:
                 while True:
-                    t = random.randint(0, self._num_groups - 1)
+                    t = secrets.randbelow(self._num_groups)
                     if t not in seen:
                         seen.add(t)
                         uniq_leaves.append(t)
@@ -578,6 +564,9 @@ class TopDownSomap:
 
     def search(self, key: Any, seed: list) -> Any:
         """Given a key, batch-download its group's paths and return the value for the key.
+        NOTE: search reads upper_bound paths while insert reads 1 path.
+        This access pattern asymmetry is a known property of the current design.
+        TODO: unify path counts (pad insert to upper_bound) for stronger indistinguishability.
 
         This performs a single client.read_query with a list of leaves corresponding to the group's members.
         """
@@ -628,7 +617,7 @@ class TopDownSomap:
         This keeps the single-round batch read/write property: one read_query and one write_query.
         """
         group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
-        leaves = [random.randint(0, self._num_groups - 1)]
+        leaves = [secrets.randbelow(self._num_groups)]
 
         raw_paths = self._client.read_query(label=self._Tree_name, leaf=leaves)
         paths = self._decrypt_buckets(buckets=raw_paths)

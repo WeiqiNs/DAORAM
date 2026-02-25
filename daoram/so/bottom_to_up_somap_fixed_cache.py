@@ -1,24 +1,37 @@
+import logging
+import math
 import os
+import warnings
+from collections import deque
 from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.dependency.crypto import Aes
-from daoram.dependency.helper import Data
+from daoram.dependency.helper import Data, Helper
 from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 from daoram.oram.static_oram import StaticOram
 from typing import Any, Dict, Tuple, Optional
 import pickle
 
 class BottomUpSomapFixedCache:
-    """
-    Bottom-to-Up SOMAP with Fixed Cache Size (Optimized Version)
-    
-    This is an optimized version where cache_size is fixed after initialization.
-    Key optimizations:
-    1. In each query, batch D_S write + Q_W insert + Q_W pop + Q_R pop in one round
-    2. Cache the popped elements locally
-    3. In the next query's parallel_search (h rounds), perform O_W/O_R deletions
-       in parallel with the search, utilizing the same h rounds
-    
-    This reduces WAN interaction rounds compared to the dynamic cache version.
+    """Bottom-to-Up SOMAP (Algorithm 3) with parallel access optimization.
+
+    Architecture:
+        - D_S: Static ORAM storing the full database
+        - O_W / O_R: B+ tree OMAPs acting as write/read caches
+        - Q_W / Q_R: Server-side encrypted queues tracking cache contents
+
+    Key optimizations over the dynamic-cache version:
+        1. Batch D_S write + Q_W insert + Q_W/Q_R pop in one server round
+        2. Cache popped elements locally (pending deletes)
+        3. Execute O_W/O_R deletions in parallel with the next query's
+           search, reusing the same h rounds of OMAP traversal
+
+    Dynamic features:
+        - Timestamp-based cache eviction via set_target_cache_size()
+        - Effective OMAP height tracks max(|Q_W|, |Q_R|) for round efficiency
+        - O_W/O_R initialized with num_data capacity to avoid rebuild on resize
+
+    TODO: Support dynamic ORAM tree resizing so that O_W/O_R storage
+          scales with actual cache size rather than always using num_data.
     """
     
     def __init__(self,
@@ -33,25 +46,14 @@ class BottomUpSomapFixedCache:
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
                  use_encryption: bool = True,
-                 order: int = 4):
-        """
-        Initialize Bottom-to-Up SOMAP with Fixed Cache
-        
-        :param num_data: Database size (N)
-        :param cache_size: Cache size (fixed, window parameter c)
-        :param data_size: Data block size
-        :param client: Server interaction instance
-        :param name: Protocol name
-        :param filename: Storage filename
-        :param bucket_size: Bucket size for ORAM
-        :param stash_scale: Stash scaling factor
-        :param aes_key: AES encryption key
-        :param num_key_bytes: Number of bytes for keys
-        :param use_encryption: Whether to use encryption
-        """
+                 order: int = 4,
+                 key_length: int = 4,
+                 value_length: int = 256):
         self._num_data = num_data
         self._cache_size = cache_size  # Fixed, will not change
         self._data_size = data_size
+        self._key_length = key_length
+        self._value_length = value_length
         self._client = client
         self._name = name
         self._filename = filename
@@ -64,6 +66,8 @@ class BottomUpSomapFixedCache:
         
         # Initialize encryption for list data
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._extended_size = 3 * self._num_data
+        self._list_pad_length = self._compute_list_pad_length() if use_encryption else 0
         
         # OMAP caches
         self._Ow: BPlusOdsOmap = None  
@@ -106,6 +110,14 @@ class BottomUpSomapFixedCache:
         self._pending_ds_eviction: Optional[Tuple[int, Any]] = None  # (leaf, encrypted_path)
         self._pending_ds_eviction_secondary: Optional[Tuple[int, Any]] = None  # Secondary pending write
 
+        # Dynamic cache adjustment (timestamp-based eviction)
+        self._target_cache_size = cache_size
+        self._adjust_cap = 1
+        self._qw_push_times: deque = deque()
+        self._qr_push_times: deque = deque()
+        self._pending_delete_ow_queue: deque = deque()
+        self._pending_delete_or_queue: deque = deque()
+
         # 客户端占用统计（块数）
         self._peak_client_size = 0
 
@@ -114,34 +126,51 @@ class BottomUpSomapFixedCache:
         """Return the client object."""
         return self._client
 
+    def _compute_list_pad_length(self) -> int:
+        """Compute fixed padding length so all list-encrypted ciphertexts have identical size.
+        Considers both original keys (key_length bytes) and hashed indices (from num_data)."""
+        max_idx = self._extended_size
+        worst_keys = [max_idx, bytes(self._key_length)]
+        s_qw = max(len(pickle.dumps((k, "Dummy"))) for k in worst_keys)
+        s_qr = max(len(pickle.dumps((k, max_idx, "Dummy"))) for k in worst_keys)
+        s_val = len(pickle.dumps(bytes(self._value_length)))
+        return max(s_qw, s_qr, s_val)
+
     def _encrypt_data(self, data: Any) -> Any:
-        """Encrypt data if encryption is enabled"""
         if not self._use_encryption:
             return data
-        
-        try:
-            serialized_data = pickle.dumps(data)
-            encrypted_data = self._list_cipher.enc(serialized_data)
-            return encrypted_data
-        except Exception as e:
-            print(f"Error encrypting data: {e}")
-            return data
-    
+        serialized = pickle.dumps(data)
+        padded = Helper.pad_pickle(data=serialized, length=self._list_pad_length)
+        return self._list_cipher.enc(padded)
+
     def _decrypt_data(self, encrypted_data: Any) -> Any:
-        """Decrypt data if encryption is enabled"""
         if not self._use_encryption:
             return encrypted_data
-        
-        try:
-            decrypted_data = self._list_cipher.dec(encrypted_data)
-            data = pickle.loads(decrypted_data)
-            return data
-        except Exception as e:
-            print(f"Error decrypting data: {e}")
-            return encrypted_data
+        decrypted = self._list_cipher.dec(encrypted_data)
+        return pickle.loads(Helper.unpad_pickle(data=decrypted))
 
     def reset_peak_client_size(self) -> None:
         self._peak_client_size = 0
+
+    def set_target_cache_size(self, target_c: int, adjust_cap: int = 1) -> None:
+        """Dynamically adjust the security window size using timestamp-based eviction.
+
+        Items in Q_W/Q_R are evicted when current_timestamp - push_timestamp >= target_c.
+        A cap limits burst evictions when shrinking: at most (1 + adjust_cap) pops per queue
+        per operation.
+
+        :param target_c: New target cache size. If > initial cache_size, OMAP trees may
+                         need to be initialized with sufficient capacity beforehand.
+        :param adjust_cap: Max extra pops per operation beyond the normal 1. Default 1.
+        """
+        if target_c > self._num_data:
+            warnings.warn(
+                f"target_c={target_c} > OMAP capacity={self._num_data}. "
+                f"O_W/O_R trees may overflow.",
+                stacklevel=2
+            )
+        self._target_cache_size = target_c
+        self._adjust_cap = adjust_cap
 
     def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
         """Update peak client storage size (in blocks/entries).
@@ -209,7 +238,7 @@ class BottomUpSomapFixedCache:
         # O_W and O_R each store at most cache_size + 1 entries
         self._Ow = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -224,7 +253,7 @@ class BottomUpSomapFixedCache:
         
         self._Or = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -237,8 +266,6 @@ class BottomUpSomapFixedCache:
             use_encryption=self._use_encryption
         )
 
-        # print(f"[DEBUG] O_W tree height: {self._Ow._max_height}, O_R tree height: {self._Or._max_height}")
-        
         # Initialize OMAP storage
         st_ow = self._Ow._init_ods_storage([])
         st_or = self._Or._init_ods_storage([])
@@ -262,7 +289,7 @@ class BottomUpSomapFixedCache:
         # Initialize O_W (B+ ODS OMAP)
         self._Ow = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -278,7 +305,7 @@ class BottomUpSomapFixedCache:
         # Initialize O_R (B+ ODS OMAP)
         self._Or = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -298,6 +325,12 @@ class BottomUpSomapFixedCache:
         # Initialize queues (empty)
         self._Qw = []
         self._Qr = []
+        self._Qw_len = 0
+        self._Qr_len = 0
+        self._qw_push_times = deque()
+        self._qr_push_times = deque()
+        self._pending_delete_ow_queue = deque()
+        self._pending_delete_or_queue = deque()
         
         # Return components to be merged into server storage
         return {
@@ -336,7 +369,7 @@ class BottomUpSomapFixedCache:
         # Initialize O_W (B+ ODS OMAP)
         self._Ow = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -352,7 +385,7 @@ class BottomUpSomapFixedCache:
         # Initialize O_R (B+ ODS OMAP)
         self._Or = BPlusOdsOmap(
             order=self._order,
-            num_data=self._cache_size + 1,
+            num_data=self._num_data,
             key_size=self._num_key_bytes,
             data_size=self._data_size,
             client=self._client,
@@ -370,6 +403,10 @@ class BottomUpSomapFixedCache:
         self._Qr = []
         self._Qw_len = 0
         self._Qr_len = 0
+        self._qw_push_times = deque()
+        self._qr_push_times = deque()
+        self._pending_delete_ow_queue = deque()
+        self._pending_delete_or_queue = deque()
         
         # If not forcing reset, we must restore the caches' client state (Root pointers)
         # from the server metadata, otherwise the client is disconnected from the loaded B+ trees.
@@ -381,7 +418,6 @@ class BottomUpSomapFixedCache:
             # We need to tell the server to replace the current O_W, O_R, Q_W, Q_R
             # with EMPTY, FRESHLY initialized versions matching our current config.
             # D_S is kept as is.
-            print(f"  [restore_client_state] Forcing reset of caches: {self._Ow_name}, {self._Or_name}")
             
             st_ow = self._Ow._init_ods_storage([])
             st_or = self._Or._init_ods_storage([])
@@ -408,8 +444,6 @@ class BottomUpSomapFixedCache:
         self._Ds._client = self._client
 
     def access(self, key: Any, op: str, value: Any = None) -> Any:
-        # print("[访问] 并行查找 + 延迟写回")
-        
         old_value = None
 
         self._update_peak_client_size()
@@ -432,6 +466,12 @@ class BottomUpSomapFixedCache:
 
         self._update_peak_client_size()
 
+        # Dequeue from overflow queues if primary pending slot is empty
+        if self._pending_delete_ow is None and self._pending_delete_ow_queue:
+            self._pending_delete_ow = self._pending_delete_ow_queue.popleft()
+        if self._pending_delete_or is None and self._pending_delete_or_queue:
+            self._pending_delete_or = self._pending_delete_or_queue.popleft()
+
         # Get pending delete keys for parallel execution
         delete_key_ow = None
         delete_key_or = None
@@ -451,6 +491,13 @@ class BottomUpSomapFixedCache:
         # Observer callback for parallel search stats
         def _parallel_search_observer(extra_nodes: int):
             self._update_peak_client_size(extra_nodes=extra_nodes)
+
+        # Set effective tree height based on current queue sizes.
+        # This avoids full-height OMAP traversal when cache is smaller than max capacity.
+        current_max = max(self._Qw_len, self._Qr_len, 1)
+        eff_h = math.ceil(math.log(current_max, math.ceil(self._order / 2))) + 1
+        self._Ow.effective_height = eff_h
+        self._Or.effective_height = eff_h
 
         # Parallel search with pending deletions & insertions - all 5 operations in h rounds
         value_ow, value_or, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
@@ -534,6 +581,7 @@ class BottomUpSomapFixedCache:
 
         # 4. Q_W insert
         batch_ops.append({'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))})
+        self._qw_push_times.appendleft(self._timestamp)
 
         # Flush pending Q_R inserts in this batch round以共享 WAN 轮次
         pending_qr_count = len(self._pending_qr_inserts)
@@ -542,20 +590,30 @@ class BottomUpSomapFixedCache:
                 'op': 'list_insert', 'label': self._Qr_name, 'index': 0,
                 'value': self._encrypt_data((qr_key, qr_ts, qr_marker))
             })
+            self._qr_push_times.appendleft(self._timestamp)
         self._pending_qr_inserts = []
         
-        # If Q_W exceeds cache_size, pop the oldest element
-        qw_pop_added = False
-        if self._Qw_len > self._cache_size:
+        # Timestamp-based Q_W eviction with cap
+        qw_pops_requested = 0
+        max_qw_pops = 1 + self._adjust_cap
+        for i in range(min(max_qw_pops, self._Qw_len, len(self._qw_push_times))):
+            if self._timestamp - self._qw_push_times[-(1 + i)] >= self._target_cache_size:
+                qw_pops_requested += 1
+            else:
+                break
+        for _ in range(qw_pops_requested):
             batch_ops.append({'op': 'list_pop', 'label': self._Qw_name, 'index': -1})
-            self._Qw_len = self._cache_size
-            qw_pop_added = True
-        
-        # Always pop one element from Q_R if available (no expiry check)
-        qr_pop_added = False
-        if self._Qr_len > 0:
+
+        # Timestamp-based Q_R eviction with cap
+        qr_pops_requested = 0
+        max_qr_pops = 1 + self._adjust_cap
+        for i in range(min(max_qr_pops, self._Qr_len, len(self._qr_push_times))):
+            if self._timestamp - self._qr_push_times[-(1 + i)] >= self._target_cache_size:
+                qr_pops_requested += 1
+            else:
+                break
+        for _ in range(qr_pops_requested):
             batch_ops.append({'op': 'list_pop', 'label': self._Qr_name, 'index': -1})
-            qr_pop_added = True
         
         # Execute batch query
         results = self._client.batch_query(batch_ops)
@@ -660,26 +718,35 @@ class BottomUpSomapFixedCache:
 
         self._update_peak_client_size()
         
-        # Handle Q_W pop result
-
-        if qw_pop_added:
+        # Handle Q_W pop results (may be multiple with timestamp-based eviction)
+        for i in range(qw_pops_requested):
             encrypted_qw_pop = results[result_idx]
             if encrypted_qw_pop is not None:
-                self._pending_delete_ow = self._decrypt_data(encrypted_qw_pop)
-                # 排队到下次 batch 的 Q_R 插入
-                qr_insert_key = self._pending_delete_ow[0]
-                qr_insert_marker = self._pending_delete_ow[1]
+                qw_item = self._decrypt_data(encrypted_qw_pop)
+                if i == 0:
+                    self._pending_delete_ow = qw_item
+                else:
+                    self._pending_delete_ow_queue.append(qw_item)
+                qr_insert_key = qw_item[0]
+                qr_insert_marker = qw_item[1]
                 self._pending_qr_inserts.append((qr_insert_key, self._timestamp, qr_insert_marker))
+            self._qw_push_times.pop()
+            self._Qw_len -= 1
             result_idx += 1
-        
-        # Handle Q_R pop result (always pop one when available)
-        if qr_pop_added and result_idx < len(results):
-            encrypted_qr_item = results[result_idx]
-            if encrypted_qr_item is not None:
-                qr_item = self._decrypt_data(encrypted_qr_item)
-                self._pending_delete_or = qr_item
-            self._Qr_len -= 1
-            result_idx += 1
+
+        # Handle Q_R pop results (may be multiple with timestamp-based eviction)
+        for i in range(qr_pops_requested):
+            if result_idx < len(results):
+                encrypted_qr_item = results[result_idx]
+                if encrypted_qr_item is not None:
+                    qr_item = self._decrypt_data(encrypted_qr_item)
+                    if i == 0:
+                        self._pending_delete_or = qr_item
+                    else:
+                        self._pending_delete_or_queue.append(qr_item)
+                self._qr_push_times.pop()
+                self._Qr_len -= 1
+                result_idx += 1
 
         # 新插入的 Q_R 元素现在才计入长度（已发送本轮 batch）
         self._Qr_len += pending_qr_count
@@ -708,5 +775,5 @@ class BottomUpSomapFixedCache:
                 return [self._decrypt_data(item) for item in encrypted_data_list]
             return encrypted_data_list
         else:
-            print(f"error: unknown operation '{op}'")
+            raise ValueError(f"Unknown operation '{op}'")
         return None

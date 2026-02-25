@@ -71,6 +71,11 @@ class TreeOdsOmap(ABC):
         # 客户端占用峰值统计（块数）
         self._peak_client_size: int = 0
 
+        # Dynamic round control: when set, operations pad to this height
+        # instead of _max_height. Allows SOMAP to use fewer rounds when
+        # current cache size is smaller than max OMAP capacity.
+        self._effective_height: Optional[int] = None
+
         # Use encryption if required.
         self._aes_key: bytes = aes_key
         self._num_key_bytes: int = num_key_bytes
@@ -78,6 +83,18 @@ class TreeOdsOmap(ABC):
 
         # Initialize the client connection.
         self._client: InteractServer = client
+
+    @property
+    def effective_height(self) -> int:
+        """Return the effective tree height for padding operations.
+        When _effective_height is set, use it; otherwise fall back to _max_height."""
+        if self._effective_height is not None:
+            return self._effective_height
+        return self._max_height
+
+    @effective_height.setter
+    def effective_height(self, value: Optional[int]):
+        self._effective_height = value
 
     def reset_peak_client_size(self) -> None:
         """Reset recorded client peak usage."""

@@ -1,6 +1,7 @@
 import os
 from daoram.dependency.interact_server import InteractServer, ServerStorage
 from daoram.dependency.crypto import Aes
+from daoram.dependency.helper import Helper
 from daoram.omap.bplus_ods_omap import BPlusOdsOmap
 from daoram.oram.static_oram import StaticOram
 from typing import Any, Dict
@@ -26,25 +27,14 @@ class BottomUpSomap:
                  stash_scale: int = 300,
                  aes_key: bytes = None,
                  num_key_bytes: int = 16,
-                 use_encryption: bool = True):
-        """
-        Initialize Bottom-to-Up SOMAP
-        
-        :param num_data: Database size (N)
-        :param cache_size: Cache size (window parameter c)
-        :param data_size: Data block size
-        :param client: Server interaction instance
-        :param name: Protocol name
-        :param filename: Storage filename
-        :param bucket_size: Bucket size for ORAM
-        :param stash_scale: Stash scaling factor
-        :param aes_key: AES encryption key
-        :param num_key_bytes: Number of bytes for keys
-        :param use_encryption: Whether to use encryption
-        """
+                 use_encryption: bool = True,
+                 key_length: int = 4,
+                 value_length: int = 256):
         self._num_data = num_data
         self._cache_size = cache_size
         self._data_size = data_size
+        self._key_length = key_length
+        self._value_length = value_length
         self._client = client
         self._name = name
         self._filename = filename
@@ -53,9 +43,11 @@ class BottomUpSomap:
         self._aes_key = aes_key
         self._num_key_bytes = num_key_bytes
         self._use_encryption = use_encryption
+        self._extended_size = 3 * self._num_data
         
         # Initialize encryption for list data
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._list_pad_length = self._compute_list_pad_length() if use_encryption else 0
         
         # OMAP caches
         self._Ow: BPlusOdsOmap = None  
@@ -86,37 +78,28 @@ class BottomUpSomap:
         """Return the client object."""
         return self._client
 
-    # todo: @weiqi check if all ciphertexts have the same length
-    # since the value component of dummy pair is "dummy"
+    def _compute_list_pad_length(self) -> int:
+        """Compute fixed padding length so all list-encrypted ciphertexts have identical size.
+        Considers both original keys (key_length bytes) and hashed indices (from num_data)."""
+        max_idx = self._extended_size
+        worst_keys = [max_idx, bytes(self._key_length)]
+        s_qw = max(len(pickle.dumps((k, "Dummy"))) for k in worst_keys)
+        s_qr = max(len(pickle.dumps((k, max_idx, "Dummy"))) for k in worst_keys)
+        s_val = len(pickle.dumps(bytes(self._value_length)))
+        return max(s_qw, s_qr, s_val)
+
     def _encrypt_data(self, data: Any) -> Any:
-        """Encrypt data if encryption is enabled"""
         if not self._use_encryption:
             return data
-        
-        try:
-            # Serialize the data
-            serialized_data = pickle.dumps(data)
-            # Encrypt the serialized data
-            encrypted_data = self._list_cipher.enc(serialized_data)
-            return encrypted_data
-        except Exception as e:
-            print(f"Error encrypting data: {e}")
-            return data
-    
+        serialized = pickle.dumps(data)
+        padded = Helper.pad_pickle(data=serialized, length=self._list_pad_length)
+        return self._list_cipher.enc(padded)
+
     def _decrypt_data(self, encrypted_data: Any) -> Any:
-        """Decrypt data if encryption is enabled"""
         if not self._use_encryption:
             return encrypted_data
-        
-        try:
-            # Decrypt the data
-            decrypted_data = self._list_cipher.dec(encrypted_data)
-            # Deserialize the data
-            data = pickle.loads(decrypted_data)
-            return data
-        except Exception as e:
-            print(f"Error decrypting data: {e}")
-            return encrypted_data
+        decrypted = self._list_cipher.dec(encrypted_data)
+        return pickle.loads(Helper.unpad_pickle(data=decrypted))
     
     def setup(self, data_map: Dict[int, Any] = None) -> None:
         """
@@ -376,5 +359,5 @@ class BottomUpSomap:
                 return [self._decrypt_data(item) for item in encrypted_data_list]
             return encrypted_data_list
         else:
-            print(f"error: unknown operation '{op}'")
+            raise ValueError(f"Unknown operation '{op}'")
         return None

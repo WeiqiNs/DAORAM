@@ -1,6 +1,9 @@
+import logging
 import math
 import pickle
-import random
+import secrets
+import warnings
+from collections import deque
 from typing import Any, List, Dict, Optional, Tuple
 
 from daoram.dependency import InteractServer, Aes, PRP, ServerStorage, Prf, Data, Helper, BinaryTree
@@ -9,12 +12,27 @@ from daoram.omap.bplus_subset_ods_omap import BPlusSubsetOdsOmap
 
 
 class TopDownSomapFixedCache:
-    """
-    Top-down SOMAP，固定 cache_size，并行化访问路径。
-    关键优化：
-    - O_W / O_R 并行 search（h 轮）
-    - 上一轮的删除写回延迟到下一轮 access，再用完整 h 轮路径插入 O_R / 写回 D_S
-    - Q_R 插入延迟到下一轮 batch，与 D_S / Q_W 操作共享同一 WAN 轮
+    """Top-Down SOMAP (Algorithm 2) with parallel access optimization.
+
+    Architecture:
+        - D_S: PRP-encrypted database stored on server
+        - O_W / O_R: B+ tree OMAPs acting as write/read caches
+        - O_B: B+ subset OMAP tracking available leaf indices
+        - Q_W / Q_R: Server-side encrypted queues tracking cache contents
+
+    Key optimizations over the dynamic-cache version:
+        1. O_W / O_R parallel search in h rounds
+        2. Previous round's deletions deferred to next access, reusing
+           the same h-round OMAP traversal for O_R insertion / D_S writeback
+        3. Q_R insertion batched with D_S / Q_W operations in one WAN round
+
+    Dynamic features:
+        - Timestamp-based cache eviction via set_target_cache_size()
+        - Effective OMAP height tracks max(|Q_W|, |Q_R|) for round efficiency
+        - O_W/O_R/O_B initialized with num_data capacity to avoid rebuild
+
+    TODO: Support dynamic ORAM tree resizing so that O_W/O_R/O_B storage
+          scales with actual cache size rather than always using num_data.
     """
 
     def __init__(self,
@@ -30,12 +48,16 @@ class TopDownSomapFixedCache:
                  num_key_bytes: int = 16,
                  use_encryption: bool = True,
                  key_size: int = 16,
-                 order: int = 4):
+                 order: int = 4,
+                 key_length: int = 4,
+                 value_length: int = 256):
         self._num_data = num_data
         self._num_groups = num_data
         self._cache_size = cache_size
         self._data_size = data_size
         self._key_size = key_size
+        self._key_length = key_length
+        self._value_length = value_length
         self._client = client
         self._name = name
         self._filename = filename
@@ -67,6 +89,7 @@ class TopDownSomapFixedCache:
         
         self._cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
         self._list_cipher = Aes(key=aes_key, key_byte_length=num_key_bytes) if use_encryption else None
+        self._list_pad_length = self._compute_list_pad_length() if use_encryption else 0
         self.PRP = PRP(key=aes_key, n=self._extended_size)
 
         self.upper_bound = math.ceil(
@@ -116,6 +139,14 @@ class TopDownSomapFixedCache:
         self._pending_available_key: Optional[int] = None  # 本轮开头要检查的 key（来源于上一轮）
         self._pending_available_key_next: Optional[int] = None  # 本轮找到的可用 key，供下一轮使用
 
+        # Dynamic cache adjustment (timestamp-based eviction)
+        self._target_cache_size = cache_size
+        self._adjust_cap = 1
+        self._qw_push_times: deque = deque()
+        self._qr_push_times: deque = deque()
+        self._pending_delete_ow_queue: deque = deque()
+        self._pending_delete_or_queue: deque = deque()
+
         # 客户端占用统计（块数）
         self._peak_client_size = 0
         
@@ -132,6 +163,21 @@ class TopDownSomapFixedCache:
 
     def reset_peak_client_size(self) -> None:
         self._peak_client_size = 0
+
+    def set_target_cache_size(self, target_c: int, adjust_cap: int = 1) -> None:
+        """Dynamically adjust the security window size using timestamp-based eviction.
+
+        :param target_c: New target cache size.
+        :param adjust_cap: Max extra pops per operation (caps burst evictions). Default 1.
+        """
+        if target_c > self._num_data:
+            warnings.warn(
+                f"target_c={target_c} > OMAP capacity={self._num_data}. "
+                f"O_W/O_R/O_B trees may overflow.",
+                stacklevel=2
+            )
+        self._target_cache_size = target_c
+        self._adjust_cap = adjust_cap
 
     def _update_peak_client_size(self, extra_nodes: int = 0) -> None:
         """Update peak client storage size (in blocks/entries).
@@ -181,23 +227,29 @@ class TopDownSomapFixedCache:
         if total > self._peak_client_size:
             self._peak_client_size = total
 
+    def _compute_list_pad_length(self) -> int:
+        """Compute fixed padding length so all list-encrypted ciphertexts have identical size.
+        Considers both original keys (key_length bytes) and hashed indices (from num_data)."""
+        max_idx = self._extended_size
+        worst_keys = [max_idx, bytes(self._key_length)]
+        s_qw = max(len(pickle.dumps((k, "Dummy"))) for k in worst_keys)
+        s_qr = max(len(pickle.dumps((k, max_idx, "Dummy"))) for k in worst_keys)
+        s_val = len(pickle.dumps(bytes(self._value_length)))
+        s_grp = len(pickle.dumps([max_idx, max_idx]))
+        return max(s_qw, s_qr, s_val, s_grp)
+
     def _encrypt_data(self, data: Any) -> Any:
         if not self._use_encryption:
             return data
-        try:
-            return self._list_cipher.enc(pickle.dumps(data))
-        except Exception as e:
-            print(f"加密失败: {e}")
-            return data
+        serialized = pickle.dumps(data)
+        padded = Helper.pad_pickle(data=serialized, length=self._list_pad_length)
+        return self._list_cipher.enc(padded)
 
     def _decrypt_data(self, encrypted_data: bytes) -> Any:
         if not self._use_encryption:
             return encrypted_data
-        try:
-            return pickle.loads(self._list_cipher.dec(encrypted_data))
-        except Exception as e:
-            print(f"解密失败: {e}")
-            return encrypted_data
+        decrypted = self._list_cipher.dec(encrypted_data)
+        return pickle.loads(Helper.unpad_pickle(data=decrypted))
 
     def _encrypt_buckets(self, buckets: List[List[Data]]) -> List[List[bytes]]:
         if not self._use_encryption:
@@ -236,8 +288,6 @@ class TopDownSomapFixedCache:
         return data_map
 
     def setup(self, data: Optional[List[Tuple[Any, Any]]] = None) -> None:
-        print("[初始化] 构建树与缓存")
-        print(f"TopDown Upper Bound (Paths per Search): {self.upper_bound}")
         extended_data = self._extend_database(None)
         self._dummy_index = 0
         if data is None:
@@ -300,17 +350,17 @@ class TopDownSomapFixedCache:
 
         keys_list = dummy_keys
 
-        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Ow_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Or_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                       data_size=self._data_size, client=self._client, name=self._Ob_name,
                                       filename=self._filename, bucket_size=self._bucket_size,
                                       stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
@@ -363,17 +413,17 @@ class TopDownSomapFixedCache:
              dummy_keys = all_keys 
         keys_list = dummy_keys
 
-        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Ow_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Or_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                       data_size=self._data_size, client=self._client, name=self._Ob_name,
                                       filename=self._filename, bucket_size=self._bucket_size,
                                       stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
@@ -395,6 +445,10 @@ class TopDownSomapFixedCache:
         
         self._Qw_len = len(self._Qw)
         self._Qr_len = len(self._Qr)
+        self._qw_push_times = deque()
+        self._qr_push_times = deque()
+        self._pending_delete_ow_queue = deque()
+        self._pending_delete_or_queue = deque()
 
         return {
             self._Ow_name: st1,
@@ -411,17 +465,17 @@ class TopDownSomapFixedCache:
         :param force_reset_caches: If True, reset O_W, O_R, O_B, Q_W, Q_R on server.
         """
         # 1. Initialize empty Cache maps (O_W, O_R, O_B)
-        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ow = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Ow_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Or = BPlusOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Or = BPlusOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                 data_size=self._data_size, client=self._client, name=self._Or_name,
                                 filename=self._filename, bucket_size=self._bucket_size,
                                 stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
                                 num_key_bytes=self._num_key_bytes, use_encryption=self._use_encryption)
-        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._cache_size, key_size=self._num_key_bytes,
+        self._Ob = BPlusSubsetOdsOmap(order=self._order, num_data=self._num_data, key_size=self._num_key_bytes,
                                       data_size=self._data_size, client=self._client, name=self._Ob_name,
                                       filename=self._filename, bucket_size=self._bucket_size,
                                       stash_scale=max(self._stash_scale, 5000), aes_key=self._aes_key,
@@ -432,6 +486,10 @@ class TopDownSomapFixedCache:
         self._Qr = []
         self._Qw_len = 0
         self._Qr_len = 0
+        self._qw_push_times = deque()
+        self._qr_push_times = deque()
+        self._pending_delete_ow_queue = deque()
+        self._pending_delete_or_queue = deque()
         
         # 3. Initialize Tree (Shell)
         # We need the tree object for 'level' property and path calculations.
@@ -447,7 +505,6 @@ class TopDownSomapFixedCache:
              self._Ob.restore_client_state()
 
         if force_reset_caches:
-            print(f"  [restore_client_state] Forcing reset of caches: {self._Ow_name}, {self._Or_name}, {self._Ob_name}")
             
             # Since init_ods_storage uses keys from data, we need dummy keys.
             extended_data_map = self._extend_database({})
@@ -502,7 +559,7 @@ class TopDownSomapFixedCache:
         """
         if op == 'insert':
             # Insert uses random leaf
-            leaves = [random.randint(0, self._num_groups - 1)]
+            leaves = [secrets.randbelow(self._num_groups)]
             # For insert, seed is based on group_index + old_value
             # BUT insert logic in this file calculates seed later inside `insert` method
             # Wait, `insert` method takes `seed` as argument.
@@ -619,7 +676,6 @@ class TopDownSomapFixedCache:
         return return_value, leaves, enc_evicted
 
     def access(self, op: str, general_key: str, general_value: Any = None, value: Any = None) -> Any:
-        # print("[访问] 并行查找 + 延迟写回")
         key = Helper.hash_data_to_leaf(prf=self._group_prf, data=general_key, map_size=self._num_groups)
 
         self._update_peak_client_size()
@@ -645,25 +701,18 @@ class TopDownSomapFixedCache:
                 
             self._pending_insert_or = None
         
-        # IGNORE_OB_STATS: Comment out Ob operations to ignore their overhead in benchmark
-        # if self._pending_ob_insert is not None:
-        #     try:
-        #         self._Ob.insert(self._pending_ob_insert)
-        #     except Exception:
-        #         pass
-        #     self._pending_ob_insert = None
-        # if self._pending_ob_delete is not None:
-        #     del_key, del_marker = self._pending_ob_delete
-        #     try:
-        #         if del_marker == "Key":
-        #             self._Ob.delete(del_key)
-        #         else:
-        #             self._Ob.delete(None)
-        #     except Exception:
-        #         pass
-        #     self._pending_ob_delete = None
+        # NOTE: O_B insert/delete operations are excluded from benchmark round
+        # counting. They run via the find_available() call at the end of access().
+        # If full O_B maintenance is needed, uncomment and add pending_ob_insert /
+        # pending_ob_delete handling here, mirroring the O_W/O_R pattern.
 
         self._update_peak_client_size()
+
+        # Dequeue from overflow queues if primary pending slot is empty
+        if self._pending_delete_ow is None and self._pending_delete_ow_queue:
+            self._pending_delete_ow = self._pending_delete_ow_queue.popleft()
+        if self._pending_delete_or is None and self._pending_delete_or_queue:
+            self._pending_delete_or = self._pending_delete_or_queue.popleft()
 
         delete_key_ow = None
         delete_key_or = None
@@ -676,8 +725,13 @@ class TopDownSomapFixedCache:
         def _parallel_search_observer(extra_nodes: int):
             self._update_peak_client_size(extra_nodes=extra_nodes)
         
-        # print(f"DEBUG: Ow Height: {self._Ow._max_height}, Or Height: {self._Or._max_height}")
-        
+        # Set effective tree height based on current queue sizes.
+        current_max = max(self._Qw_len, self._Qr_len, 1)
+        eff_h = math.ceil(math.log(current_max, math.ceil(self._order / 2))) + 1
+        self._Ow.effective_height = eff_h
+        self._Or.effective_height = eff_h
+        self._Ob.effective_height = eff_h
+
         value_old1, value_old2, deleted_ow_value = BPlusOdsOmap.parallel_search_and_delete(
             omap1=self._Ow, search_key1=key, delete_key1=delete_key_ow,
             omap2=self._Or, search_key2=key, delete_key2=delete_key_or,
@@ -832,6 +886,7 @@ class TopDownSomapFixedCache:
             batch_ops.append({'op': 'list_get', 'label': 'DB', 'index': pos})
 
         batch_ops.append({'op': 'list_insert', 'label': self._Qw_name, 'index': 0, 'value': self._encrypt_data((key, qw_marker))})
+        self._qw_push_times.appendleft(self._timestamp)
 
         pending_qr_count = len(self._pending_qr_inserts)
         for qr_key, qr_ts, qr_marker in self._pending_qr_inserts:
@@ -839,18 +894,30 @@ class TopDownSomapFixedCache:
                 'op': 'list_insert', 'label': self._Qr_name, 'index': 0,
                 'value': self._encrypt_data((qr_key, qr_ts, qr_marker))
             })
+            self._qr_push_times.appendleft(self._timestamp)
         self._pending_qr_inserts = []
 
-        qw_pop_added = False
-        if self._Qw_len > self._cache_size:
+        # Timestamp-based Q_W eviction with cap
+        qw_pops_requested = 0
+        max_qw_pops = 1 + self._adjust_cap
+        for i in range(min(max_qw_pops, self._Qw_len, len(self._qw_push_times))):
+            if self._timestamp - self._qw_push_times[-(1 + i)] >= self._target_cache_size:
+                qw_pops_requested += 1
+            else:
+                break
+        for _ in range(qw_pops_requested):
             batch_ops.append({'op': 'list_pop', 'label': self._Qw_name, 'index': -1})
-            self._Qw_len = self._cache_size
-            qw_pop_added = True
 
-        qr_pop_needed = False
-        if self._Qr_len > 0:
-            batch_ops.append({'op': 'list_get', 'label': self._Qr_name, 'index': self._Qr_len - 1})
-            qr_pop_needed = True
+        # Timestamp-based Q_R eviction with cap
+        qr_pops_requested = 0
+        max_qr_pops = 1 + self._adjust_cap
+        for i in range(min(max_qr_pops, self._Qr_len, len(self._qr_push_times))):
+            if self._timestamp - self._qr_push_times[-(1 + i)] >= self._target_cache_size:
+                qr_pops_requested += 1
+            else:
+                break
+        for _ in range(qr_pops_requested):
+            batch_ops.append({'op': 'list_pop', 'label': self._Qr_name, 'index': -1})
 
         results = self._client.batch_query(batch_ops)
         result_idx = 0
@@ -887,29 +954,36 @@ class TopDownSomapFixedCache:
         if result_idx + pending_qr_count <= len(results):
             result_idx += pending_qr_count
 
-        if qw_pop_added and result_idx < len(results):
+        # Handle Q_W pop results (may be multiple with timestamp-based eviction)
+        for i in range(qw_pops_requested):
             encrypted_qw_pop = results[result_idx]
             if encrypted_qw_pop is not None:
-                self._pending_delete_ow = self._decrypt_data(encrypted_qw_pop)
-                qr_insert_key = self._pending_delete_ow[0]
-                qr_insert_marker = self._pending_delete_ow[1]
-                # 真实/伪删除都延迟到下一轮，并保持标记一致
+                qw_item = self._decrypt_data(encrypted_qw_pop)
+                if i == 0:
+                    self._pending_delete_ow = qw_item
+                else:
+                    self._pending_delete_ow_queue.append(qw_item)
+                qr_insert_key = qw_item[0]
+                qr_insert_marker = qw_item[1]
                 self._pending_ob_delete = (qr_insert_key, qr_insert_marker)
                 self._pending_qr_inserts.append((qr_insert_key, self._timestamp, qr_insert_marker))
+            self._qw_push_times.pop()
+            self._Qw_len -= 1
             result_idx += 1
 
-        if qr_pop_needed and result_idx < len(results):
-            encrypted_qr_item = results[result_idx]
-            if encrypted_qr_item is not None:
-                qr_item = self._decrypt_data(encrypted_qr_item)
-                try:
-                    qr_ts = int(qr_item[1])
-                except Exception:
-                    qr_ts = 0
-                if self._timestamp - qr_ts > self._cache_size:
-                    self._client.list_pop(label=self._Qr_name, index=-1)
-                    self._Qr_len -= 1
-                    self._pending_delete_or = qr_item
+        # Handle Q_R pop results (may be multiple with timestamp-based eviction)
+        for i in range(qr_pops_requested):
+            if result_idx < len(results):
+                encrypted_qr_item = results[result_idx]
+                if encrypted_qr_item is not None:
+                    qr_item = self._decrypt_data(encrypted_qr_item)
+                    if i == 0:
+                        self._pending_delete_or = qr_item
+                    else:
+                        self._pending_delete_or_queue.append(qr_item)
+                self._qr_push_times.pop()
+                self._Qr_len -= 1
+                result_idx += 1
         self._Qr_len += pending_qr_count
 
         # 使用 DB 结果完成延迟的 insert_local
@@ -1019,10 +1093,13 @@ class TopDownSomapFixedCache:
                 return [self._decrypt_data(encrypted_data) for encrypted_data in encrypted_data_list]
             return encrypted_data_list
         else:
-            print(f"error: unknown operation {op}")
+            raise ValueError(f"Unknown operation '{op}'")
         return None
 
     def search(self, key: Any, seed: list) -> Any:
+        # NOTE: search reads upper_bound paths while insert reads 1 path.
+        # This access pattern asymmetry is a known property of the current design.
+        # TODO: unify path counts (pad insert to upper_bound) for stronger indistinguishability.
         group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
         retrieve_leaves = self._collect_group_leaves_retrieve(group_index=group_index, seed=seed)
         raw_paths = self._client.read_query(label=self._Tree_name, leaf=retrieve_leaves)
@@ -1059,7 +1136,7 @@ class TopDownSomapFixedCache:
 
     def insert(self, key: Any, value: Any, seed: list) -> None:
         group_index = Helper.hash_data_to_leaf(prf=self._group_prf, data=key, map_size=self._num_groups)
-        leaves = [random.randint(0, self._num_groups - 1)]
+        leaves = [secrets.randbelow(self._num_groups)]
         raw_paths = self._client.read_query(label=self._Tree_name, leaf=leaves)
         paths = self._decrypt_buckets(buckets=raw_paths)
         for bucket in paths:
@@ -1089,7 +1166,7 @@ class TopDownSomapFixedCache:
                 uniq_leaves.append(l)
             else:
                 while True:
-                    t = random.randint(0, self._num_groups - 1)
+                    t = secrets.randbelow(self._num_groups)
                     if t not in seen:
                         seen.add(t)
                         uniq_leaves.append(t)

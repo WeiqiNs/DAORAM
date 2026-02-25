@@ -537,11 +537,8 @@ class InteractLocalServer(InteractServer):
             new_data = pickle.load(f)
             if isinstance(new_data, dict):
                 self.__storage.update(new_data)
-                print(f"Server: Loaded and merged storage from {filename}", flush=True)
             else:
-                # Fallback for legacy files or non-dict storage if any
                 self.__storage = new_data
-                print(f"Server: Replaced storage from {filename}", flush=True)
 
 class RemoteServer(InteractLocalServer):
     def __init__(self, ip: str = "localhost", port: int = PORT):

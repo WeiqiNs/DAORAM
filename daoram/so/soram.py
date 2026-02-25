@@ -129,7 +129,7 @@ class Soram():
             encrypted_data = self._encrypt_data(data)
             self._client.list_update(label=label, index=pos, value=encrypted_data)
         else:
-            print(f"error: unkonw operation'{op}'")
+            raise ValueError(f"Unknown operation '{op}'")
         return None
 
     def _extend_database(self, data_map: dict = None) -> dict:
@@ -191,8 +191,6 @@ class Soram():
             self._Qw = keys_list[:self._cache_size]
             self._Qr = keys_list[self._cache_size:  2*self._cache_size]
         
-        print("Qw:", self._Qw)
-        print("Qr:", self._Qr)
 
         # The client initializes the server storage with the OMAPs and queues
         Serverstorage:ServerStorage = {

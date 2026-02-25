@@ -397,7 +397,6 @@ class FlexibleBinaryTree:
         """Check if the tree can be scaled down."""
         num_leaves = int(pow(2, self._level - 1))
         
-        print("Checking scale down feasibility...num_leaves:", num_leaves)
         for leaf_index in range(num_leaves):
             # Get all bucket indices on the path
             path_indices = self.get_path_indices(self._start_leaf + leaf_index)

@@ -82,6 +82,29 @@ class MockInteractServer(InteractServer):
         for idx, bucket in zip(path_indices, reversed(data)):
             tree.storage[idx] = bucket
 
+    def batch_query(self, operations):
+        results = []
+        for op in operations:
+            if op['op'] == 'read':
+                results.append(self.read_query(op['label'], op['leaf']))
+            elif op['op'] == 'write':
+                self.write_query(op['label'], op['leaf'], op['data'])
+                results.append(None)
+            elif op['op'] == 'list_insert':
+                self.list_insert(op['label'], op.get('index', 0), op.get('value'))
+                results.append(None)
+            elif op['op'] == 'list_pop':
+                results.append(self.list_pop(op['label'], op.get('index', -1)))
+            else:
+                results.append(None)
+        return results
+
+    def save_storage(self, filename: str) -> None:
+        pass
+
+    def load_storage(self, filename: str) -> None:
+        pass
+
 
 class TestBPlusSubsetOdsOmapSubsetFunctionality:
     """Test the subset tree functionality within the OMAP."""
