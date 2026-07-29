@@ -17,8 +17,8 @@ import pytest
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from daoram.dependency import InteractLocalServer
-from daoram.so.bottom_to_up_somap import BottomUpSomap
+from oblivlib.dependency import InteractLocalServer
+from oblivlib.so.bottom_to_up_somap import BottomUpSomap
 
 # Test Configuration
 TEST_CONFIG = {

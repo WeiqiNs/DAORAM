@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oblivlib"
+version = "0.1.0"
+description = "A Python library of oblivious data structures — Oblivious RAM (ORAM) and Oblivious Map (OMAP)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE.md"]
+authors = [
+    { name = "Weiqi Feng", email = "weltch1997@gmail.com" },
+    { name = "Xinle Cao", email = "xinlecao72@gmail.com" },
+]
+keywords = [
+    "oram",
+    "omap",
+    "oblivious",
+    "oblivious-ram",
+    "oblivious-map",
+    "cryptography",
+    "privacy",
+    "security",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+dependencies = [
+    "cryptography>=45.0.0",
+    "pyzmq>=26.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "basedpyright>=1.39.0",
+    "ruff>=0.15.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/WeiqiNs/DAORAM"
+Repository = "https://github.com/WeiqiNs/DAORAM"
+Issues = "https://github.com/WeiqiNs/DAORAM/issues"
+
+[tool.pytest.ini_options]
+# importlib mode lets same-named test modules coexist without __init__.py packages.
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+# soram/graph await a port; excluded everywhere for consistency.
+extend-exclude = ["src/oblivlib/soram", "src/oblivlib/graph", "tests/soram"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import sorting (isort)
+    "UP",  # pyupgrade — modern typing/syntax
+    "B",   # flake8-bugbear — likely-bug patterns
+]
+ignore = [
+    "E501",   # line length is handled by `ruff format`
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["oblivlib*"]
+exclude = ["oblivlib.graph*", "oblivlib.soram*"]
+
+[tool.setuptools.package-data]
+oblivlib = ["py.typed"]

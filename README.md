@@ -7,55 +7,53 @@ allowed to execute non-obliviously.
 We list the maintainer’s related publications, which motivated the development of this library, and then provide a
 detailed overview of all included algorithms.
 
-- Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed
-  Duplications ([Full Version](Full_Version_Enabling_Index_free_Adjacency_in_Oblivious_Graph_Processing_with_Delayed_Duplications.pdf))
+- Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed Duplications
 - [Towards Practical Oblivious Map (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235)
 
 ## Oblivious Graph Methods
 
 - [GraphOS (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf),
-  implemented [here](/daoram/graph/graphos.py).
-- [Grove with delayed duplications](Full_Version_Enabling_Index_free_Adjacency_in_Oblivious_Graph_Processing_with_Delayed_Duplications.pdf),
-  implemented [here](/daoram/graph/grove.py).
+  implemented [here](/oblivlib/graph/graphos.py).
+- Grove with delayed duplications, implemented [here](/oblivlib/graph/grove.py).
 
 ## ORAM Methods
 
-- [Path ORAM (CCS 2013)](https://dl.acm.org/doi/10.1145/2508859.2516660), implemented [here](daoram/oram/path_oram.py).
+- [Path ORAM (CCS 2013)](https://dl.acm.org/doi/10.1145/2508859.2516660), implemented [here](oblivlib/oram/path_oram.py).
 - [Recursive Path ORAM (ASIACRYPT 2011)](https://link.springer.com/chapter/10.1007/978-3-642-25385-0_11),
-  implemented [here](daoram/oram/recursive_path_oram.py).
+  implemented [here](oblivlib/oram/recursive_path_oram.py).
 - [Insecure Freecursive ORAM (ASPLOS 2015)](https://people.csail.mit.edu/devadas/pubs/freecursive.pdf),
-  implemented [here](daoram/oram/freecursive_oram.py). The `reset_method` should be set to `"hard"`.
+  implemented [here](oblivlib/oram/freecursive_oram.py). The `reset_method` should be set to `"hard"`.
 - [Secure Freecursive ORAM with probabilistic resets (TCC 2017)](https://eprint.iacr.org/2016/1084),
-  implemented [here](daoram/oram/freecursive_oram.py). The `reset_method` should be set to `"prob"`.
+  implemented [here](oblivlib/oram/freecursive_oram.py). The `reset_method` should be set to `"prob"`.
 - [DAORAM with fixed reset and de-amortized cost (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235),
-  implemented [here](daoram/oram/da_oram.py).
+  implemented [here](oblivlib/oram/da_oram.py).
 
 ## OMAP Methods
 
 - [OMAP based on AVL (CCS 2014)](https://dl.acm.org/doi/10.1145/2660267.2660314),
-  implemented [here](daoram/omap/avl_omap.py). Set `distinguishable_search` to `False`.
+  implemented [here](oblivlib/omap/avl_omap.py). Set `distinguishable_search` to `False`.
 - [OMAP based on optimized AVL (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf),
-  implemented [here](daoram/omap/avl_omap.py). Set `distinguishable_search` to `True`.
+  implemented [here](oblivlib/omap/avl_omap.py). Set `distinguishable_search` to `True`.
 - [OMAP based on B+ tree (VLDB 2020)](https://people.eecs.berkeley.edu/~matei/papers/2020/vldb_oblidb.pdf),
-  implemented [here](daoram/omap/bplus_omap.py).
+  implemented [here](oblivlib/omap/bplus_omap.py).
 - [OMAP framework over an underlying search tree (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235),
-  implemented [here](daoram/omap/oram_ost_omap.py). It can be instantiated with any ORAM class in this repo and
+  implemented [here](oblivlib/omap/oram_ost_omap.py). It can be instantiated with any ORAM class in this repo and
   combined with any tree-based OMAP class in this repo.
-- Cache-optimized AVL and B+ tree variants are implemented [here](daoram/omap/avl_omap_cache.py)
-  and [here](daoram/omap/bplus_omap_cache.py), respectively.
+- Cache-optimized AVL and B+ tree variants are implemented [here](oblivlib/omap/avl_omap_cache.py)
+  and [here](oblivlib/omap/bplus_omap_cache.py), respectively.
 
 ## Project Structure
 
 - The [demo](demo) folder contains demonstrations showing how to use sockets to set up a server and client.
-- The [dependency](daoram/dependency) folder contains required dependencies, including socket and cryptography modules.
-- The [graph](daoram/graph) folder contains all oblivious graph constructions included in the library.
-- The [omap](daoram/omap) folder contains all OMAP constructions included in the library.
-- The [oram](daoram/oram) folder contains all ORAM constructions included in the library.
+- The [dependency](src/oblivlib/dependency) folder contains required dependencies, including socket and cryptography modules.
+- The [graph](oblivlib/graph) folder contains all oblivious graph constructions included in the library.
+- The [omap](oblivlib/omap) folder contains all OMAP constructions included in the library.
+- The [oram](oblivlib/oram) folder contains all ORAM constructions included in the library.
 - The [tests](tests) folder contains test cases for validating the correctness of the implementations.
 
 ## How to run this code
 
-1. Install the dependencies listed in [`requirements.txt`](requirements.txt).
+1. Install the package and its dependencies: `pip install .` (or `pip install -e ".[dev]"` to include the test/type-check tooling). Dependencies are declared in [`pyproject.toml`](pyproject.toml).
 
 2. Local server (for testing purposes):
     - See sample usages in [`tests/test_orams.py`](tests/test_orams.py) and [

@@ -11,8 +11,8 @@ Examples:
 import argparse
 import time
 
-from daoram.dependency import InteractLocalServer
-from daoram.soram import BottomUpSomap
+from oblivlib.dependency import InteractLocalServer
+from oblivlib.soram import BottomUpSomap
 
 
 def run_demo(num_data: int, cache_size: int, data_size: int):
@@ -22,11 +22,7 @@ def run_demo(num_data: int, cache_size: int, data_size: int):
 
     # Create and setup SOMAP.
     somap = BottomUpSomap(
-        num_data=num_data,
-        cache_size=cache_size,
-        data_size=data_size,
-        client=client,
-        name="demo_somap"
+        num_data=num_data, cache_size=cache_size, data_size=data_size, client=client, name="demo_somap"
     )
 
     # Initialize with data.
@@ -50,8 +46,8 @@ def run_demo(num_data: int, cache_size: int, data_size: int):
     read_time = time.time() - start
 
     # Summary.
-    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
-    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Write: {write_time:.2f}s ({num_data / write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
 

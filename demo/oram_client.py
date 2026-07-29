@@ -11,15 +11,22 @@ Examples:
 import argparse
 import time
 
-from daoram.dependency import InteractRemoteServer, ZMQSocket
-from daoram.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
+from oblivlib.dependency import (
+    DaOramConfig,
+    FreecursiveOramConfig,
+    InteractRemoteServer,
+    PathOramConfig,
+    RecursiveOramConfig,
+    ZMQSocket,
+)
+from oblivlib.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
-# Available ORAM types.
+# Available ORAM types, each mapping to a (scheme, config) builder.
 ORAM_TYPES = {
-    "path": PathOram,
-    "recursive": RecursivePathOram,
-    "freecursive": FreecursiveOram,
-    "da": DAOram,
+    "path": lambda **kw: PathOram(PathOramConfig(**kw)),
+    "recursive": lambda **kw: RecursivePathOram(RecursiveOramConfig(**kw)),
+    "freecursive": lambda **kw: FreecursiveOram(FreecursiveOramConfig(**kw)),
+    "da": lambda **kw: DAOram(DaOramConfig(**kw)),
 }
 
 
@@ -46,8 +53,8 @@ def run_demo(oram_type: str, num_data: int, ip: str, port: int):
     read_time = time.time() - start
 
     # Summary.
-    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
-    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Write: {write_time:.2f}s ({num_data / write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
     client.close_connection()

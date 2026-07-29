@@ -11,9 +11,9 @@ Examples:
 import argparse
 import time
 
-from daoram.dependency import InteractRemoteServer, ZMQSocket
-from daoram.omap import AVLOmap, BPlusOmap, OramOstOmap
-from daoram.oram import DAOram
+from oblivlib.dependency import AvlOmapConfig, BPlusOmapConfig, DaOramConfig, InteractRemoteServer, ZMQSocket
+from oblivlib.omap import AVLOmap, BPlusOmap, OramOstOmap, OramOstOmapConfig
+from oblivlib.oram import DAOram
 
 # Available OMAP types.
 OMAP_TYPES = ["avl", "bplus", "daoram-avl", "daoram-bplus"]
@@ -22,17 +22,17 @@ OMAP_TYPES = ["avl", "bplus", "daoram-avl", "daoram-bplus"]
 def create_omap(omap_type: str, num_data: int, client: InteractRemoteServer):
     """Create OMAP instance based on type."""
     if omap_type == "avl":
-        return AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
+        return AVLOmap(AvlOmapConfig(num_data=num_data, key_size=10, data_size=10, client=client))
     elif omap_type == "bplus":
-        return BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
+        return BPlusOmap(BPlusOmapConfig(order=10, num_data=num_data, key_size=10, data_size=10, client=client))
     elif omap_type == "daoram-avl":
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        ods = AVLOmap(AvlOmapConfig(num_data=num_data, key_size=10, data_size=10, client=client))
+        oram = DAOram(DaOramConfig(num_data=num_data, data_size=10, client=client))
+        return OramOstOmap(OramOstOmapConfig(num_data=num_data), ost=ods, oram=oram)
     elif omap_type == "daoram-bplus":
-        ods = BPlusOmap(order=10, num_data=num_data, key_size=10, data_size=10, client=client)
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-        return OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+        ods = BPlusOmap(BPlusOmapConfig(order=10, num_data=num_data, key_size=10, data_size=10, client=client))
+        oram = DAOram(DaOramConfig(num_data=num_data, data_size=10, client=client))
+        return OramOstOmap(OramOstOmapConfig(num_data=num_data), ost=ods, oram=oram)
 
 
 def run_demo(omap_type: str, num_data: int, ip: str, port: int):
@@ -58,8 +58,8 @@ def run_demo(omap_type: str, num_data: int, ip: str, port: int):
     search_time = time.time() - start
 
     # Summary.
-    print(f"Insert: {insert_time:.2f}s ({num_data/insert_time:.0f} ops/s)")
-    print(f"Search: {search_time:.2f}s ({num_data/search_time:.0f} ops/s)")
+    print(f"Insert: {insert_time:.2f}s ({num_data / insert_time:.0f} ops/s)")
+    print(f"Search: {search_time:.2f}s ({num_data / search_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
     client.close_connection()

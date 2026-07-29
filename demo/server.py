@@ -10,7 +10,7 @@ Examples:
 
 import argparse
 
-from daoram.dependency import RemoteServer, ZMQSocket
+from oblivlib.dependency import RemoteServer, ZMQSocket
 
 
 def main():

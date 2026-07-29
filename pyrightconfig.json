@@ -1,0 +1,23 @@
+{
+  "include": ["src/oblivlib", "tests"],
+  "exclude": ["src/oblivlib/soram", "src/oblivlib/graph", "tests/soram", "**/__pycache__"],
+  "typeCheckingMode": "recommended",
+  "pythonVersion": "3.12",
+  "reportImplicitOverride": "error",
+  "reportUnnecessaryTypeIgnoreComment": "warning",
+
+  // The library is generic over arbitrary pickled data (Data.key/value are Any), so Any/Unknown is
+  // pervasive by design; these rules would fire in the thousands. Kept off.
+  "reportAny": false,
+  "reportExplicitAny": false,
+  "reportUnknownMemberType": false,
+  "reportUnknownArgumentType": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownParameterType": false,
+  "reportUnknownLambdaType": false,
+  "reportMissingParameterType": false,
+  "reportMissingTypeArgument": false,
+  "reportUnannotatedClassAttribute": false,
+  "reportUnusedCallResult": false,
+  "reportPrivateUsage": false
+}

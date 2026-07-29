@@ -1,2 +1,0 @@
-cryptography>=45.0.0
-pyzmq>=26.0.0

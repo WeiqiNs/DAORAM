@@ -6,8 +6,8 @@ import sys
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from daoram.dependency import InteractLocalServer
-from daoram.so.soram import Soram
+from oblivlib.dependency import InteractLocalServer
+from oblivlib.so.soram import Soram
 
 # Set a global parameter for the number of data the server should store.
 NUM_DATA = pow(2, 10)  # Using smaller size for Soram tests

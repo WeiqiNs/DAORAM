@@ -1,117 +1,94 @@
-import pickle
-from dataclasses import astuple
+import pytest
 
-from daoram.dependency import AesGcm, Data, Storage, Helper
+from oblivlib.dependency import AesGcm, Data, Storage
+
+_DATA_SIZE = 160
+_BUCKET_SIZE = 3
 
 
 class TestData:
-    def test_init_data(self):
-        # Test the dataclass.
-        data = Data(key="Key", leaf=0)
-        # Assert the fields.
-        assert data.key == "Key"
-        assert data.leaf == 0
-        assert data.value is None
-        # Check the pickle dump and load works.
-        assert Data.load_unpad(data.dump_pad(length=1000)) == data
+    def test_pad_length_exact_fit(self):
+        data = Data(key=255, leaf=255, value=b"\x00\x01\x02\x03")
+        padded = data.dump_pad(length=len(data.dump()))
+        assert Data.load_unpad(padded) == data
 
-    def test_dummy_data(self):
-        # Test dummy data.
-        dummy = Data()
-        # Assert the fields.
-        assert dummy.key is None
-        assert dummy.leaf is None
-        assert dummy.value is None
 
-    def test_update_data(self):
-        # Test the dataclass.
-        data = Data(key="Key", leaf=0, value="Value")
-        # Update data.
-        data.key = "New Key"
-        data.leaf = 100
+@pytest.fixture(params=["memory-plain", "memory-enc", "disk-plain", "disk-enc"])
+def storage_mode(request, test_file):
+    """Build a 2x3 Storage in each (memory|disk) x (plain|encrypted) mode; return (storage, encryptor)."""
+    encryption = request.param.endswith("enc")
+    on_disk = request.param.startswith("disk")
+    encryptor = AesGcm() if encryption else None
+    disk_size = None
+    if on_disk:
+        disk_size = encryptor.ciphertext_length(_BUCKET_SIZE * _DATA_SIZE) if encryptor is not None else _DATA_SIZE
+    storage = Storage(
+        size=2,
+        bucket_size=_BUCKET_SIZE,
+        encryption=encryption,
+        data_size=_DATA_SIZE if encryption else None,
+        disk_size=disk_size,
+        filename=test_file if on_disk else None,
+    )
+    return storage, encryptor
 
-        # Assert the fields.
-        assert data.key == "New Key"
-        assert data.leaf == 100
 
-    def test_pad_length(self):
-        # Some random data.
-        data = Data(key="Key", leaf=0, value="Testing some value.")
-
-        # Get the actual pickled length.
-        length = len(pickle.dumps(astuple(data)))
-
-        # The dump_pad method length should have a header.
-        assert length == len(data.dump_pad(length=length + Helper.LENGTH_HEADER_SIZE)) - Helper.LENGTH_HEADER_SIZE
+def _read_as_data(bucket):
+    """Normalize a read bucket to Data objects (encrypted on-disk reads come back as raw bytes)."""
+    return [elem if isinstance(elem, Data) else Data.load_unpad(elem) for elem in bucket]
 
 
 class TestStorage:
-    def test_internal_storage(self):
-        # In this case the byte size could be different.
-        storage = Storage(size=2, bucket_size=3, encryption=False)
-        # Write via bracket notation
+    def test_write_read_round_trip(self, storage_mode):
+        storage, encryptor = storage_mode
         storage[0] = [Data(key=1, leaf=1, value=1)]
-        storage[1] = [Data(key=1, leaf=1, value=1), Data(key=2, leaf=2, value=2)]
-        # Read via bracket notation
-        assert storage[0] == [Data(key=1, leaf=1, value=1)]
-        assert storage[1] == [Data(key=1, leaf=1, value=1), Data(key=2, leaf=2, value=2)]
 
-    def test_internal_storage_enc(self):
-        # In this case the byte size could be different.
-        storage = Storage(size=2, bucket_size=3, data_size=160, encryption=True)
-        storage[0] = [Data(key=1, leaf=1, value=1)]
-        # Get an AES instance.
-        encryptor = AesGcm()
-        # Write via bracket notation
-        storage[0] = [Data(key=1, leaf=1, value=1)]
-        # Encrypt the storage and then decrypt.
-        storage.encrypt(encryptor=encryptor)
-        # Decrypt the storage.
-        storage.decrypt(encryptor=encryptor)
-        # Assert the storage.
-        assert storage[0][0] == Data(key=1, leaf=1, value=1)
-        assert storage[0][1] == Data()
+        if encryptor is not None:
+            storage.encrypt(encryptor=encryptor)
+            storage.decrypt(encryptor=encryptor)
 
-    def test_disk_storage(self, test_file):
-        # Create a 2x3 matrix, each element 4 bytes, stored on disk.
-        storage = Storage(size=2, bucket_size=3, disk_size=160, filename=test_file, encryption=False)
-        # Write via bracket notation.
+        bucket0 = _read_as_data(storage[0])
+        bucket1 = _read_as_data(storage[1])
+
+        assert bucket0[0] == Data(key=1, leaf=1, value=1)
+        assert all(elem == Data() for elem in bucket0[1:])
+        assert all(elem == Data() for elem in bucket1)
+
+    def test_full_bucket_multi_row_round_trip(self, storage_mode):
+        storage, encryptor = storage_mode
+        storage[0] = [Data(key=1, leaf=1, value="a"), Data(key=2, leaf=2, value="b"), Data(key=3, leaf=3, value="c")]
+        storage[1] = [Data(key=4, leaf=4, value="d")]
+
+        if encryptor is not None:
+            storage.encrypt(encryptor=encryptor)
+            storage.decrypt(encryptor=encryptor)
+
+        bucket0 = _read_as_data(storage[0])
+        bucket1 = _read_as_data(storage[1])
+        assert bucket0[:3] == [
+            Data(key=1, leaf=1, value="a"),
+            Data(key=2, leaf=2, value="b"),
+            Data(key=3, leaf=3, value="c"),
+        ]
+        assert bucket1[0] == Data(key=4, leaf=4, value="d")
+        assert all(elem == Data() for elem in bucket1[1:])
+
+    def test_disk_persists_across_reopen(self, test_file):
+        storage = Storage(size=2, bucket_size=3, disk_size=_DATA_SIZE, filename=test_file, encryption=False)
         storage[0] = [Data(key=1, leaf=1, value=1)]
-        # Read via bracket notation, note that padding will be present.
-        assert storage[0] == [Data(key=1, leaf=1, value=1)]
-        assert storage[1] == []
-        # Close the file when done.
         storage.close()
 
-        # Perform another read.
-        storage = Storage(size=2, bucket_size=3, disk_size=160, filename=test_file, encryption=False)
-        # Read via bracket notation, note that padding will be present.
-        assert storage[0] == [Data(key=1, leaf=1, value=1)]
-        # Close the file when done (removal handled by fixture).
-        storage.close()
+        reopened = Storage(size=2, bucket_size=3, disk_size=_DATA_SIZE, filename=test_file, encryption=False)
+        assert reopened[0] == [Data(key=1, leaf=1, value=1)]
+        assert reopened[1] == []
+        reopened.close()
 
-    def test_disk_storage_enc(self, test_file):
-        # Get an AES instance.
-        encryptor = AesGcm()
 
-        # Compute the disk size.
-        disk_size = encryptor.ciphertext_length(plaintext_length=160)
+class TestStorageValidation:
+    def test_encryption_requires_data_size(self):
+        with pytest.raises(ValueError):
+            Storage(size=2, bucket_size=3, encryption=True)
 
-        # Create a 2x3 matrix, each element 4 bytes, stored on disk.
-        storage = Storage(
-            size=2, bucket_size=3, data_size=160, disk_size=disk_size, encryption=True, filename=test_file
-        )
-
-        # Write via bracket notation.
-        storage[0] = [Data(key=1, leaf=1, value=1)]
-        # Encrypt the storage and then decrypt.
-        storage.encrypt(encryptor=encryptor)
-        # Decrypt the storage.
-        storage.decrypt(encryptor=encryptor)
-
-        # Testing the file locations.
-        assert Data.load_unpad(storage[0][0]) == Data(key=1, leaf=1, value=1)
-        assert Data.load_unpad(storage[0][1]) == Data()
-        assert Data.load_unpad(storage[1][0]) == Data()
-        # Close the file when done (removal handled by fixture).
-        storage.close()
+    def test_file_requires_disk_size(self, test_file):
+        with pytest.raises(ValueError):
+            Storage(size=2, bucket_size=3, encryption=False, filename=test_file)

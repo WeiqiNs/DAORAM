@@ -11,8 +11,8 @@ Examples:
 import argparse
 import time
 
-from daoram.dependency import InteractLocalServer
-from daoram.soram import Soram
+from oblivlib.dependency import InteractLocalServer
+from oblivlib.soram import Soram
 
 
 def run_demo(num_data: int, cache_size: int, data_size: int):
@@ -21,13 +21,7 @@ def run_demo(num_data: int, cache_size: int, data_size: int):
     client = InteractLocalServer()
 
     # Create and setup SORAM.
-    soram = Soram(
-        num_data=num_data,
-        cache_size=cache_size,
-        data_size=data_size,
-        client=client,
-        name="demo_soram"
-    )
+    soram = Soram(num_data=num_data, cache_size=cache_size, data_size=data_size, client=client, name="demo_soram")
 
     # Initialize with data.
     data_map = {i: f"value_{i}".encode() for i in range(num_data)}
@@ -50,8 +44,8 @@ def run_demo(num_data: int, cache_size: int, data_size: int):
     read_time = time.time() - start
 
     # Summary.
-    print(f"Write: {write_time:.2f}s ({num_data/write_time:.0f} ops/s)")
-    print(f"Read:  {read_time:.2f}s ({num_data/read_time:.0f} ops/s)")
+    print(f"Write: {write_time:.2f}s ({num_data / write_time:.0f} ops/s)")
+    print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
 

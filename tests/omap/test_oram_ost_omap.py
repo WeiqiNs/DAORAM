@@ -1,287 +1,106 @@
-from daoram.dependency import AesGcm
-from daoram.omap import AVLOmap, BPlusOmap, OramOstOmap
-from daoram.omap.avl_omap_cache import AVLOmapCached
-from daoram.omap.bplus_omap_cache import BPlusOmapCached
-from daoram.oram import DAOram
+import random
+
+import pytest
+
+from oblivlib.dependency import (
+    AesGcm,
+    AvlOmapCachedConfig,
+    AvlOmapConfig,
+    BPlusOmapCachedConfig,
+    BPlusOmapConfig,
+    DaOramConfig,
+    PathOramConfig,
+    RecursiveOramConfig,
+)
+from oblivlib.omap import AVLOmap, AVLOmapCached, BPlusOmap, BPlusOmapCached, OramOstOmap, OramOstOmapConfig
+from oblivlib.oram import DAOram, PathOram, RecursivePathOram
 
 
-class TestOramOdsOmap:
-    def test_daoram_avl_int_key(self, num_data, client):
-        # Create the ods object.
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=i, value=i)
-
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=i, value=i * 2)
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i * 2
-
-    def test_daoram_avl_opt_int_key(self, num_data, client):
-        # Create the ods object.
-        ods = AVLOmapCached(num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=i, value=i)
-
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=i, value=i * 2)
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i * 2
-
-    def test_daoram_avl_str_key(self, num_data, client):
-        # Create the ods object.
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=f"{i}", value=f"{i}")
-
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=f"{i}", value=f"{i * 2}")
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=f"{i}") == f"{i * 2}"
-
-    def test_daoram_avl_str_key_with_enc(self, num_data, client, encryptor):
-        # Create the ods object with encryption.
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client, encryptor=encryptor)
-
-        # Create the oram object with encryption (use separate encryptor).
-        oram_encryptor = AesGcm()
-        oram = DAOram(num_data=num_data, data_size=10, client=client, encryptor=oram_encryptor)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data // 10):
-            omap.insert(key=f"{i}", value=f"{i}")
-
-        # Issue some search queries.
-        for i in range(num_data // 10):
-            assert omap.search(key=f"{i}") == f"{i}"
-
-    def test_daoram_avl_with_init_int(self, num_data, client):
-        # Create the ods object.
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
-
-        # Keep inserting more values.
-        for i in range(num_data // 4, num_data):
-            omap.insert(key=i, value=i)
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i
-
-    def test_daoram_avl_with_init_str(self, num_data, client):
-        # Create the ods object.
-        ods = AVLOmap(num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])
-
-        # Keep inserting more values.
-        for i in range(num_data // 2, num_data):
-            omap.insert(key=f"Key {i}", value=f"Value {i}")
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=f"Key {i}") == f"Value {i}"
-
-    def test_daoram_bplus_int_key(self, num_data, client):
-        # Create the ods object.
-        ods = BPlusOmap(order=40, num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=i, value=i)
-
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=i, value=i * 2)
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i * 2
-
-    def test_daoram_bplus_opt_int_key(self, num_data, client):
-        # Create the ods object.
-        ods = BPlusOmapCached(
-            order=40, num_data=num_data, key_size=10, data_size=10, client=client
+def _make_ods(kind, n, client, encryptor=None):
+    if kind == "avl":
+        return AVLOmap(AvlOmapConfig(num_data=n, key_size=10, data_size=10, client=client, encryptor=encryptor))
+    if kind == "avl_cached":
+        return AVLOmapCached(
+            AvlOmapCachedConfig(num_data=n, key_size=10, data_size=10, client=client, encryptor=encryptor)
         )
+    if kind == "bplus":
+        return BPlusOmap(
+            BPlusOmapConfig(order=40, num_data=n, key_size=10, data_size=10, client=client, encryptor=encryptor)
+        )
+    return BPlusOmapCached(
+        BPlusOmapCachedConfig(order=40, num_data=n, key_size=10, data_size=10, client=client, encryptor=encryptor)
+    )
 
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
 
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
+def _make_oram(kind, n, client, encryptor=None):
+    if kind == "da":
+        return DAOram(DaOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
+    if kind == "path":
+        return PathOram(PathOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
+    return RecursivePathOram(RecursiveOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
 
-        # Initialize an empty storage.
+
+class TestOramOstOmapOracle:
+    """Model oracle over ODS x ORAM: the composition must match a plain dict under interleaved
+    insert / search, including searches of keys whose hash bucket is still empty."""
+
+    @pytest.mark.parametrize("ods_kind", ["avl", "avl_cached", "bplus", "bplus_cached"])
+    @pytest.mark.parametrize("oram_kind", ["da", "path", "recursive"])
+    @pytest.mark.parametrize("key_str", [False, True])
+    def test_oracle(self, ods_kind, oram_kind, key_str, client):
+        n = 64
+        omap = OramOstOmap(
+            OramOstOmapConfig(num_data=n), ost=_make_ods(ods_kind, n, client), oram=_make_oram(oram_kind, n, client)
+        )
         omap.init_server_storage()
+        rng = random.Random(hash((ods_kind, oram_kind, key_str)) & 0xFFFF)
+        model = {}
+        keyspace = [(f"k{i}" if key_str else i) for i in range(n)]
+        for _ in range(n * 4):
+            key = rng.choice(keyspace)
+            roll = rng.random()
+            if roll < 0.5:
+                if key not in model:  # the ODS insert does not handle duplicate keys
+                    value = f"v{rng.randint(0, 10**6)}" if key_str else rng.randint(0, 10**6)
+                    omap.insert(key=key, value=value)
+                    model[key] = value
+            else:
+                assert omap.search(key=key) == model.get(key)
+        for key in keyspace:
+            assert omap.search(key=key) == model.get(key)
 
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=i, value=i)
 
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=i, value=i * 2)
+class TestOramOstOmapInit:
+    """Bulk-init via init_server_storage(data=...); the oracle above only exercises empty init."""
 
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i * 2
+    @pytest.mark.parametrize("ods_kind", ["avl", "avl_cached", "bplus", "bplus_cached"])
+    @pytest.mark.parametrize("oram_kind", ["da", "path", "recursive"])
+    @pytest.mark.parametrize("key_str", [False, True])
+    def test_with_init(self, ods_kind, oram_kind, key_str, client):
+        n = 64
+        omap = OramOstOmap(
+            OramOstOmapConfig(num_data=n), ost=_make_ods(ods_kind, n, client), oram=_make_oram(oram_kind, n, client)
+        )
+        keys = [(f"k{i}" if key_str else i) for i in range(n)]
+        values = [(f"v{i}" if key_str else i * 2) for i in range(n)]
 
-    def test_daoram_bplus_int_key_with_enc(self, num_data, client, encryptor):
-        # Create the ods object with encryption.
-        ods = BPlusOmap(order=40, num_data=num_data, key_size=10, data_size=10, client=client, encryptor=encryptor)
+        omap.init_server_storage(data=list(zip(keys[: n // 2], values[: n // 2], strict=True)))
+        for key, value in zip(keys[n // 2 :], values[n // 2 :], strict=True):
+            omap.insert(key=key, value=value)
 
-        # Create the oram object with encryption (use separate encryptor).
-        oram_encryptor = AesGcm()
-        oram = DAOram(num_data=num_data, data_size=10, client=client, encryptor=oram_encryptor)
+        for key, value in zip(keys, values, strict=True):
+            assert omap.search(key=key) == value
 
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
+    @pytest.mark.parametrize("ods_kind", ["avl", "bplus"])
+    def test_encryption_round_trip(self, ods_kind, client, encryptor):
+        n = 64
+        omap = OramOstOmap(
+            OramOstOmapConfig(num_data=n),
+            ost=_make_ods(ods_kind, n, client, encryptor=encryptor),
+            oram=_make_oram("da", n, client, encryptor=AesGcm()),
+        )
         omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data // 10):
+        for i in range(n):
             omap.insert(key=i, value=i)
-
-        # Issue some search queries.
-        for i in range(num_data // 10):
+        for i in range(n):
             assert omap.search(key=i) == i
-
-    def test_daoram_bplus_str_key(self, num_data, client):
-        # Create the ods object.
-        ods = BPlusOmap(order=50, num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize an empty storage.
-        omap.init_server_storage()
-
-        # Issue some insert queries.
-        for i in range(num_data):
-            omap.insert(key=f"{i}", value=f"{i}")
-
-        # Issue some update queries.
-        for i in range(num_data):
-            omap.search(key=f"{i}", value=f"{i * 2}")
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=f"{i}") == f"{i * 2}"
-
-    def test_daoram_bplus_with_init_int(self, num_data, client):
-        # Create the ods object.
-        ods = BPlusOmap(order=60, num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(i, i) for i in range(num_data // 4)])
-
-        # Keep inserting more values.
-        for i in range(num_data // 4, num_data):
-            omap.insert(key=i, value=i)
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=i) == i
-
-    def test_daoram_bplus_with_init_str(self, num_data, client):
-        # Create the ods object.
-        ods = BPlusOmap(order=70, num_data=num_data, key_size=10, data_size=10, client=client)
-
-        # Create the oram object.
-        oram = DAOram(num_data=num_data, data_size=10, client=client)
-
-        # Create the omap object.
-        omap = OramOstOmap(num_data=num_data, ost=ods, oram=oram)
-
-        # Initialize the omap with some integer keys.
-        omap.init_server_storage(data=[(f"Key {i}", f"Value {i}") for i in range(num_data // 2)])
-
-        # Keep inserting more values.
-        for i in range(num_data // 2, num_data):
-            omap.insert(key=f"Key {i}", value=f"Value {i}")
-
-        # Issue some search queries.
-        for i in range(num_data):
-            assert omap.search(key=f"Key {i}") == f"Value {i}"

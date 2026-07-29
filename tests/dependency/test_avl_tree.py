@@ -1,236 +1,121 @@
+"""AVL-specific structural tests. Generic insert/search/delete behavior lives in
+`test_search_tree_common.py`; here we pin the AVL invariants and cross-check the recursive and
+non-recursive implementations against each other (the standard the oblivious AVL map mirrors)."""
+
 import random
 
-from daoram.dependency import AVLTree, KVPair
+import pytest
+
+from oblivlib.dependency import AVLTree, KVPair
+
+
+def _invariants(node, low=None, high=None) -> int:
+    """Assert BST order, AVL balance (|height diff| <= 1) and height bookkeeping; return the height."""
+    if node is None:
+        return 0
+    assert low is None or node.key > low
+    assert high is None or node.key < high
+    left = _invariants(node.left_node, low, node.key)
+    right = _invariants(node.right_node, node.key, high)
+    assert abs(left - right) <= 1
+    assert node.height == 1 + max(left, right)
+    return node.height
+
+
+def _shape(node):
+    """Full (key, value, height, left, right) shape, so two trees can be compared exactly."""
+    if node is None:
+        return None
+    return node.key, node.value, node.height, _shape(node.left_node), _shape(node.right_node)
 
 
 class TestAVLTree:
-    def test_insert(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Set the beginning root to None and create a list of kv pairs.
+    def test_multi_search_matches_search(self):
+        keys = list(range(300))
+        tree = AVLTree(leaf_range=1000)
         root = None
-        kv_pairs = [KVPair(key=i, value=i) for i in range(1000)]
+        for k in keys:
+            root = tree.insert(root=root, kv_pair=KVPair(key=k, value=k * 2))
 
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.insert(root=root, kv_pair=kv_pair)
+        query = keys + [-1, 500]
+        results = tree.multi_search(keys=query, root=root)
+        for k in query:
+            assert results[k] == AVLTree.search(key=k, root=root)
 
-        # Test left children.
-        assert root.key == 511
-        assert root.left_node.key == 255
-        assert root.left_node.left_node.key == 127
-        assert root.left_node.right_node.key == 383
+    def test_recursive_insert_matches_iterative(self):
+        for keys in (list(range(500)), [f"{i}" for i in range(500)]):
+            tree = AVLTree(leaf_range=1000)
+            root_it = root_rec = None
+            for k in keys:
+                root_it = tree.insert(root=root_it, kv_pair=KVPair(key=k, value=k))
+                root_rec = tree.recursive_insert(root=root_rec, kv_pair=KVPair(key=k, value=k))
+            _invariants(root_it)
+            assert _shape(root_it) == _shape(root_rec)
 
-        # Test right children.
-        assert root.right_node.key == 767
-        assert root.right_node.left_node.key == 639
-        assert root.right_node.right_node.key == 895
-
-    def test_recursive_insert(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Set the beginning root to None and create a list of kv pairs.
+    def test_insert_into_local_rejects_unfetched_node(self):
+        # The guard enforces the closure that lets the oblivious port skip re-fetching in phase 2.
+        tree = AVLTree(leaf_range=100)
         root = None
-        root_recursive = None
-        kv_pairs = [KVPair(key=i, value=i) for i in range(1000)]
+        for k in range(10):
+            root = tree.insert(root=root, kv_pair=KVPair(key=k, value=k))
+        with pytest.raises(ValueError):
+            tree._insert_into_local(root=root, local=set(), kv_pair=KVPair(key=100, value=100))
 
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.insert(root=root, kv_pair=kv_pair)
-            root_recursive = avl_tree.recursive_insert(root=root_recursive, kv_pair=kv_pair)
+    def test_multi_insert_matches_sequential(self):
+        keys = random.Random(2).sample(range(100000), 500)
+        tree = AVLTree(leaf_range=200000)
+        root_batched = root_single = None
+        for k in keys:
+            root_single = tree.insert(root=root_single, kv_pair=KVPair(key=k, value=k))
+        root_batched = tree.multi_insert(root=root_batched, kv_pairs=[KVPair(key=k, value=k) for k in keys])
 
-        # Test left children.
-        assert root.key == root_recursive.key
-        assert root.left_node.key == root_recursive.left_node.key
-        assert root.left_node.left_node.key == root_recursive.left_node.left_node.key
-        assert root.left_node.right_node.key == root_recursive.left_node.right_node.key
+        _invariants(root_batched)
+        assert _shape(root_batched) == _shape(root_single)
 
-        # Test right children.
-        assert root.right_node.key == root_recursive.right_node.key
-        assert root.right_node.left_node.key == root_recursive.right_node.left_node.key
-        assert root.right_node.right_node.key == root_recursive.right_node.right_node.key
+    def test_multi_insert_into_existing_matches_sequential(self):
+        # From an empty root the closure check is trivially satisfied (every node is phase-2-created);
+        # only a pre-populated tree makes phase 2's rotations prove they stay within the fetched paths.
+        rng = random.Random(11)
+        base = rng.sample(range(0, 100000, 2), 1000)
+        batch = rng.sample(range(1, 100000, 2), 500)
+        tree = AVLTree(leaf_range=200000)
+        root_batched = root_single = None
+        for k in base:
+            root_batched = tree.insert(root=root_batched, kv_pair=KVPair(key=k, value=k))
+            root_single = tree.insert(root=root_single, kv_pair=KVPair(key=k, value=k))
+        root_batched = tree.multi_insert(root=root_batched, kv_pairs=[KVPair(key=k, value=k) for k in batch])
+        for k in batch:
+            root_single = tree.insert(root=root_single, kv_pair=KVPair(key=k, value=k))
 
-    def test_str_insert(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=10)
+        _invariants(root_batched)
+        assert _shape(root_batched) == _shape(root_single)
 
-        # Set the beginning root to None and create a list of kv pairs.
-        root = None
-        kv_pairs = [KVPair(key=f"{i}", value=f"{i}") for i in range(1000)]
+    def test_recursive_delete_matches_iterative(self):
+        tree = AVLTree(leaf_range=1000)
+        root_it = root_rec = None
+        keys = list(range(300))
+        for k in keys:
+            root_it = tree.insert(root=root_it, kv_pair=KVPair(key=k, value=k))
+            root_rec = tree.insert(root=root_rec, kv_pair=KVPair(key=k, value=k))
 
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.recursive_insert(root=root, kv_pair=kv_pair)
+        random.Random(0).shuffle(keys)
+        for k in keys:
+            root_it = tree.delete(root=root_it, key=k)
+            root_rec = tree.recursive_delete(root=root_rec, key=k)
+            _invariants(root_it)
+            assert _shape(root_it) == _shape(root_rec)
+        assert root_it is None and root_rec is None
 
-        # Test left children.
-        assert root.key == "60"
-        assert root.left_node.key == "35"
-        assert root.left_node.left_node.key == "22"
-        assert root.left_node.right_node.key == "5"
-
-        # Test right children.
-        assert root.right_node.key == "72"
-        assert root.right_node.left_node.key == "66"
-        assert root.right_node.right_node.key == "87"
-
-    def test_str_recursive_insert(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Set the beginning root to None and create a list of kv pairs.
-        root = None
-        root_recursive = None
-        kv_pairs = [KVPair(key=f"{i}", value=f"{i}") for i in range(1000)]
-
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.insert(root=root, kv_pair=kv_pair)
-            root_recursive = avl_tree.recursive_insert(root=root_recursive, kv_pair=kv_pair)
-
-        # Test left children.
-        assert root.key == root_recursive.key
-        assert root.left_node.key == root_recursive.left_node.key
-        assert root.left_node.left_node.key == root_recursive.left_node.left_node.key
-        assert root.left_node.right_node.key == root_recursive.left_node.right_node.key
-
-        # Test right children.
-        assert root.right_node.key == root_recursive.right_node.key
-        assert root.right_node.left_node.key == root_recursive.right_node.left_node.key
-        assert root.right_node.right_node.key == root_recursive.right_node.right_node.key
-
-    def test_search(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Set the beginning root to None.
-        root = None
-
-        # Generate some random values.
-        random_values = set([random.randint(0, 10000) for _ in range(1000)])
-
-        # Perform insertion.
-        for i in random_values:
-            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
-
-        # Perform search.
-        for i in random_values:
-            assert i == avl_tree.search(key=i, root=root)
-
-    def test_get_list(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=10)
-
-        # Set the beginning root to None and create a list of kv pairs.
-        root = None
-        kv_pairs = [KVPair(key=i, value=i) for i in range(10)]
-
-        # Perform insertion.
-        for kv_pair in kv_pairs:
-            root = avl_tree.insert(root=root, kv_pair=kv_pair)
-
-        # Convert the avl tree nodes to a list.
-        data_list = avl_tree.get_data_list(root=root)
-
-        # The root node should be 3.
-        assert data_list[0].key == 3
-        assert data_list[0].value.r_key == 7
-        assert data_list[0].value.l_key == 1
-        assert data_list[0].value.r_height == 3
-        assert data_list[0].value.l_height == 2
-
-        # The second node added should be the right node. (As they are more recent in stack.)
-        assert data_list[1].key == 7
-        assert data_list[1].value.r_key == 8
-        assert data_list[1].value.l_key == 5
-        assert data_list[1].value.r_height == 2
-        assert data_list[1].value.l_height == 2
-
-    def test_delete_leaf(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Insert values 0-9 to create the tree.
+    def test_get_data_list_layout(self):
+        tree = AVLTree(leaf_range=10)
         root = None
         for i in range(10):
-            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+            root = tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
+        assert root is not None
 
-        # Delete a leaf node (0 has no children).
-        root = avl_tree.delete(root=root, key=0)
-
-        # Verify the node is deleted.
-        assert avl_tree.search(key=0, root=root) is None
-
-        # Verify remaining nodes are searchable.
-        for i in range(1, 10):
-            assert avl_tree.search(key=i, root=root) == i
-
-    def test_delete_node_with_one_child(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Insert values 0-9 to create the tree.
-        root = None
-        for i in range(10):
-            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
-
-        # First delete 0 (leaf), then delete 1 which will have one child.
-        root = avl_tree.delete(root=root, key=0)
-        root = avl_tree.delete(root=root, key=1)
-
-        # Convert the avl tree nodes to a list.
-        data_list = avl_tree.get_data_list(root=root)
-
-        # The root node should be 7.
-        assert data_list[0].key == 7
-        assert data_list[0].value.r_key == 8
-        assert data_list[0].value.l_key == 3
-        assert data_list[0].value.r_height == 2
-        assert data_list[0].value.l_height == 3
-
-    def test_delete_node_with_two_children(self):
-        # Create an avl tree object.
-        avl_tree = AVLTree(leaf_range=1000)
-
-        # Insert values 0-9 to create the tree.
-        root = None
-        for i in range(10):
-            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
-
-        # Delete node 3 (the root) which has two children.
-        root = avl_tree.delete(root=root, key=3)
-
-        # Verify node 3 is deleted.
-        assert avl_tree.search(key=3, root=root) is None
-
-        # Verify remaining nodes are searchable.
-        for i in [0, 1, 2, 4, 5, 6, 7, 8, 9]:
-            assert avl_tree.search(key=i, root=root) == i
-
-        # Verify tree has 9 nodes.
-        data_list = avl_tree.get_data_list(root=root)
-        assert len(data_list) == 9
-
-    def test_delete_stress(self):
-        # Stress test: insert many nodes, delete in random order.
-        avl_tree = AVLTree(leaf_range=10000)
-        root = None
-
-        # Insert 100 values.
-        values = list(range(100))
-        for i in values:
-            root = avl_tree.insert(root=root, kv_pair=KVPair(key=i, value=i))
-
-        # Delete all values in random order.
-        random.shuffle(values)
-        for i in values:
-            # Verify key exists before deletion.
-            assert avl_tree.search(key=i, root=root) == i
-            # Delete.
-            root = avl_tree.delete(root=root, key=i)
-            # Verify key is gone.
-            assert avl_tree.search(key=i, root=root) is None
-
-        # Tree should be empty.
-        assert root is None
+        data_list = tree.get_data_list(root=root)
+        assert len(data_list) == 10
+        assert root.left_node is not None and root.right_node is not None
+        assert data_list[0].key == root.key
+        assert data_list[0].value.l_key == root.left_node.key
+        assert data_list[0].value.r_key == root.right_node.key
