@@ -38,6 +38,9 @@ class InteractServer(ABC):
         # Bandwidth counters (serialized bytes).
         self._bytes_read: int = 0
         self._bytes_written: int = 0
+        self._execution_count: int = 0
+        self._label_bytes_read: Dict[str, int] = {}
+        self._label_bytes_written: Dict[str, int] = {}
 
     def clear_queries(self) -> None:
         """Clear all pending queries."""
@@ -58,6 +61,72 @@ class InteractServer(ABC):
         """Reset bandwidth counters to zero."""
         self._bytes_read = 0
         self._bytes_written = 0
+        self._label_bytes_read.clear()
+        self._label_bytes_written.clear()
+
+    def get_rounds(self) -> int:
+        """Return the number of attempted batched server executions."""
+        return self._execution_count
+
+    def reset_rounds(self) -> None:
+        """Reset the execution-round counter."""
+        self._execution_count = 0
+
+    def get_label_bandwidth(self) -> Dict[str, Tuple[int, int]]:
+        """Return label-attributed serialized ``(read, written)`` bytes.
+
+        Each label is serialized with a small independent envelope. The values
+        are intended for comparing logical stores and need not sum exactly to
+        :meth:`get_bandwidth`, whose envelope covers the complete batch.
+        """
+        labels = set(self._label_bytes_read) | set(self._label_bytes_written)
+        return {
+            label: (
+                self._label_bytes_read.get(label, 0),
+                self._label_bytes_written.get(label, 0),
+            )
+            for label in sorted(labels)
+        }
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Return one snapshot of execution rounds and serialized bandwidth."""
+        return {
+            "rounds": self._execution_count,
+            "bytes_read": self._bytes_read,
+            "bytes_written": self._bytes_written,
+            "labels": self.get_label_bandwidth(),
+        }
+
+    def reset_metrics(self) -> None:
+        """Reset all execution and bandwidth metrics."""
+        self.reset_bandwidth()
+        self.reset_rounds()
+
+    def _track_pending_requests_by_label(self) -> None:
+        """Attribute the current request payload to its storage labels."""
+        query_groups = (
+            self._read_paths,
+            self._read_buckets,
+            self._read_blocks,
+            self._read_queues,
+            self._write_paths,
+            self._write_buckets,
+            self._write_blocks,
+            self._write_queues,
+        )
+        labels = set().union(*(group.keys() for group in query_groups))
+        for label in labels:
+            payload = tuple(group[label] if label in group else None for group in query_groups)
+            self._label_bytes_written[label] = (
+                self._label_bytes_written.get(label, 0) + len(pickle.dumps(payload))
+            )
+
+    def _track_results_by_label(self, result: ExecuteResult) -> None:
+        """Attribute returned payloads to their storage labels."""
+        for label, value in result.results.items():
+            self._label_bytes_read[label] = (
+                self._label_bytes_read.get(label, 0) + len(pickle.dumps(value))
+            )
 
     def add_read_path(self, label: str, leaves: List[int]) -> None:
         """Queue path read."""
@@ -189,6 +258,8 @@ class InteractLocalServer(InteractServer):
 
     def execute(self) -> ExecuteResult:
         """Execute all pending queries (writes first, then reads)."""
+        self._execution_count += 1
+        self._track_pending_requests_by_label()
         try:
             results = {}
 
@@ -247,6 +318,7 @@ class InteractLocalServer(InteractServer):
             # Track bytes read (data received from server).
             result = ExecuteResult(success=True, results=results)
             self._bytes_read += len(pickle.dumps(result))
+            self._track_results_by_label(result)
             return result
 
         except Exception as e:
@@ -289,6 +361,8 @@ class InteractRemoteServer(InteractServer):
     def execute(self) -> ExecuteResult:
         """Execute all pending queries on the remote server."""
         self._check_client()
+        self._execution_count += 1
+        self._track_pending_requests_by_label()
 
         # Package all queries into a single request.
         request = {
@@ -311,6 +385,8 @@ class InteractRemoteServer(InteractServer):
 
         # Track bytes read (response from server).
         self._bytes_read += len(pickle.dumps(response))
+        if isinstance(response, ExecuteResult):
+            self._track_results_by_label(response)
         self.clear_queries()
         return response
 

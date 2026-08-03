@@ -33,10 +33,7 @@ class TestNeighborLookupBug:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def setup_four_connected_vertices(self, grove):
@@ -144,10 +141,7 @@ class TestType2DupDiagnosis:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_graph_meta_dup_after_neighbor(self):
@@ -225,10 +219,7 @@ class TestAVLNodeGraphLeafConsistency:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_graph_leaf_consistency_after_operations(self):
@@ -285,10 +276,7 @@ class TestMixedOperationsStress:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_insert_neighbor_lookup_pattern(self):
@@ -380,10 +368,7 @@ class TestPosMetaWriteBack:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_pos_meta_stash_growth(self):

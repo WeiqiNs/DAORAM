@@ -10,6 +10,13 @@ from daoram.oram.mul_path_oram import MulPathOram
 
 
 class Grove:
+    """Graph ORAM over bidirectional physical adjacency records.
+
+    A logical directed edge may distinguish its endpoint roles, but both
+    endpoints must retain a physical adjacency entry so delayed path updates
+    can be delivered without a separate reverse index.
+    """
+
     def __init__(self,
                  max_deg: int,
                  num_opr: int,
@@ -110,6 +117,29 @@ class Grove:
         # _pos_meta should be the same as _pos_omap._meta (not a separate ORAM)
         # This is the meta ORAM for Graph ORAM -> PosMap updates
         self._pos_meta = self._pos_omap._meta
+
+    def init_server_storage(
+            self,
+            posmap_data: List[tuple] = None,
+            graph_data_map: Dict[Any, Any] = None,
+            graph_path_map: Dict[Any, int] = None,
+    ) -> None:
+        """Initialize all Grove-owned server stores exactly once.
+
+        With no data arguments, Grove starts from an empty logical graph. For
+        a pre-populated graph, both graph maps must be supplied so every graph
+        record has an explicit path. The PosMap's internal metadata ORAM and
+        Grove's graph metadata ORAM always start empty.
+        """
+        if (graph_data_map is None) != (graph_path_map is None):
+            raise ValueError("graph_data_map and graph_path_map must be supplied together.")
+
+        self._pos_omap.init_server_storage(data=posmap_data)
+        self._graph_oram.init_server_storage(
+            data_map={} if graph_data_map is None else graph_data_map,
+            path_map={} if graph_path_map is None else graph_path_map,
+        )
+        self._graph_meta.init_server_storage(path_map={})
 
     @staticmethod
     def binomial(n: int, i: int, p: Decimal) -> Decimal:

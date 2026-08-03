@@ -28,10 +28,7 @@ class TestGroveBasic:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_insert_single_vertex(self, grove_instance):
@@ -101,10 +98,7 @@ class TestGroveDelete:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
 
         grove.insert(vertex=(0, "center", {}))
         grove.insert(vertex=(1, "n1", {0: None}))
@@ -157,10 +151,7 @@ class TestGroveNeighbor:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
 
         grove.insert(vertex=(0, "center", {}))
         for i in range(1, 4):
@@ -208,10 +199,7 @@ class TestGroveTHop:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
 
         grove.insert(vertex=(0, "v0", {}))
         for i in range(1, 5):
@@ -282,10 +270,7 @@ class TestGroveMixedOperations:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     def test_insert_delete_lookup_cycle(self):
@@ -395,10 +380,7 @@ class TestGroveStress:
             encryptor=None,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         return grove
 
     @pytest.mark.parametrize("trial", range(10))

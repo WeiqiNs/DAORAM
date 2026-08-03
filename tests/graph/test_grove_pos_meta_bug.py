@@ -30,10 +30,7 @@ def create_grove():
         encryptor=None,
         stash_scale=20,
     )
-    grove._pos_omap.init_server_storage()
-    grove._graph_oram.init_server_storage()
-    grove._graph_meta.init_server_storage()
-    grove._pos_meta.init_server_storage()
+    grove.init_server_storage()
     return grove
 
 

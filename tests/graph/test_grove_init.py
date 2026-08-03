@@ -1,4 +1,5 @@
 import pytest
+from daoram.graph import Grove as PublicGrove
 from daoram.graph.grove import Grove
 from daoram.dependency import InteractLocalServer
 
@@ -6,6 +7,26 @@ class TestGroveStepByStep:
     """
     Test Grove initialization and connection step by step as suggested.
     """
+
+    def test_public_package_and_initialization_contract(self):
+        assert PublicGrove is Grove
+
+        grove = Grove(
+            max_deg=3,
+            num_opr=10,
+            num_data=16,
+            key_size=8,
+            data_size=16,
+            client=InteractLocalServer(),
+        )
+        grove.init_server_storage()
+
+        assert grove._graph_oram._pos_map == {}
+        assert grove._graph_meta._pos_map == {}
+        assert grove._pos_meta is grove._pos_omap._meta
+
+        with pytest.raises(ValueError):
+            grove.init_server_storage(graph_data_map={})
 
     @pytest.fixture
     def grove_setup(self):
@@ -26,10 +47,7 @@ class TestGroveStepByStep:
         )
         
         # Initialize storage
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         
         return grove
 

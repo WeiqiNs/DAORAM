@@ -22,10 +22,7 @@ class TestEdgeOperations:
             client=client,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         
         # Insert vertices 0-7 with connections
         # Create a small connected graph
@@ -136,10 +133,7 @@ class TestEdgeOperations:
             client=client,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         
         # Insert some vertices
         for i in range(10):
@@ -185,10 +179,7 @@ class TestInteractionRounds:
             client=client,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         
         grove.insert(vertex=(0, 'v0', {1: None}))
         grove.insert(vertex=(1, 'v1', {0: None}))
@@ -219,10 +210,7 @@ class TestInteractionRounds:
             client=client,
             stash_scale=20,
         )
-        grove._pos_omap.init_server_storage()
-        grove._graph_oram.init_server_storage()
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage()
         
         grove.insert(vertex=(0, 'v0', {1: None, 2: None}))
         grove.insert(vertex=(1, 'v1', {0: None, 2: None}))

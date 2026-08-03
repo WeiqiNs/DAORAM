@@ -67,9 +67,11 @@ class MulPathOram(PathOram):
         """
         Initialize the server storage based on the data map for this oram.
 
-        :param data_map: A dictionary storing {key: data}. If None/empty, creates empty storage.
+        :param data_map: A dictionary storing {key: data}. If omitted together with
+                         path_map, the ORAM is initialized with integer keys.
         :param path_map: Optional dictionary mapping {key: leaf}. If provided, uses these
-                         keys and leaves. If not provided, falls back to integer keys (0 to num_data-1).
+                         keys and leaves. Pass an empty dictionary to initialize a
+                         truly empty, externally addressed ORAM.
         """
         if path_map is not None:
             # Use provided path_map for noninteger keys (can be empty)
@@ -79,8 +81,9 @@ class MulPathOram(PathOram):
             # Only create pos_map entries for actual data
             self._pos_map = {key: self._get_new_leaf() for key in data_map.keys()}
         else:
-            # Empty storage - no pos_map entries needed
-            self._pos_map = {}
+            # Preserve PathOram's default integer-key contract. Callers that
+            # need a truly empty, externally addressed store pass path_map={}.
+            self._pos_map = {i: self._get_new_leaf() for i in range(self._num_data)}
 
         # Call parent implementation (will create empty storage if data_map is None/empty)
         super().init_server_storage(data_map=data_map)

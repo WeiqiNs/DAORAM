@@ -88,6 +88,41 @@ class TestInteractLocalServer:
         server.reset_bandwidth()
         assert server.get_bandwidth() == (0, 0)
 
+    def test_round_and_per_label_metrics(self):
+        server = InteractLocalServer()
+        server.init_storage({
+            'vertex': [10, 20, 30],
+            'edge': [40, 50, 60],
+        })
+
+        server.add_queue_read(label='vertex', indices=[0, 1])
+        server.add_queue_read(label='edge', indices=[2])
+        result = server.execute()
+
+        assert result.success
+        metrics = server.get_metrics()
+        assert metrics['rounds'] == 1
+        assert metrics['bytes_read'] > 0
+        assert metrics['bytes_written'] > 0
+        assert set(metrics['labels']) == {'edge', 'vertex'}
+        assert metrics['labels']['vertex'][0] > 0
+        assert metrics['labels']['vertex'][1] > 0
+        assert metrics['labels']['edge'][0] > 0
+        assert metrics['labels']['edge'][1] > 0
+
+        server.add_queue_set(label='vertex', index=0, value=99)
+        assert server.execute().success
+        assert server.get_rounds() == 2
+        assert server.get_label_bandwidth()['vertex'][1] > 0
+
+        server.reset_metrics()
+        assert server.get_metrics() == {
+            'rounds': 0,
+            'bytes_read': 0,
+            'bytes_written': 0,
+            'labels': {},
+        }
+
     def test_queue_push_pop(self):
         server = InteractLocalServer()
         server.init_storage({'myqueue': [10, 20, 30]})

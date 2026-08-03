@@ -31,9 +31,10 @@ class TestMulPathOramInteraction:
             bucket_size=4
         )
         
-        # Initialize storage with some dummy data
-        oram1.init_server_storage()
-        oram2.init_server_storage()
+        # Give the two stores distinguishable payloads while retaining the
+        # same integer key domain.
+        oram1.init_server_storage(data_map={i: ("oram1", i) for i in range(num_data)})
+        oram2.init_server_storage(data_map={i: ("oram2", i) for i in range(num_data)})
         
         return client, oram1, oram2
 
@@ -85,9 +86,10 @@ class TestMulPathOramInteraction:
         assert any(d.key == key1 for d in oram1.stash)
         assert any(d.key == key2 for d in oram2.stash)
         
-        # Verify cross-contamination: key1 should NOT be in oram2's stash
-        assert not any(d.key == key1 for d in oram2.stash)
-        assert not any(d.key == key2 for d in oram1.stash)
+        # Both ORAMs intentionally use the same key domain. Isolation is
+        # therefore checked by payload provenance, not key absence.
+        assert all(d.value[0] == "oram1" for d in oram1.stash)
+        assert all(d.value[0] == "oram2" for d in oram2.stash)
 
     def test_batch_write_after_process(self, setup_orams):
         client, oram1, oram2 = setup_orams

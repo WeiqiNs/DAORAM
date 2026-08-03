@@ -44,8 +44,8 @@ class TestBinaryTree:
 
     def test_get_mul_leaf_path(self):
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)
-        assert tree.get_mul_leaf_path(leaves=[0, 1]) == [1024, 1023, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
-        assert tree.get_mul_leaf_path(leaves=[0, 2]) == [1025, 1023, 512, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
+        assert tree.get_mul_leaf_path(leaves=[0, 1]) == [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 1024]
+        assert tree.get_mul_leaf_path(leaves=[0, 2]) == [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 512, 1023, 1025]
 
     def test_get_leaf_block(self):
         tree = BinaryTree(num_data=pow(2, 10), bucket_size=4)

@@ -75,7 +75,9 @@ class AVLOmapCached(AVLOmap):
         
         # Initialize internal meta ORAM storage if enabled.
         if self._enable_meta and self._meta is not None:
-            self._meta.init_server_storage()
+            # Delayed-update metadata starts empty. Passing an explicit empty
+            # path map distinguishes it from normal integer-key initialization.
+            self._meta.init_server_storage(path_map={})
 
     def add_meta_duplications(self, duplications: List[Data]) -> None:
         """

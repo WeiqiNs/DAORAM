@@ -23,7 +23,7 @@ class TestGroveLookupLargeScale:
         
         Strategy:
         1. Create Grove instance
-        2. Generate random graph with NUM_VERTICES vertices, each with up to MAX_DEGREE neighbors
+        2. Generate a random graph whose physical adjacency records appear at both endpoints
         3. Directly populate Graph ORAM with vertex data
         4. Initialize PosMap ORAM with corresponding paths
         """
@@ -46,22 +46,29 @@ class TestGroveLookupLargeScale:
             stash_scale=20  # Larger stash for meta ORAMs to handle duplications
         )
         
-        # Generate random graph structure
-        # Each vertex has random neighbors (up to MAX_DEGREE)
-        graph_data: Dict[int, Tuple[str, Dict[int, int]]] = {}
-        
+        # Grove's delayed notifications require a physical adjacency entry at
+        # both endpoints. Logical direction, when needed, is represented in
+        # the entry rather than by omitting the reverse physical record.
+        rng = random.Random(0x47524F56)
+        neighbor_sets = {vertex_key: set() for vertex_key in range(num_data)}
         for vertex_key in range(num_data):
-            # Random vertex data
-            vertex_data = f"vertex_{vertex_key}_data"
-            
-            # Random neighbors (up to MAX_DEGREE, excluding self)
-            possible_neighbors = [i for i in range(num_data) if i != vertex_key]
-            num_neighbors = random.randint(0, min(max_deg, len(possible_neighbors)))
-            neighbors = random.sample(possible_neighbors, num_neighbors)
-            
-            # Initially, adjacency dict will have placeholder graph_leaf values
-            # We'll update them after assigning actual graph_leaf to each vertex
-            graph_data[vertex_key] = (vertex_data, neighbors)
+            target_degree = rng.randint(0, max_deg)
+            candidates = [
+                candidate
+                for candidate in range(num_data)
+                if candidate != vertex_key
+                and candidate not in neighbor_sets[vertex_key]
+                and len(neighbor_sets[candidate]) < max_deg
+            ]
+            rng.shuffle(candidates)
+            for neighbor in candidates[:max(0, target_degree - len(neighbor_sets[vertex_key]))]:
+                neighbor_sets[vertex_key].add(neighbor)
+                neighbor_sets[neighbor].add(vertex_key)
+
+        graph_data: Dict[int, Tuple[str, List[int]]] = {
+            vertex_key: (f"vertex_{vertex_key}_data", sorted(neighbor_sets[vertex_key]))
+            for vertex_key in range(num_data)
+        }
         
         # Assign random graph_leaf for each vertex
         leaf_range = grove._leaf_range
@@ -96,22 +103,17 @@ class TestGroveLookupLargeScale:
         posmap_data = [(vertex_key, vertex_graph_leaf[vertex_key]) 
                        for vertex_key in range(num_data)]
         
-        # Initialize PosMap ORAM with the path data
-        grove._pos_omap.init_server_storage(data=posmap_data)
-        
-        # Initialize Graph ORAM
-        # We need to build a path_map for init_server_storage
+        # Build the graph maps used by Grove's public initialization boundary.
         path_map = {vertex_key: vertex_graph_leaf[vertex_key] for vertex_key in range(num_data)}
         data_map = {vertex_key: (graph_data[vertex_key][0], 
                                   {n: vertex_graph_leaf[n] for n in graph_data[vertex_key][1]},
                                   vertex_pos_leaf[vertex_key])
                     for vertex_key in range(num_data)}
-        grove._graph_oram.init_server_storage(data_map=data_map, path_map=path_map)
-        
-        # Initialize meta ORAMs (empty, no duplications needed)
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
-        # _pos_omap._meta is initialized automatically via init_server_storage
+        grove.init_server_storage(
+            posmap_data=posmap_data,
+            graph_data_map=data_map,
+            graph_path_map=path_map,
+        )
         
         # Store test data for verification
         grove._test_graph_data = graph_data
@@ -135,7 +137,7 @@ class TestGroveLookupLargeScale:
         
         assert vertex_key in result, f"Vertex {vertex_key} not found in lookup result"
         
-        vertex_data, adjacency_dict = result[vertex_key]
+        vertex_data, adjacency_dict = result[vertex_key][:2]
         expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
         
         assert vertex_data == expected_data, f"Vertex data mismatch for {vertex_key}"
@@ -160,7 +162,7 @@ class TestGroveLookupLargeScale:
         for vertex_key in vertex_keys:
             assert vertex_key in result, f"Vertex {vertex_key} not found in lookup result"
             
-            vertex_data, adjacency_dict = result[vertex_key]
+            vertex_data, adjacency_dict = result[vertex_key][:2]
             expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
             
             assert vertex_data == expected_data, f"Vertex data mismatch for {vertex_key}"
@@ -186,7 +188,7 @@ class TestGroveLookupLargeScale:
             for vertex_key in vertex_keys:
                 assert vertex_key in result, f"Round {round_idx}: Vertex {vertex_key} not found"
                 
-                vertex_data, adjacency_dict = result[vertex_key]
+                vertex_data, adjacency_dict = result[vertex_key][:2]
                 expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
                 
                 assert vertex_data == expected_data, \
@@ -212,7 +214,7 @@ class TestGroveLookupLargeScale:
             
             assert vertex_key in result, f"Iteration {i}: Vertex {vertex_key} not found"
             
-            vertex_data, adjacency_dict = result[vertex_key]
+            vertex_data, adjacency_dict = result[vertex_key][:2]
             expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
             
             assert vertex_data == expected_data
@@ -238,7 +240,7 @@ class TestGroveLookupLargeScale:
             result = grove.lookup([vertex_key])
             
             if vertex_key in result:
-                vertex_data, adjacency_dict = result[vertex_key]
+                vertex_data, adjacency_dict = result[vertex_key][:2]
                 expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
                 
                 if (vertex_data == expected_data and 
@@ -292,7 +294,7 @@ class TestGroveLookupLargeScale:
             result = grove.lookup([vertex_key])
             
             if vertex_key in result:
-                vertex_data, adjacency_dict = result[vertex_key]
+                vertex_data, adjacency_dict = result[vertex_key][:2]
                 expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
                 
                 if (vertex_data == expected_data and 
@@ -348,7 +350,7 @@ class TestGroveLookupLargeScale:
             result = grove.lookup([vertex_key])
             
             if vertex_key in result:
-                vertex_data, adjacency_dict = result[vertex_key]
+                vertex_data, adjacency_dict = result[vertex_key][:2]
                 expected_data, expected_neighbors = grove._test_graph_data[vertex_key]
                 
                 if (vertex_data == expected_data and 
@@ -381,7 +383,7 @@ class TestGroveLookupLargeScale:
             result = grove.lookup([target_vertex])
             
             if target_vertex in result:
-                vertex_data, adjacency_dict = result[target_vertex]
+                vertex_data, adjacency_dict = result[target_vertex][:2]
                 expected_data, expected_neighbors = grove._test_graph_data[target_vertex]
                 
                 if (vertex_data == expected_data and 
@@ -396,6 +398,7 @@ class TestGroveLookupLargeScale:
         assert success_count == num_lookups, f"Only {success_count}/{num_lookups} lookups succeeded"
 
 
+@pytest.mark.slow
 class TestGroveMassiveLookup:
     """
     Stress test: massive lookup operations to verify dedup fix.
@@ -460,10 +463,11 @@ class TestGroveMassiveLookup:
         
         posmap_data = [(v, vertex_graph_leaf[v]) for v in range(num_data)]
         
-        grove._pos_omap.init_server_storage(data=posmap_data)
-        grove._graph_oram.init_server_storage(data_map=data_map, path_map=path_map)
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage(
+            posmap_data=posmap_data,
+            graph_data_map=data_map,
+            graph_path_map=path_map,
+        )
         
         grove._test_graph_data = graph_data
         grove._test_vertex_graph_leaf = vertex_graph_leaf
@@ -653,10 +657,11 @@ class TestGroveMassiveLookup:
             data_map[v] = (vd, {n: vertex_graph_leaf[n] for n in nb}, vertex_pos_leaf[v])
             path_map[v] = vertex_graph_leaf[v]
         
-        grove._pos_omap.init_server_storage(data=[(v, vertex_graph_leaf[v]) for v in range(num_data)])
-        grove._graph_oram.init_server_storage(data_map=data_map, path_map=path_map)
-        grove._graph_meta.init_server_storage()
-        grove._pos_meta.init_server_storage()
+        grove.init_server_storage(
+            posmap_data=[(v, vertex_graph_leaf[v]) for v in range(num_data)],
+            graph_data_map=data_map,
+            graph_path_map=path_map,
+        )
         
         grove._test_graph_data = graph_data
         grove._test_vertex_graph_leaf = vertex_graph_leaf

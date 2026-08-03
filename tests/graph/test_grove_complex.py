@@ -22,10 +22,7 @@ def create_grove(num_data=256, max_deg=5, stash_scale=20):
         stash_scale=stash_scale
     )
     # Initialize storage
-    grove._pos_omap.init_server_storage()
-    grove._graph_oram.init_server_storage()
-    grove._graph_meta.init_server_storage()
-    grove._pos_meta.init_server_storage()
+    grove.init_server_storage()
     return grove
 
 
