@@ -4,8 +4,6 @@ import pytest
 
 from oblivlib.dependency import AesGcm, InteractLocalServer
 
-collect_ignore = ["soram"]
-
 DEFAULT_NUM_DATA = 2**12
 
 

@@ -22,5 +22,5 @@ venv/
 .zed/
 .DS_Store
 
-# Test-generated storage files (e.g. soram.bin, *_pos_map_*.bin)
+# Test-generated storage files (e.g. test.bin, *_pos_map_*.bin)
 *.bin

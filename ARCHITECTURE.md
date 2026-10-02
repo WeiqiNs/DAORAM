@@ -8,7 +8,7 @@ comments by convention: any rationale the code cannot express lives here. Paper-
 
 ## 1. Scope and threat model
 
-`oblivlib` implements oblivious data structures (ORAM, OMAP, oblivious graph processing) for a
+`oblivlib` implements oblivious data structures (ORAM and OMAP) for a
 client/server deployment:
 
 - The **client** is trusted, holds all secret state (position map, stash, keys), and may compute
@@ -16,7 +16,7 @@ client/server deployment:
 - The **server** is **honest-but-curious**: it follows the protocol, stores only encrypted blocks, and
   answers batched read/write requests. It must not learn the access pattern.
 
-Because the server is not malicious, the wire format does not defend against hostile responses (§10).
+Because the server is not malicious, the wire format does not defend against hostile responses (§8).
 
 ---
 
@@ -130,7 +130,7 @@ own per-level I/O (`_access_pos_map_level`); the parent only samples leaves and 
 `TreeBaseOram` and the ODS base `OstBaseOmap`: config accessors, level/leaf-range/stash-size math,
 padded sizing, `_get_new_leaf`, the stash with its capacity check (`_check_stash`), block-major eviction
 (`_evict_stash`), and per-bucket path encrypt/decrypt driven by a `BlockCodec`
-(§8). It lives in `dependency/` so both higher layers depend downward on it rather than on each other.
+(§6). It lives in `dependency/` so both higher layers depend downward on it rather than on each other.
 
 ### `TreeBaseOram` and the access protocol
 
@@ -253,19 +253,7 @@ ports mirror. Each keeps a recursive twin of `insert`/`delete` that tests cross-
 
 ---
 
-## 6. Graph layer (`src/oblivlib/graph/`)
-
-`GraphOS` (VLDB 2024) and `Grove` build on `MulPathOram` + `AVLOmapCached`, using
-`dependency/graph.py` for graph generation. Broken against the current API (§10).
-
-## 7. SORAM (`src/oblivlib/soram/`)
-
-A weaker-threat-model ORAM that hides access patterns only over windows of `c` consecutive operations.
-Excluded from the default test run and from type checking (§10).
-
----
-
-## 8. Crypto (`src/oblivlib/dependency/crypto.py`)
+## 6. Crypto (`src/oblivlib/dependency/crypto.py`)
 
 - `AesGcm`: `nonce(12) ‖ ciphertext ‖ tag(16)`. GCM adds no padding, so length is plaintext + 28.
 - `Blake2Prf`: keyed BLAKE2b, with `digest_mod_n` for leaf derivation.
@@ -288,7 +276,7 @@ reimplementing path encryption.
 
 ---
 
-## 9. Invariants and contracts
+## 7. Invariants and contracts
 
 - A block mapped to leaf `x` is on the root→`x` path or in the stash.
 - Recursive schemes require `num_data` > on-chip size (`on_chip_mem` for DA/Recursive, `on_chip_size`
@@ -305,15 +293,12 @@ reimplementing path encryption.
 
 ---
 
-## 10. Known issues
+## 8. Known issues
 
-- **`FlexibleBinaryTree`** is orphaned (kept for soram). Its `scale_up`/`scale_down` behaviour is
-  characterized by tests, not specified; validate it against real requirements when soram adopts it.
+- **`FlexibleBinaryTree`** is orphaned (kept for future use). Its `scale_up`/`scale_down` behaviour is
+  characterized by tests, not specified; validate it against real requirements when a scheme adopts it.
   Its leaf labels are `(leaf, level)` tuples stored in `Data.leaf` (typed `int`) through a cast. Its
   `get_cross_index` takes raw storage indices at equal depth.
-- **`graph/` and `soram/`** call ORAM/OMAP APIs that no longer exist (the old batch-path primitives,
-  `read_mul_query`, `search_with_meta`). They import but fail on first use, have no tests, and are
-  excluded from `pyrightconfig.json` pending a port.
 - **Type checking:** basedpyright `recommended` is clean across `dependency`/`oram`/`omap` with no
   `type: ignore`. `OstBaseOmap` is generic over its `LocalNodes` container rather than narrowing a base
   attribute.
@@ -328,11 +313,10 @@ reimplementing path encryption.
 
 ---
 
-## 11. Tests (`tests/`)
+## 9. Tests (`tests/`)
 
 - `tests/conftest.py`: the `num_data` fixture (default `2**12`, overridable via the `NUM_DATA` env var,
-  which avoids needing a rootdir `pytest_addoption`), `client`, `encryptor`, `test_file`, and the soram
-  exclusion.
+  which avoids needing a rootdir `pytest_addoption`), `client`, `encryptor`, and `test_file`.
 - `tests/dependency/`: `make_search_tree` parametrizes one behavioural suite
   (`test_search_tree_common.py`) over AVL and B+. Per-tree files hold the structural invariant validators
   and recursive/iterative and batched/sequential cross-checks. Storage tests are parametrized over the

@@ -1,12 +1,11 @@
 # oblivlib: oblivious algorithms in Python
 
-`oblivlib` implements classic oblivious algorithms (oblivious RAM, oblivious maps, and oblivious graph
-processing) for client/server deployments where the client is trusted and may compute non-obliviously,
-and the server only stores encrypted data. Design notes are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+`oblivlib` implements classic oblivious algorithms (oblivious RAM and oblivious maps) for client/server
+deployments where the client is trusted and may compute non-obliviously, and the server only stores
+encrypted data. Design notes are in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Related publications by the maintainers:
 
-- Enabling Index-free Adjacency in Oblivious Graph Processing with Delayed Duplications
 - [Towards Practical Oblivious Map (VLDB 2025)](https://dl.acm.org/doi/10.14778/3712221.3712235)
 
 ## ORAM
@@ -38,14 +37,6 @@ Related publications by the maintainers:
 
 Tree OMAPs hide the operation type by default (`distinguishable=False`); set it to `True` to let each
 operation pad only to its own bound.
-
-## Graph
-
-- [GraphOS (VLDB 2024)](https://www.vldb.org/pvldb/vol16/p4324-chamani.pdf):
-  [`graphos.py`](src/oblivlib/graph/graphos.py)
-- Grove, with delayed duplications: [`grove.py`](src/oblivlib/graph/grove.py)
-
-The graph and SORAM modules have not yet been ported to the current API.
 
 ## Usage
 

@@ -1,6 +1,6 @@
 {
   "include": ["src/oblivlib", "tests"],
-  "exclude": ["src/oblivlib/soram", "src/oblivlib/graph", "tests/soram", "**/__pycache__"],
+  "exclude": ["**/__pycache__"],
   "typeCheckingMode": "recommended",
   "pythonVersion": "3.12",
   "reportImplicitOverride": "error",
