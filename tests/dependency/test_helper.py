@@ -1,10 +1,22 @@
 import math
 import pickle
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from oblivlib.dependency import Blake2Prf, Helper
+from oblivlib.dependency import Blake2Prf, Data, Helper
+
+
+@dataclass
+class _Point:
+    x: int
+
+
+class TestData:
+    def test_dump_pad_round_trip_preserves_dataclass_value(self):
+        block = Data(key=1, leaf=2, value=_Point(3))
+        assert Data.load_unpad(block.dump_pad(200)) == block
 
 
 class TestHelper:

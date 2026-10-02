@@ -10,7 +10,6 @@ from oblivlib.oram import DAOram, PathOram
 
 
 def _make_upper(kind, n, client, encryptor, key_size=10):
-    # The upper ORAM must be wide enough for a full bucket's pickled metadata; size it via the helper.
     data_size = GroupOmap.upper_oram_data_size(num_data=n, key_size=key_size)
     if kind == "path":
         return PathOram(
@@ -55,19 +54,19 @@ class TestGroupOmap:
             key = rng.choice(keyspace)
             roll = rng.random()
             if roll < 0.5:
-                if key not in model:  # insert does not dedupe keys
+                if key not in model:
                     value = rng.randint(0, 10**6)
                     omap.insert(key=key, value=value)
                     model[key] = value
             elif roll < 0.75:
                 assert omap.search(key=key) == model.get(key)
-            elif key in model:  # update an existing key's value, checking the returned old value
+            elif key in model:
                 new_value = rng.randint(0, 10**6)
                 assert omap.search(key=key, value=new_value) == model[key]
                 model[key] = new_value
         for key in keyspace:
             assert omap.search(key=key) == model.get(key)
-        assert omap.search(key=99999) is None  # missing key
+        assert omap.search(key=99999) is None
         if not enc:
             assert not _duplicate_blocks(omap)
 

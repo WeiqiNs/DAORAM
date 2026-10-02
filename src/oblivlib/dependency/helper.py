@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import pickle
-from dataclasses import astuple, dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Self
 
 from oblivlib.dependency.crypto import Encryptor, PseudoRandomFunction
@@ -23,7 +23,7 @@ class Data:
         return cls(*pickle.loads(data))
 
     def dump(self) -> bytes:
-        return pickle.dumps(astuple(self))
+        return pickle.dumps(tuple(getattr(self, f.name) for f in fields(self)))
 
     def dump_pad(self, length: int) -> bytes:
         return Helper.pad_pickle(data=self.dump(), length=length)
@@ -59,7 +59,6 @@ class Helper:
 
     @staticmethod
     def pad_pickle(data: bytes, length: int) -> bytes:
-        # No length header: pickle.loads stops at the STOP opcode and ignores the trailing zeros.
         if len(data) > length:
             raise ValueError(f"Desired length {length} is shorter than the {len(data)}-byte data.")
         return data + b"\x00" * (length - len(data))
@@ -97,6 +96,13 @@ class Helper:
         return data_map
 
     @staticmethod
+    def max_bucket_load(num_bins: int, security_bits: int = 128) -> int:
+        """Max items any of ``num_bins`` balls-into-bins bins holds, except with prob. 2^-security_bits
+        (eprint 2021/1280)."""
+        x = (math.log2(num_bins) + security_bits - 1) / math.e
+        return math.ceil(math.e ** (Helper.lambert_w(x) + 1))
+
+    @staticmethod
     def lambert_w(x: float, tol: float = 1e-10, max_iter: int = 100) -> float:
         """Lambert W (the w satisfying w * e^w = x), by Newton's method."""
         if x == 0:
@@ -106,7 +112,6 @@ class Helper:
 
         w = 0 if x <= 1 else math.log(x) - math.log(math.log(x))
 
-        # Newton's method on f(w) = w * e^w - x (Halley-corrected update).
         for _ in range(max_iter):
             ew = math.exp(w)
             wew = w * ew

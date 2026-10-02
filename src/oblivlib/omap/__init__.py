@@ -22,14 +22,12 @@ from .group_omap import GroupOmap
 from .oram_ost_omap import OramOstOmap
 
 __all__ = [
-    # schemes
     "AVLOmap",
     "AVLOmapCached",
     "BPlusOmap",
     "BPlusOmapCached",
     "GroupOmap",
     "OramOstOmap",
-    # configs (re-exported from oblivlib.dependency.config)
     "AvlOmapCachedConfig",
     "AvlOmapConfig",
     "BPlusOmapCachedConfig",

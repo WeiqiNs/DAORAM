@@ -28,7 +28,6 @@ def binary_tree_cls(request):
 class _SearchTreeAdapter(ABC):
     """Uniform stateful wrapper over a search tree, holding the tree and its current root."""
 
-    # True if search() raises KeyError on a missing key; False if it returns None instead.
     missing_raises: ClassVar[bool]
 
     @abstractmethod

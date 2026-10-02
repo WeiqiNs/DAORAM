@@ -5,7 +5,6 @@ stores the actual key-value pairs at PRF-computed paths. Search fetches the whol
 it under a new seed; insert computes the new item's path and writes it directly.
 """
 
-import math
 import os
 import pickle
 from typing import Any, override
@@ -19,27 +18,20 @@ from oblivlib.oram import MulPathOram, TreeBaseOram
 class GroupOmap(BaseOmap):
     """Group-by-hash OMAP with oblivious metadata storage in an upper ORAM."""
 
-    # Seed size for PRF (matches Blake2Prf.KEY_SIZE).
     SEED_SIZE = 32
 
     def __init__(self, config: GroupOmapConfig, upper_oram: TreeBaseOram):
-        # The frozen config is the single source of truth; the accessors below read straight from it.
         self._config: GroupOmapConfig = config
 
-        # Number of hash buckets equals the data count (a derived alias, kept as a plain attr).
         self._num_buckets = config.num_data
 
         self._upper_oram = upper_oram
 
-        # One PRF for bucket hashing, one for leaf path computation.
         self._bucket_prf = Blake2Prf()
         self._leaf_prf = Blake2Prf()
 
-        # Worst-case items per hash bucket (used for stash scaling and metadata sizing).
         self._upper_bound = self._bucket_upper_bound(self._num_buckets)
 
-        # The upper ORAM stores variable-length pickled bucket metadata. Fail clearly here if it is too
-        # narrow for a full bucket, rather than cryptically later when an encrypted write overflows.
         required = self.upper_oram_data_size(config.num_data, config.key_size)
         if self._upper_oram._data_size < required:
             raise ValueError(
@@ -48,7 +40,6 @@ class GroupOmap(BaseOmap):
                 + "GroupOmap.upper_oram_data_size(num_data, key_size)."
             )
 
-        # Lower ORAM: same num_data, stash scaled by the per-bucket upper bound.
         self._lower_oram = MulPathOram(
             MulPathOramConfig(
                 num_data=config.num_data,
@@ -65,7 +56,7 @@ class GroupOmap(BaseOmap):
     @staticmethod
     def _bucket_upper_bound(num_data: int) -> int:
         """Worst-case number of items in one hash bucket (https://eprint.iacr.org/2021/1280)."""
-        return math.ceil(math.e ** (Helper.lambert_w(math.e**-1 * (math.log(num_data, 2) + 128 - 1)).real + 1))
+        return Helper.max_bucket_load(num_data)
 
     @staticmethod
     def upper_oram_data_size(num_data: int, key_size: int) -> int:
@@ -76,7 +67,6 @@ class GroupOmap(BaseOmap):
         worst_case = pickle.dumps((upper_bound, os.urandom(GroupOmap.SEED_SIZE), [os.urandom(key_size)] * upper_bound))
         return len(worst_case)
 
-    # Construction parameters — read-only views onto the frozen config (see GroupOmapConfig).
     @property
     def _name(self) -> str:
         return self._config.name
@@ -166,11 +156,10 @@ class GroupOmap(BaseOmap):
             for key, value in bucket_items:
                 lower_key = self._key_to_int(key)
                 leaf = self._compute_path(seed, key)
-                lower_data[lower_key] = (key, value)  # store the actual key with the value
+                lower_data[lower_key] = (key, value)
                 lower_path_map[lower_key] = leaf
                 used_lower_keys.add(lower_key)
 
-        # Fill remaining positions with None (required by ORAM init).
         for lower_key in range(self._num_data):
             if lower_key not in used_lower_keys:
                 lower_data[lower_key] = None
@@ -189,7 +178,6 @@ class GroupOmap(BaseOmap):
 
         new_seed = os.urandom(self.SEED_SIZE)
 
-        # Build maps over every key in the bucket (access all, for obliviousness).
         key_path_map: dict[int, int] = {}
         new_path_map: dict[int, int] = {}
         key_value_map: dict[int, Any] = {}
@@ -200,7 +188,7 @@ class GroupOmap(BaseOmap):
             new_path = self._compute_path(new_seed, actual_key)
             key_path_map[lower_key] = old_path
             new_path_map[lower_key] = new_path
-            key_value_map[lower_key] = UNSET  # read only
+            key_value_map[lower_key] = UNSET
 
         results = {}
         if bucket_keys:
@@ -208,7 +196,6 @@ class GroupOmap(BaseOmap):
                 key_value_map=key_value_map, key_path_map=key_path_map, new_path_map=new_path_map
             )
 
-        # Find the requested key among the results.
         found_value = None
         found_lower_key = None
         lower_key = self._key_to_int(key)
@@ -219,7 +206,6 @@ class GroupOmap(BaseOmap):
                 found_value = actual_value
                 found_lower_key = lower_key
 
-        # On a value update, pass it through eviction.
         updates = None
         if value is not None and found_lower_key is not None:
             updates = {found_lower_key: (key, value)}
@@ -227,7 +213,6 @@ class GroupOmap(BaseOmap):
         if bucket_keys:
             self._lower_oram.eviction_for_mul_keys(updates=updates)
 
-        # Update the upper ORAM with the new reshuffle seed.
         new_metadata = self._encode_metadata(count, new_seed, bucket_keys)
         self._upper_oram.eviction_with_update_stash(key=bucket_id, value=new_metadata)
 
@@ -244,12 +229,6 @@ class GroupOmap(BaseOmap):
         if count >= self._upper_bound:
             raise MemoryError(f"Bucket {bucket_id} is full ({count} items), cannot insert")
 
-        # Update the key's lower-ORAM block in place and relocate it to its group path. Every lower_key
-        # already has exactly one block (created at init -- a real value or a None placeholder), so we
-        # UPDATE that block rather than appending a second one: appending would create a duplicate for the
-        # same key, and a later read could pick the stale (None) copy and lose the value. operate_on_keys
-        # reads the block from its current position-map path, writes the new value, and remaps it to the
-        # group path -- keeping exactly one block per key.
         lower_key = self._key_to_int(key)
         new_path = self._compute_path(seed, key)
         self._lower_oram.operate_on_keys(

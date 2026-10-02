@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pickle
 import secrets
-from dataclasses import astuple, dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Self
 
 from oblivlib.dependency.helper import Data
@@ -29,13 +29,12 @@ class AVLData:
         return cls(*pickle.loads(data))
 
     def dump(self) -> bytes:
-        return pickle.dumps(astuple(self))
+        return pickle.dumps(tuple(getattr(self, f.name) for f in fields(self)))
 
 
 class AVLTreeNode:
     def __init__(self, kv_pair: KVPair):
         self.key: Any = kv_pair.key
-        # leaf is the random ORAM path this node is stored on (assigned later).
         self.leaf: int | None = None
         self.value: Any = kv_pair.value
         self.height: int = 1
@@ -98,13 +97,13 @@ class AVLTree:
 
         if balance > 1:
             assert node.left_node is not None
-            if self._get_balance(node.left_node) < 0:  # left-right case
+            if self._get_balance(node.left_node) < 0:
                 node.left_node = self._rotate_left(node.left_node)
             return self._rotate_right(node)
 
         if balance < -1:
             assert node.right_node is not None
-            if self._get_balance(node.right_node) > 0:  # right-left case
+            if self._get_balance(node.right_node) > 0:
                 node.right_node = self._rotate_right(node.right_node)
             return self._rotate_left(node)
 
@@ -186,7 +185,6 @@ class AVLTree:
             else:
                 return balanced_node
 
-        # The loop above always returns once the root is reached.
         raise ValueError("The node was not successfully inserted.")
 
     def recursive_insert(self, root: AVLTreeNode | None, kv_pair: KVPair) -> AVLTreeNode:
@@ -198,22 +196,7 @@ class AVLTree:
         else:
             root.right_node = self.recursive_insert(root=root.right_node, kv_pair=kv_pair)
 
-        root.height = 1 + max(self._get_height(node=root.left_node), self._get_height(node=root.right_node))
-        balance = self._get_balance(node=root)
-
-        if balance > 1:
-            assert root.left_node is not None
-            if self._get_balance(node=root.left_node) < 0:  # left-right case
-                root.left_node = self._rotate_left(root.left_node)
-            return self._rotate_right(in_node=root)
-
-        if balance < -1:
-            assert root.right_node is not None
-            if self._get_balance(root.right_node) > 0:  # right-left case
-                root.right_node = self._rotate_right(root.right_node)
-            return self._rotate_left(in_node=root)
-
-        return root
+        return self._balance(root)
 
     @staticmethod
     def _collect_insert_paths(root: AVLTreeNode | None, keys: list[Any]) -> set[AVLTreeNode]:
@@ -233,7 +216,6 @@ class AVLTree:
             next_cursors = []
             for key, node in cursors:
                 local.add(node)
-                # Mirror insert's routing: smaller keys go left, equal-or-larger go right.
                 child = node.left_node if key < node.key else node.right_node
                 if child is not None:
                     next_cursors.append((key, child))
@@ -349,7 +331,6 @@ class AVLTree:
             local.pop()
 
         else:
-            # Use predecessor (left then all right) if left is taller, else successor (right then all left).
             use_predecessor = self._get_height(node.left_node) > self._get_height(node.right_node)
 
             current = node.left_node if use_predecessor else node.right_node
@@ -367,7 +348,6 @@ class AVLTree:
             node.key = replacement_node.key
             node.value = replacement_node.value
 
-            # The replacement has at most one child, on the side opposite the traversal direction.
             child = replacement_node.left_node if use_predecessor else replacement_node.right_node
 
             parent = local[replacement_index - 1]

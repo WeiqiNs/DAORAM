@@ -60,7 +60,7 @@ class TestOramOstOmapOracle:
             key = rng.choice(keyspace)
             roll = rng.random()
             if roll < 0.5:
-                if key not in model:  # the ODS insert does not handle duplicate keys
+                if key not in model:
                     value = f"v{rng.randint(0, 10**6)}" if key_str else rng.randint(0, 10**6)
                     omap.insert(key=key, value=value)
                     model[key] = value

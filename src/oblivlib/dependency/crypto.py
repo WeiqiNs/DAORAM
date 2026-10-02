@@ -28,15 +28,14 @@ class Encryptor(ABC):
 
 
 class AesGcm(Encryptor):
-    NONCE_SIZE = 12  # 96 bits, the GCM-recommended nonce size.
-    TAG_SIZE = 16  # 128-bit auth tag.
+    NONCE_SIZE = 12
+    TAG_SIZE = 16
 
     def __init__(self, key: bytes | None = None, key_byte_length: int = 16):
         if key_byte_length not in [16, 24, 32]:
             raise ValueError("The AES key length must be 16, 24, or 32 bytes.")
 
         self._key = os.urandom(key_byte_length) if key is None else key
-        self._key_byte_length = key_byte_length
         self._aes_gcm = AESGCM(self._key)
 
     @property
@@ -46,7 +45,6 @@ class AesGcm(Encryptor):
 
     @override
     def ciphertext_length(self, plaintext_length: int) -> int:
-        # Layout is nonce + ciphertext + tag; GCM adds no padding, so ciphertext == plaintext length.
         return self.NONCE_SIZE + plaintext_length + self.TAG_SIZE
 
     @override
@@ -127,7 +125,7 @@ class FeistelPrp(PseudoRandomPermutation):
     """PRP over [0, domain_size) via a balanced Feistel network with cycle-walking."""
 
     KEY_SIZE = 16
-    NUM_ROUNDS = 4  # 4 rounds suffice for a secure pseudo-random permutation.
+    NUM_ROUNDS = 4
 
     def __init__(self, domain_size: int, key: bytes | None = None):
         if domain_size <= 1:
@@ -138,7 +136,6 @@ class FeistelPrp(PseudoRandomPermutation):
         self._key = os.urandom(self.KEY_SIZE) if key is None else key
         self._domain_size = domain_size
 
-        # Compute the bit length needed to represent domain, rounded up to even for a balanced Feistel.
         raw_bits = (domain_size - 1).bit_length()
         self._bit_length = raw_bits + (raw_bits % 2)
 
@@ -159,9 +156,7 @@ class FeistelPrp(PseudoRandomPermutation):
         return self._domain_size
 
     def _round_function(self, round_num: int, value: int, output_bits: int) -> int:
-        # round_num gives per-round domain separation.
         value_bytes = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
-        # Clone the key-seeded hash and absorb only round + value; identical to hashing key||round||value.
         h = self._base_hash.copy()
         h.update(self._round_bytes[round_num])
         h.update(value_bytes)
@@ -194,8 +189,6 @@ class FeistelPrp(PseudoRandomPermutation):
         if not (0 <= x < self._domain_size):
             raise ValueError(f"Input must be in [0, {self._domain_size}).")
 
-        # Cycle-walking: re-apply Feistel until the output lands in [0, domain_size) (handles
-        # non-power-of-2 domains while staying a bijection).
         y = self._feistel_forward(x)
         while y >= self._domain_size:
             y = self._feistel_forward(y)

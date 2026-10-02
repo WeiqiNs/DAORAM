@@ -43,7 +43,6 @@ class StaticOram(PathOram[StaticOramConfig]):
 
     @override
     def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
-        # Position is fixed, so the new leaf equals the current leaf.
         leaf = self._get_path_number(key)
 
         self._client.add_read_path(label=self._name, leaves=[leaf])

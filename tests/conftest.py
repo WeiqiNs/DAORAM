@@ -4,10 +4,8 @@ import pytest
 
 from oblivlib.dependency import AesGcm, InteractLocalServer
 
-# soram is opt-in (slow); run it with `pytest tests/soram`.
 collect_ignore = ["soram"]
 
-# Default dataset size for the round-trip suites; override per run with the NUM_DATA env var.
 DEFAULT_NUM_DATA = 2**12
 
 

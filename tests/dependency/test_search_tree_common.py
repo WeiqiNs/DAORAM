@@ -97,7 +97,7 @@ class TestSearchTreeBatched:
     def test_multi_ops_handle_empty_inputs(self, make_search_tree):
         tree = make_search_tree(leaf_range=1000)
         assert tree.multi_search([1, 2, 3]) == {1: None, 2: None, 3: None}
-        tree.multi_insert([])  # no-op: must not raise.
+        tree.multi_insert([])
         assert tree.multi_search([]) == {}
 
         tree.multi_insert([(5, 50), (6, 60)])

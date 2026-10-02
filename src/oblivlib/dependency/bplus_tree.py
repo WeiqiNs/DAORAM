@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pickle
 import secrets
-from dataclasses import astuple, dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Self
 
 from oblivlib.dependency.helper import Data
@@ -24,12 +24,11 @@ class BPlusData:
         return cls(*pickle.loads(data))
 
     def dump(self) -> bytes:
-        return pickle.dumps(astuple(self))
+        return pickle.dumps(tuple(getattr(self, f.name) for f in fields(self)))
 
 
 class BPlusTreeNode:
     def __init__(self):
-        # values holds the actual values in a leaf, the child nodes in an internal node.
         self.id: int | None = None
         self.leaf: int | None = None
         self.keys: list = []
@@ -69,7 +68,6 @@ class BPlusTree:
                 return index + 1
             if key < each_key:
                 return index
-        # Larger than every separator: under the rightmost child.
         return len(node.keys)
 
     @staticmethod
@@ -126,16 +124,12 @@ class BPlusTree:
         right_node = BPlusTreeNode()
 
         if node.is_leaf:
-            # A leaf keeps the median key in the new right half; the caller copies it up as the
-            # parent separator, so the key is duplicated (not moved out as in an internal split).
             right_node.keys = node.keys[self._mid :]
             right_node.values = node.values[self._mid :]
             node.keys = node.keys[: self._mid]
             node.values = node.values[: self._mid]
 
         else:
-            # An internal split drops the median key (it gets promoted to the parent) and
-            # carries the extra child pointer (values has one more entry than keys).
             right_node.is_leaf = False
             right_node.keys = node.keys[self._mid + 1 :]
             right_node.values = node.values[self._mid + 1 :]
@@ -146,7 +140,6 @@ class BPlusTree:
 
     def _insert_in_parent(self, child_node: BPlusTreeNode, parent_node: BPlusTreeNode) -> None:
         """Split the full child node and insert the promoted median key (and new right node) into the parent."""
-        # Read the median before the split mutates the child's keys.
         insert_key = child_node.keys[self._mid]
         right_node = self._split_node(node=child_node)
 
@@ -162,7 +155,6 @@ class BPlusTree:
 
     def _create_parent(self, child_node: BPlusTreeNode) -> BPlusTreeNode:
         """Split a full root node and return a fresh parent holding the two halves (grows the tree's height)."""
-        # The median is promoted before the split mutates the child's keys.
         insert_key = child_node.keys[self._mid]
         right_node = self._split_node(node=child_node)
 
@@ -194,7 +186,6 @@ class BPlusTree:
     def recursive_insert(self, root: BPlusTreeNode, kv_pair: KVPair) -> BPlusTreeNode:
         """Recursive variant of insert; kept to validate the non-recursive implementation."""
         self._recursive_insert(node=root, kv_pair=kv_pair)
-        # If the root overflowed, grow a new root above it (this is the only way the tree gets taller).
         if len(root.keys) >= self._order:
             return self._create_parent(child_node=root)
         return root
@@ -237,7 +228,6 @@ class BPlusTree:
         Reuses the pure ``_split_node`` (which returns the new right node) and adds that node to
         ``local`` so a later insert in the batch may descend onto this fresh sibling.
         """
-        # The median is promoted before the split mutates the child's keys.
         insert_key = child.keys[self._mid]
         right = self._split_node(node=child)
         local.add(right)
@@ -335,8 +325,6 @@ class BPlusTree:
                     parent.keys[child_index] = sibling.keys.pop(0)
             return
 
-        # The sibling is at its minimum too: merge the two, dropping the separator that sat between
-        # them. The left node always absorbs the right one (so the surviving node keeps its index).
         if is_left:
             if not node.is_leaf:
                 sibling.keys.append(parent.keys[child_index - 1])
@@ -376,7 +364,6 @@ class BPlusTree:
         leaf.keys.pop(key_index)
         leaf.values.pop(key_index)
 
-        # When the root itself is the leaf, it simply empties out as its last key goes.
         if not local:
             return None if not leaf.keys else root
 
@@ -387,7 +374,6 @@ class BPlusTree:
             self._fix_underflow(parent=parent, child_index=child_index)
             node = parent
 
-        # The root may now be empty: drop it if it was a leaf, else promote its only remaining child.
         if not root.keys:
             return None if root.is_leaf else root.values[0]
         return root
@@ -397,7 +383,6 @@ class BPlusTree:
         if root is None:
             return None
         self._recursive_delete(node=root, key=key)
-        # The root may now be empty: drop it if it was a leaf, else promote its only remaining child.
         if not root.keys:
             return None if root.is_leaf else root.values[0]
         return root
@@ -439,7 +424,7 @@ class BPlusTree:
                     block_id += 1
 
                 bplus_data = BPlusData(keys=node.keys, values=[(child.id, child.leaf) for child in node.values])
-                stack.extend([child for child in node.values])
+                stack.extend(node.values)
 
             else:
                 bplus_data = BPlusData(keys=node.keys, values=node.values)

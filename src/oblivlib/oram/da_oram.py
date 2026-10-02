@@ -48,8 +48,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         _last_oram_data: int | None = None,
         _last_oram_level: int | None = None,
     ):
-        # _is_pos_map marks an internal position-map child oram (shares the parent's client); the
-        # _last_oram_* args carry the dimensions of the oram directly above it.
         if not _is_pos_map:
             if config.client is None:
                 raise ValueError("Client is required for main ORAM.")
@@ -60,8 +58,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         super().__init__(config)
 
-        # Runtime state tracking the oram above this one; reassigned in _compress_pos_map. Always
-        # set (either passed in for a pos-map child or computed in _compress_pos_map) before any read.
         self._last_oram_data: int | None = _last_oram_data
         self._last_oram_level: int | None = _last_oram_level
 
@@ -74,7 +70,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         self._init_pos_map()
 
-    # Scheme-specific construction parameters — read-only views onto the frozen config.
     @property
     def _num_ic(self) -> int:
         return self._config.num_ic
@@ -90,10 +85,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
     @property
     def _on_chip_mem(self) -> int:
         return self._config.on_chip_mem
-
-    @property
-    def _evict_path_obo(self) -> bool:
-        return self._config.evict_path_obo
 
     @cached_property
     def _count_length(self) -> int:
@@ -156,7 +147,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         server_storage: ServerStorage = {}
 
-        # All counters (gc and ic) start at zero.
         value = Helper.binary_str_to_bytes("0" * self._count_length)
 
         last_oram_data = self._num_data
@@ -169,8 +159,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
                 f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
             )
 
-            # The label this level's tree is stored under; also the child oram's name so the
-            # child can drive its own server I/O on the shared client.
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
             cur_pos_map_oram = DAOram(
@@ -228,25 +216,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         self._client.init_storage(storage=pos_map_storage_dict)
 
-    def _evict_stash_obo(self, leaves: list[int]) -> PathData:
-        """Evict to the given paths one by one. Experimental; less aggressive than _evict_stash."""
-        temp_stash = []
-
-        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
-
-        for leaf in leaves:
-            for data in self._stash:
-                inserted = BinaryTree.fill_data_to_path(
-                    data=data, path=path, leaves=[leaf], level=self._level, bucket_size=self._bucket_size
-                )
-                if not inserted:
-                    temp_stash.append(data)
-
-            self._stash = temp_stash
-            temp_stash = []
-
-        return self._encrypt_path_data(path=path)
-
     def _update_stash_leaf(self, key: int | None, new_leaf: int | None) -> None:
         if key is None:
             return
@@ -266,11 +235,9 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         assert self._last_oram_data is not None and self._last_oram_level is not None
         data = Helper.bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
 
-        # A '1' in the ic indicators marks a backup count that needs a reset.
         ic_indicators = data[-self._num_ic :]
         offset = ic_indicators.find("1")
 
-        # Ignore indices past the end of the data.
         if key * self._num_ic + offset >= self._last_oram_data:
             offset = -1
 
@@ -284,7 +251,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
     def _perform_reset(self, key: int, data: Data) -> ResetLeaf:
         """Like _perform_reset_on_chip but reads the indicators from a stored Data block."""
         assert self._last_oram_data is not None and self._last_oram_level is not None
-        # A position-map block always carries its counter bytes as value.
         data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         ic_indicators = data.value[-self._num_ic :]
@@ -314,14 +280,12 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         ic_ind_start = self._gc_length + self._num_ic * self._ic_length
 
-        # Backup bit set: consume the backup, so only ic and that indicator change.
         if data[ic_ind_start + offset] == "1":
             next_ic = 0
             next_gc = gc
             gc = gc - 1
             data = f"{data[: ic_ind_start + offset]}{'0'}{data[ic_ind_start + offset + 1 :]}"
 
-        # Overflow: bump gc and reset the backup indicators.
         elif ic + 1 >= pow(2, self._ic_length):
             next_ic = 0
             next_gc = gc + 1
@@ -331,12 +295,10 @@ class DAOram(TreeBaseOram[DaOramConfig]):
                 f"{'1' * offset + '0' + '1' * (self._num_ic - offset - 1)}"
             )
 
-        # No overflow: just bump ic.
         else:
             next_ic = ic + 1
             next_gc = gc
 
-        # The ic update always happens.
         self._on_chip_storage[key] = Helper.binary_str_to_bytes(
             f"{data[:ic_start]}{bin(next_ic)[2:].zfill(self._ic_length)}{data[ic_end:]}"
         )
@@ -348,7 +310,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
     def _update_data(self, key: int, data: Data, offset: int) -> tuple[int, int]:
         """Like _update_data_on_chip but operates on a stored Data block's counter value."""
-        # A position-map block always carries its counter bytes as value.
         data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         gc = int(data.value[: self._gc_length], 2)
@@ -359,14 +320,12 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         ic_ind_start = self._gc_length + self._num_ic * self._ic_length
 
-        # Backup bit set: consume the backup, so only ic and that indicator change.
         if data.value[ic_ind_start + offset] == "1":
             next_ic = 0
             next_gc = gc
             gc = gc - 1
             data.value = f"{data.value[: ic_ind_start + offset]}{'0'}{data.value[ic_ind_start + offset + 1 :]}"
 
-        # Overflow: bump gc and reset the backup indicators.
         elif ic + 1 >= pow(2, self._ic_length):
             next_ic = 0
             next_gc = gc + 1
@@ -376,12 +335,10 @@ class DAOram(TreeBaseOram[DaOramConfig]):
                 f"{'1' * offset + '0' + '1' * (self._num_ic - offset - 1)}"
             )
 
-        # No overflow: just bump ic.
         else:
             next_ic = ic + 1
             next_gc = gc
 
-        # The ic update always happens.
         data.value = Helper.binary_str_to_bytes(
             f"{data.value[:ic_start]}{bin(next_ic)[2:].zfill(self._ic_length)}{data.value[ic_end:]}"
         )
@@ -419,8 +376,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         if r_key is not None:
             raise KeyError(f"The backup key {r_key} not found.")
 
-        # The data key is guaranteed found above (else KeyError), so its leaf fields are set; only the
-        # reset's new leaf is optional (None when no reset is carried).
         assert (
             next_cur_leaf is not None
             and next_new_leaf is not None
@@ -488,9 +443,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
             key=cur_key, r_key=r_key, offset=cur_index, new_leaf=new_leaf, r_new_leaf=r_new_leaf, path=path
         )
 
-        evicted_path = (
-            self._evict_stash_obo(leaves=leaves) if self._evict_path_obo else self._evict_stash(leaves=leaves)
-        )
+        evicted_path = self._evict_stash(leaves=leaves)
 
         self._client.add_write_path(label=self._name, data=evicted_path)
         self._client.execute()
@@ -508,10 +461,8 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         for pos_map_index, (cur_key, cur_index) in enumerate(pos_map_keys[1:]):
             r_key = None if r_index == -1 else cur_key // self._num_ic * self._num_ic + r_index
 
-            # Always read two paths (the data path and the reset path) to hide whether a reset happens.
             leaves = [cur_leaf, r_cur_leaf]
 
-            # Each level owns its server I/O; the parent only threads the leaves along the chain.
             next_cur_leaf, next_new_leaf, r_index, r_cur_leaf, r_new_leaf = self._pos_maps[
                 pos_map_index
             ]._access_pos_map_level(
@@ -533,7 +484,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         r_key = None if r_index == -1 else key // self._num_ic * self._num_ic + r_index
 
-        # Always read two paths (data path and reset path).
         leaves = [cur_leaf, r_cur_leaf]
 
         self._client.add_read_path(label=self._name, leaves=leaves)
@@ -542,12 +492,9 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         read_value = self._retrieve_data_block(key=key, value=value, new_leaf=new_leaf, path=path)
 
-        # Remap the reset block before evicting.
         self._update_stash_leaf(key=r_key, new_leaf=r_new_leaf)
 
-        evicted_path = (
-            self._evict_stash_obo(leaves=leaves) if self._evict_path_obo else self._evict_stash(leaves=leaves)
-        )
+        evicted_path = self._evict_stash(leaves=leaves)
 
         self._client.add_write_path(label=self._name, data=evicted_path)
         self._client.execute()

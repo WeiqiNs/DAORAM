@@ -53,7 +53,6 @@ class TestAVLTree:
             assert _shape(root_it) == _shape(root_rec)
 
     def test_insert_into_local_rejects_unfetched_node(self):
-        # The guard enforces the closure that lets the oblivious port skip re-fetching in phase 2.
         tree = AVLTree(leaf_range=100)
         root = None
         for k in range(10):
@@ -73,8 +72,6 @@ class TestAVLTree:
         assert _shape(root_batched) == _shape(root_single)
 
     def test_multi_insert_into_existing_matches_sequential(self):
-        # From an empty root the closure check is trivially satisfied (every node is phase-2-created);
-        # only a pre-populated tree makes phase 2's rotations prove they stay within the fetched paths.
         rng = random.Random(11)
         base = rng.sample(range(0, 100000, 2), 1000)
         batch = rng.sample(range(1, 100000, 2), 500)

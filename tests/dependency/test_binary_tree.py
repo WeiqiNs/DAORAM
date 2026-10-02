@@ -13,8 +13,6 @@ def _as_data(block: Block) -> Data:
 class TestBinaryTree:
     @pytest.mark.parametrize("p", list(range(0, 32)))
     def test_level_is_exact_at_powers_of_two(self, p):
-        # Call compute_level directly: constructing BinaryTree(num_data=2**p) would eagerly allocate
-        # a 2**(p+1)-bucket storage list (hundreds of GB at p=31) just to read one integer.
         n = pow(2, p)
         assert pow(2, BinaryTree.compute_level(num_data=n) - 1) == n
 

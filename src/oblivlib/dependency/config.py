@@ -34,7 +34,6 @@ class OramConfig:
     encryptor: Encryptor | None = None
 
     def __post_init__(self) -> None:
-        # Subclasses adding constraints must call super().__post_init__() (dataclasses don't chain it).
         if self.num_data < 1:
             raise ValueError(f"num_data must be >= 1, got {self.num_data}.")
         if self.data_size < 1:
@@ -98,7 +97,6 @@ class CounterOramConfig(OramConfig):
 class DaOramConfig(CounterOramConfig):
     name: str = "da"
     on_chip_mem: int = 10
-    evict_path_obo: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -130,9 +128,6 @@ class OmapConfig(OramConfig):
 
     name: str = "omap"
     key_size: int
-    # When False (default, fully oblivious) insert/search/delete all pad to the worst op's round count
-    # so the operation type is hidden. When True, each op uses its own (smaller) bound, revealing the
-    # op type but running faster.
     distinguishable: bool = False
 
     def __post_init__(self) -> None:

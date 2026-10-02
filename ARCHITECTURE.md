@@ -1,411 +1,350 @@
-# DAORAM — Design Knowledge Base
+# oblivlib — Design Knowledge Base
 
-This document is the design reference for the `oblivlib` library. It is written for someone (human or
-agent) who needs to understand *how* the system is put together before changing it. For the
-paper-to-file mapping of each algorithm, see `README.md`; for build/test commands and conventions,
-see `CLAUDE.md`.
-
----
-
-## 1. What this library is, and the threat model
-
-`oblivlib` implements oblivious data structures — Oblivious RAM (ORAM), Oblivious Map (OMAP), and
-oblivious graph processing — for a **client/server** deployment:
-
-- The **client** is trusted and holds all secret state (position map, stash, encryption keys). It may
-  compute non-obliviously.
-- The **server** is **honest-but-curious**: it follows the protocol and only stores encrypted blocks,
-  answering batched read/write requests. It must not learn the access pattern.
-
-Because the server is honest-but-curious (not malicious), the wire format does not need to defend
-against hostile responses — see §10.
+How the library is put together, for anyone (human or agent) about to change it. The source carries no
+comments by convention: any rationale the code cannot express lives here. Paper-to-file mapping is in
+`README.md`; commands and conventions are in `CLAUDE.md`.
 
 ---
 
-## 2. The storage abstraction (`InteractServer`) — the central seam
+## 1. Scope and threat model
 
-`src/oblivlib/dependency/interact_server.py`. Everything that touches storage goes through this interface;
-no construction reads or writes storage directly. The object is passed to every scheme as `client=`
-(note the naming: the `client` argument **is** an `InteractServer` — the client-side handle to the
-server, not the server itself).
+`oblivlib` implements oblivious data structures (ORAM, OMAP, oblivious graph processing) for a
+client/server deployment:
 
-Three implementations, interchangeable without changing scheme code:
+- The **client** is trusted, holds all secret state (position map, stash, keys), and may compute
+  non-obliviously.
+- The **server** is **honest-but-curious**: it follows the protocol, stores only encrypted blocks, and
+  answers batched read/write requests. It must not learn the access pattern.
+
+Because the server is not malicious, the wire format does not defend against hostile responses (§10).
+
+---
+
+## 2. The storage seam (`InteractServer`)
+
+`src/oblivlib/dependency/interact_server.py`. Every storage access goes through this interface. Schemes
+receive it as `client=`: it is the client-side handle *to* the server, not the server.
 
 | Class | Role |
 |---|---|
-| `InteractLocalServer` | Storage lives in-process. Used by all tests and local dev. |
-| `InteractRemoteServer` | Client side: serializes batched queries and sends them over a socket. |
-| `RemoteServer` | Server side: receives requests, runs them on local storage, returns results. Subclasses `InteractLocalServer`. |
+| `InteractLocalServer` | Storage in-process. Used by tests and local runs. |
+| `InteractRemoteServer` | Client side: ships batched queries over a socket. |
+| `RemoteServer` | Server side: runs received queries on local storage. Subclasses `InteractLocalServer`. |
 
-### Query batching model (the key idea)
+**Query batching.** No call does I/O immediately. Queries accumulate in eight label-keyed buffers
+(`_read_{paths,buckets,blocks,lists}`, `_write_*`); `execute()` flushes them and returns
+`ExecuteResult(success, results, error)` keyed by label.
 
-Operations do **not** perform I/O immediately. The client accumulates queries in eight label-keyed
-dicts (`_read_paths`, `_read_buckets`, `_read_blocks`, `_read_lists`, and the four `_write_*`),
-then a single `execute()` flushes them and returns an `ExecuteResult(success, results, error)` where
-`results` is keyed by label. Semantics:
+- Writes run before reads within one `execute()`; a later write to the same slot overwrites an earlier one.
+- Reads are deduplicated. `add_read_list(label, None)` reads the whole list.
+- List-write indices are sentinels: `>= 0` overwrites, `-1` inserts at the front, `-2` pops the last.
+- The buffers are cleared in a `finally` on both local and remote clients, so a failed `execute()`
+  never leaks queries into the next one.
+- Bandwidth (`get_bandwidth`/`reset_bandwidth`) is `len(pickle.dumps(...))` of request and response,
+  for experiments only.
+- Read results through `ExecuteResult.require(label)`: on a failed `execute()` it raises the original
+  error instead of a masking `KeyError` on the empty results dict.
 
-- **Writes run before reads** within one `execute()`.
-- Reads are **deduplicated** (`list(set(...))`).
-- List writes overload the index: `>=0` overwrite, `-1` insert-at-front, `-2` pop-last.
-- `clear_queries()` runs in a `finally`, so the buffer always resets.
-- Bandwidth is tracked as `len(pickle.dumps(...))` of request and response (`get_bandwidth` /
-  `reset_bandwidth`) — for experiments only.
+Storage is `dict[label, BinaryTree | list]`. Tree labels and list labels are kept disjoint by callers,
+which is what lets `_get_tree`/`_get_list` cast. Schemes sharing one client must use distinct names.
 
-Schemes read a result with `ExecuteResult.require(label)`, **not** `result.results[label]`: `require`
-raises the underlying error when `execute()` failed (`success=False`) instead of letting the caller
-hit a confusing `KeyError` on the empty results dict.
-
-Because everything is label-keyed, **multiple schemes can share one client** as long as their
-`name`/`label`s differ.
-
-### Transport
-
-`src/oblivlib/dependency/sockets.py`: `BaseSocket` abstract, `ZMQSocket` concrete (ZeroMQ `REQ`/`REP`,
-`pickle` for (de)serialization). Protocol is two message types: `("init", storage)` and
-`("execute", request_dict)`; the server replies `"Done!"` or an `ExecuteResult`.
+**Transport.** `sockets.py`: `ZMQSocket` (ZeroMQ `REQ`/`REP`, pickle framing). Two messages:
+`("init", storage)` → `"Done!"`, and `("execute", request_dict)` → `ExecuteResult`.
 
 ---
 
 ## 3. Data and storage layer
 
-### The block (`Data`)
+### Blocks
 
-`src/oblivlib/dependency/helper.py`: `Data(key, leaf, value)` dataclass. A dummy block has all-`None`
-fields; `Data.is_dummy()` / `is_real()` test for that (a real block always has a non-`None` key) and
-`require_leaf()` returns the leaf or raises (used at the placement sites in `BinaryTree` instead of a
-bare `assert`). `UNSET` (in `types.py`) is a sentinel distinguishing "read" (`value=UNSET`) from "write
-`None`" — important: `None` is a writable value.
+`Data(key, leaf, value)` (`helper.py`). A dummy block has `key is None`. `UNSET` (`types.py`)
+distinguishes "read" from "write `None`": `None` is a writable value.
 
-### Padding and sizing (only when encrypting or using files)
+### Padding and sizing (encryption or file storage only)
 
-To hide block lengths, blocks are padded to a fixed size:
+- `dump_pad(length)` = `pickle.dumps((key, leaf, value))` + zero padding. Fields are pickled shallowly
+  (not via `dataclasses.astuple`, which would flatten a dataclass value into a tuple). There is no length header:
+  pickle is self-delimiting and always ends in STOP (`0x2e`, never `0x00`), so `load_unpad` is plain
+  `pickle.loads`.
+- `_dumped_data_size` is the exact worst-case pickle for keys/leaves/values at the configured sizes. A
+  value whose pickle exceeds it makes `dump_pad` raise.
+- `_disk_size` (file mode) derives from the scheme's codec: `ciphertext_length(bucket_size * block_size)`
+  when encrypted (one ciphertext per bucket), else `block_size` (one slot).
 
-- `dump()` → `pickle.dumps((key, leaf, value))`.
-- `dump_pad(length)` → `dump()` + zero padding to `length`. **No length header is stored:** pickle is
-  self-delimiting (`loads` stops at the STOP opcode and ignores trailing zeros), so `load_unpad()` is
-  just `pickle.loads`. A pickle always ends in the STOP byte `0x2e`, never `0x00`, so the padding
-  boundary is unambiguous.
-- `_dumped_data_size` = `len(dump(max key/leaf/value of size data_size))` — the exact worst-case
-  pickle. **Contract:** an actual value's pickled size must not exceed this, or `dump_pad` raises.
-- `_disk_size` (file mode) = `encryptor.ciphertext_length(bucket_size * _dumped_data_size)` — one
-  ciphertext per **bucket** (see §8), so the AES-GCM `+28` (12-byte nonce + 16-byte tag) is paid once
-  per bucket, not per block.
-
-In pure memory + plaintext mode, no padding happens — `Data` objects are stored as-is, so values can
-be arbitrary picklable objects.
+Memory + plaintext mode stores `Data` objects as-is, so values may be any picklable object.
 
 ### `BinaryTree` and `Storage`
 
-`binary_tree.py`: a complete binary tree flattened into a list of buckets. Key math (all integer, no
-floats — see §9):
+`BinaryTree` flattens a complete binary tree into a heap-indexed bucket list, with all math in integers:
+`level = (num_data - 1).bit_length() + 1`, `size = 2**level - 1`, and `start_leaf = 2**(level-1) - 1`
+(the internal-node count, i.e. the storage index of leaf 0).
 
-- `level = (num_data - 1).bit_length() + 1` → leaf count `2**(level-1)` is the smallest power of two ≥ num_data.
-- `size = 2**level - 1`, `start_leaf = 2**(level-1) - 1` (storage index of leaf 0).
-- `get_path_indices`, `get_mul_path_dict` (root-to-leaf bucket indices), `get_cross_index`
-  (deepest common ancestor of two leaves — an **O(1) closed-form** bit computation: same-depth leaves'
-  1-based heap indices share a binary prefix, so the top set bit of their XOR gives the LCA, replacing
-  the old O(depth) parent-walk in the eviction inner loop), `fill_data_to_path` (eviction placement).
+- `get_cross_index` is O(1): same-depth leaves' 1-based heap indices share a binary prefix, so shifting
+  past the top set bit of their XOR yields the lowest common ancestor.
+- `fill_data_to_path` places a block at the deepest bucket on both its own path and the target path
+  set, bubbling up toward the root if full.
+- Storage hands back bucket copies in file mode, so every in-place edit (`write_block`,
+  `fill_data_to_storage_leaf`) reads the bucket, mutates it, and writes it back explicitly.
+- `BinaryTree` allocates all `2**level - 1` buckets eagerly. Never construct one at large `num_data`
+  just to read its level; use `BinaryTree.compute_level`.
 
-`storage.py`: a thin `Storage` facade over two interchangeable backends — `_MemoryBackend` (list of
-lists of `Data`) and `_FileBackend` (a pre-allocated fixed-size byte file). **Encryption is per
-bucket** (see §8). The file backend is **two-phase**: it stores plaintext block-slots while the tree is
-being filled, then `encrypt()` seals each row into one ciphertext blob in a **streaming pass** (one
-bucket in memory at a time, so it scales to trees larger than RAM — never materializes the whole tree).
-A `_sealed` flag flips its read/write between block-slot and blob layouts. The four modes
-(memory/file × plaintext/encrypted) are all internally consistent and tested
-(`tests/dependency/test_storage.py`).
+`Storage` fronts two backends: `_MemoryBackend` (a list of buckets) and `_FileBackend` (a pre-allocated
+fixed-row file). The file backend is two-phase. While the tree is filled, rows hold `bucket_size`
+fixed-width plaintext block slots. `encrypt()` then streams one row at a time, sealing each into a
+single blob and flipping `_sealed`, so trees larger than RAM never materialize. Rows are sized for the
+sealed form, so the file never grows.
 
 ### Construction configs (`config.py`)
 
-Every ORAM/OMAP scheme is constructed from a **frozen, keyword-only config object** rather than a
-dozen positional params. The config hierarchy mirrors the scheme hierarchy and **centralizes
-defaults** — one place per scheme, inherited and overridden:
+Every ORAM/OMAP is built from a frozen, keyword-only config whose hierarchy mirrors the scheme
+hierarchy and holds each scheme's defaults:
 
-- `OramConfig` (the shared core: `num_data, data_size, client, name, filename, bucket_size,
-  stash_scale, encryptor`) → `PathOramConfig`, `StaticOramConfig`, `MulPathOramConfig`,
-  `RecursiveOramConfig`, and `CounterOramConfig` → `DaOramConfig` / `FreecursiveOramConfig`.
-- `OmapConfig(OramConfig)` adds `key_size` → `AvlOmapConfig`, `BPlusOmapConfig` (`order`), the cached
-  variants, and `GroupOmapConfig`.
+- `OramConfig` (`num_data, data_size, client, name, filename, bucket_size, stash_scale, encryptor`) →
+  `PathOramConfig`, `StaticOramConfig`, `MulPathOramConfig`, `RecursiveOramConfig`, `CounterOramConfig`
+  → `DaOramConfig`/`FreecursiveOramConfig`.
+- `OmapConfig(OramConfig)` adds `key_size` and `distinguishable` → AVL/B+ configs (and their cached
+  variants) and `GroupOmapConfig`. `OramOstOmapConfig` stands alone (only `num_data`).
 
-Configs **validate in `__post_init__`** (frozen, so they raise rather than mutate): shared numeric
-fields in `OramConfig` (`num_data`/`data_size`/`bucket_size`/`stash_scale ≥ 1`) and scheme-specific
-ones in the subclass (`reset_prob ∈ (0,1]`, `order ≥ 3`, …); `reset_method` is a `Literal["prob",
-"hard"]`. Subclass `__post_init__`s chain via `super()` (dataclasses don't chain automatically), so
-misuse fails locally at construction instead of deep inside a scheme.
+Configs validate in `__post_init__`. Dataclasses don't chain `__post_init__`, so every subclass that
+adds a constraint calls `super().__post_init__()` first.
 
-Construction: `PathOram(PathOramConfig(num_data=…, data_size=…, client=…))`. The frozen config is the
-**single source of truth**: the shared `TreeStorageBase` (§4) exposes each construction parameter
-as a **read-only private property reading `self._config`** (`self._num_data`, `self._client`, …), so
-method bodies are unchanged and no state is duplicated. (`client` is internal-only — nothing external
-reads it — so it's `self._client`, with no separate public `client` property.) *Derived* values (`_level`, `_leaf_range`,
-`_disk_size`, …) are computed once in `__init__` (not properties — they're hot); *scheme-specific*
-config fields get their own properties in that scheme's file. Object params that aren't config — a
-`StaticOram`'s `prf`, a `GroupOmap`'s `upper_oram` — are separate constructor args. Derive a variant
-with `dataclasses.replace(cfg, num_data=…)`. (The package requires Python ≥ 3.12 — PEP 695 generics
-in `TreeStorageBase` — so `kw_only` configs are always available.)
+The config is the single source of truth. `TreeStorageBase` exposes each field as a read-only private
+property (`self._num_data`, `self._client`, …). Derived values (`_level`, `_leaf_range`, `_disk_size`)
+are computed once in `__init__` because they are hot. Objects that aren't configuration (`StaticOram`'s
+`prf`, `GroupOmap`'s `upper_oram`, `OramOstOmap`'s `ost`/`oram`) are separate constructor arguments.
+Derive variants with `dataclasses.replace`.
 
-**Internal recursion plumbing stays out of the config.** `is_pos_map`, `last_oram_data`,
-`last_oram_level` are not user knobs, so they are keyword-only internal `__init__` args (`_is_pos_map`,
-…). A recursive scheme builds each position-map child with `replace(self._config, num_data=…,
-name=f"{self._name}_pos_map_{i}")` + those internals — the child **shares the parent's client** (the
-client is label-keyed, so multiple orams share one) and owns that distinct `name`, which is exactly
-the label its storage lives under. Each child then drives its own per-level I/O
-(`_access_pos_map_level`, reading/writing `self._name` on the shared client); the parent's recursive
-loop only samples leaves and threads the leaf from one level to the next.
-
-The loose `dict` type hints are now aliases in `types.py`: `PosMap = Dict[int, int]` (key→leaf),
-`DataMap = Dict[int, Any]` (init key→value).
+**Recursion plumbing stays out of the config.** `_is_pos_map`, `_last_oram_data`, and
+`_last_oram_level` are keyword-only private constructor arguments. A recursive scheme builds each
+position-map child with `replace(self._config, num_data=…, name=f"{name}_pos_map_{i}", …)`. The child
+shares the parent's client and owns that name, which is also its storage label. Each child drives its
+own per-level I/O (`_access_pos_map_level`); the parent only samples leaves and threads them down the chain.
 
 ---
 
 ## 4. ORAM layer (`src/oblivlib/oram/`)
 
-### `TreeStorageBase` — the shared tree-storage core
+### `TreeStorageBase`
 
-`src/oblivlib/dependency/tree_storage_base.py`. `TreeBaseOram` (ORAM) and `OstBaseOmap` (ODS OMAP,
-§5) both lay a complete binary tree over `InteractServer` storage and shared an identical construction
-core; that core now lives in one abstract base, `TreeStorageBase(Generic[ConfigT])`, which both
-inherit. It owns the frozen config and its read-only field accessors (`_name`, `_num_data`, `_client`,
-…), the integer level/leaf-range/stash-size math, the padded-block/disk sizing
-(`_dumped_data_size`/`_disk_size`), `_get_new_leaf`, the stash, and **path encrypt/decrypt** (driven by
-a `BlockCodec`, §8). `TreeBaseOram` adds the position map + eviction; `OstBaseOmap` adds the
-root/local + tree traversal. It lives in `dependency/` so both higher layers depend *downward* on it,
-never sideways on each other. (`ConfigT` is bound to `OramConfig`; `OmapConfig` is an `OramConfig`, so
-the ODS parametrizes the same base.)
+`src/oblivlib/dependency/tree_storage_base.py`, generic over its config type. It is the shared core of
+`TreeBaseOram` and the ODS base `OstBaseOmap`: config accessors, level/leaf-range/stash-size math,
+padded sizing, `_get_new_leaf`, the stash with its capacity check (`_check_stash`), block-major eviction
+(`_evict_stash`), and per-bucket path encrypt/decrypt driven by a `BlockCodec`
+(§8). It lives in `dependency/` so both higher layers depend downward on it rather than on each other.
 
-### `TreeBaseOram` (abstract base)
+### `TreeBaseOram` and the access protocol
 
-A `TreeStorageBase` (above) constructed from an `OramConfig` (§3, "Construction configs"). Adds the
-**position map** (`{key: leaf}`) and eviction on top of the shared core. Subclasses implement
-`init_server_storage`, `operate_on_key`, `operate_on_key_without_eviction`, `eviction_with_update_stash`.
+Adds the position map and eviction. `operate_on_key(key, value=UNSET)` returns the value *before* any
+write:
 
-**The access protocol** (`operate_on_key(key, value=UNSET)` — always returns the current value,
-writes `value` if provided):
+1. Look up the key's leaf and remap it to a fresh random leaf.
+2. Read the old leaf's path (round trip 1).
+3. Pull the path's real blocks into the stash; find the key, read it, optionally overwrite, and remap it.
+4. Evict the stash onto the same path and write it back (round trip 2).
 
-1. Look up `key`'s leaf in the position map; assign it a fresh random leaf.
-2. **Read** the path to the old leaf (`add_read_path` + `execute`).
-3. `_retrieve_data_block`: pull all real blocks on the path into the stash, find `key`, read it,
-   optionally overwrite, remap it to the new leaf.
-4. `_evict_stash`: push stash blocks back down the path as deep as legal.
-5. **Write** the evicted path back (`add_write_path` + `execute`).
+`operate_on_key_without_eviction` + `eviction_with_update_stash` split this so callers can defer or
+batch the write-back.
 
-So each access is **two round trips** (read, then write). The `*_without_eviction` +
-`eviction_with_update_stash` pair lets callers defer the write-back for batching.
+**Eviction is block-major and that is deliberate.** Each stash block goes to its deepest legal bucket,
+bubbling up if full. This matches the textbook bucket-major sweep's overflow exactly (both are maximal
+placements on a laminar matroid) and is ~15% faster at realistic stash sizes. Do not switch.
 
-### Eviction (`_evict_stash` / `fill_data_to_path`) — block-major, and it's optimal
-
-For each stash block, it is placed at the **deepest legal bucket** (the deepest node on both the
-block's assigned path and the eviction path, via `get_cross_index`), bubbling up toward the root if
-full; blocks that don't fit stay in the stash. This "block-major" greedy was benchmarked against the
-textbook "bucket-major" sweep: they produce **identical overflow** (both are maximal placements on a
-laminar matroid), and block-major is **~15% faster** in the realistic small-stash regime. So the
-current implementation is the right one — do not switch to bucket-major.
-
-### Concrete schemes
+### Schemes
 
 | Scheme | Idea |
 |---|---|
-| `PathOram` | Textbook Path ORAM: random leaf reassignment each access. |
-| `MulPathOram` | Path ORAM that reads/evicts **several paths per batch** (`operate_on_keys`, `operate_on_keys_without_eviction`, `eviction_for_mul_keys`); larger stash via `stash_scale_multiplier`. |
-| `StaticOram` | Leaf positions are **fixed** by `PRF(key)` — no remapping on access. |
-| `RecursivePathOram` | The position map is too big for the client, so it is **compressed into a chain of smaller position-map orams** (`compression_ratio` leaves per block); only a small top map (≤ `on_chip_mem`) stays on the client. |
-| `DAOram`, `FreecursiveOram` | Leaves are derived as `PRF(key ‖ GC ‖ IC)`. The position maps store **counters** per key — a group count (GC) plus per-key individual counts (IC). Accessing a key bumps its IC and recomputes its leaf; when counters near overflow the block **resets** (bump GC, zero ICs) and all affected leaves are recomputed. `FreecursiveOram` triggers reset probabilistically (`reset_method="prob"`, `reset_prob ≈ 1/num_ic`) or on overflow (`"hard"`); `DAOram` de-amortizes the reset work across accesses (a reset path is carried alongside each normal access). |
+| `PathOram` | Random leaf reassignment on every access. |
+| `MulPathOram` | Reads/evicts several paths per batch (`operate_on_keys*`, `eviction_for_mul_keys`). `stash_scale_multiplier` is baked into `stash_scale` at construction. |
+| `StaticOram` | Leaves fixed by `PRF(key)`: the "new" leaf equals the current one. |
+| `RecursivePathOram` | Position map compressed into a chain of smaller ORAMs, each block holding `compression_ratio` child leaves; only the smallest map (≤ `on_chip_mem`) stays on chip. A short final block is padded with random leaves. |
+| `DAOram`, `FreecursiveOram` | Leaves are `PRF(key ‖ GC ‖ IC)`; position-map blocks hold counters instead of leaves (below). |
 
-`DAOram`/`FreecursiveOram`/`RecursivePathOram` are the **recursive-position-map** schemes: their
-internal position-map orams are constructed with `is_pos_map=True` (no client) and recursively
-smaller `num_data`.
+### Counter blocks (DA / Freecursive)
 
-The de-amortized counter/reset state is threaded through **named `NamedTuple` records** (`ResetLeaf`/
-`ProcessedData` in `da_oram.py`; `ResetEntry`/`ResetChunk`/`ProcessedData`/`UnpackedReset` in
-`freecursive_oram.py`) rather than positional tuples — fields are honestly typed, so DA's old
-`cast(PROCESSED_DATA, …)` (which lied about the runtime `None`s) is gone, replaced by a narrowing
-assert after the key-found guard. (NamedTuple, not dataclass, so the many positional-unpack call sites
-are untouched; the `ResetLeaf.index` field is named `offset` because a NamedTuple field can't shadow
-`tuple.index`.)
+A position-map block covers `num_ic` children and stores a group counter (GC) plus one individual
+counter (IC) per child. An access bumps the child's IC and recomputes its leaf from the PRF. When ICs
+would overflow, the block **resets**: GC increments, ICs zero, and every child's leaf is recomputed.
+
+- **Freecursive** layout is `GC ‖ IC×num_ic`. `reset_method="prob"` resets with probability
+  `reset_prob` (default `1/num_ic`, drawn from the OS CSPRNG) and treats an overflow as an error.
+  `"hard"` resets only on overflow, which is the insecure original scheme. A reset fans out into chunks
+  of two child paths read together. Slots past the end of the data read a random path so the data
+  boundary stays hidden. When a reset is outstanding, `eviction_with_update_stash(execute=False)` still
+  executes internally, because later reset chunks depend on the earlier write-backs.
+- **DAOram** layout is `GC ‖ IC×num_ic ‖ indicator×num_ic`. Instead of resetting all children at once,
+  it de-amortizes: an indicator bit marks a child whose backup count is still pending, and each access
+  carries at most one pending reset alongside it. A consumed backup clears only that indicator. An
+  overflow bumps GC and sets every other child's indicator. **Every access reads two paths**, the data
+  path and a reset path (random when none is due), so a reset is indistinguishable from no reset.
+
+The on-chip and in-ORAM variants of the counter update, and the prob/hard variants, are deliberately
+duplicated rather than shared: they differ in obliviousness-critical details. Reset state moves through
+`NamedTuple` records (`ResetLeaf`, `ProcessedData`, `ResetEntry`, `UnpackedReset`). `ResetLeaf`'s field
+is `offset` because a NamedTuple field cannot shadow `tuple.index`.
 
 ---
 
 ## 5. OMAP layer (`src/oblivlib/omap/`)
 
-Two families:
+### Families
 
-- **Oblivious Search Trees (ODS):** `OstBaseOmap` base (a `TreeStorageBase`, §4) with `AVLOmap`,
-  `BPlusOmap`, and cache-optimized `AVLOmapCached` / `BPlusOmapCached`. Constructed from `OmapConfig`
-  subclasses (§3). Maintain a `root`, `local`, and `stash`; expose `insert`, `search` (the streaming
-  descent that absorbed the old `fast_search` — padded to the op budget, so still oblivious by
-  default), and `delete`.
-- **Composed maps:** `OramOstOmap` (the VLDB 2025 framework — combine *any* `TreeBaseOram` with *any*
-  `OstBaseOmap`, hashing keys into the ORAM via a PRF) and `GroupOmap` (group-by-hash over an
-  upper metadata ORAM plus a `MulPathOram` lower ORAM).
+- **ODS maps.** `OstBaseOmap` (a `TreeStorageBase`) with `AVLOmap`, `BPlusOmap`, and the cached
+  `AVLOmapCached`/`BPlusOmapCached`. Each holds a `root` pointer `(key, leaf)`, a per-op `local` set of
+  downloaded nodes (`LocalNodesBase` plus scheme `LocalNodes`), and the stash, and exposes `search`,
+  `insert`, and `delete`. `search(key, value)` returns the old value and writes `value` when it is not
+  `None`; unlike the ORAMs, an ODS cannot write `None`. Insert assumes the key is absent: duplicate keys
+  are undefined behaviour.
+- **Composed maps.** `OramOstOmap` (VLDB 2025) hashes each key with a PRF into an ORAM slot that stores
+  the root of that slot's ODS tree. An op fetches the root, runs the ODS op, and writes the root back.
+  It works with any `TreeBaseOram` × `OstBaseOmap`, and calls `update_mul_tree_height` so the ODS sizes
+  its budgets for one small tree per slot. `GroupOmap` hashes keys into buckets: an upper ORAM stores
+  per-bucket metadata `pickle((count, seed, keys))` and a lower `MulPathOram` stores pairs at
+  `PRF(seed ‖ key)`. A search reads the whole bucket and reshuffles it under a new seed. An insert
+  updates the key's single pre-existing lower block in place, because appending a second block would let
+  a later read return the stale placeholder. The upper ORAM must be at least
+  `GroupOmap.upper_oram_data_size(num_data, key_size)` wide; construction checks this.
 
-**Obliviousness model (per-op access pattern).** Each logical op must induce a fixed-shape access
-pattern. The base centralizes this: `_short_circuit_read` handles the dummy (`key is None`) / empty-tree
-case for every read-like op, and each op pads to a budget from a per-scheme worst-case round map
-(`_op_round_bounds`, derived from the tree height `h`). The `distinguishable` config flag (default
-`False` = fully oblivious) pads insert/search/delete all to `max(bounds)` so the op *type* is hidden;
-`True` lets each op use its own smaller bound. So `op(missing)` == `op(hit)` == `op(None)` in round
-count. **The cached variants (`AVLOmapCached`/`BPlusOmapCached`) are deliberately NOT per-op
-oblivious** — they are the optimized/amortized variants meant for use *inside* a larger oblivious
-composition; the test suite encodes this with per-variant `per_op_oblivious`/`delete_oblivious` flags
-(see §11). Shared node bookkeeping lives in `LocalNodesBase`; AVL/B+ `LocalNodes` extend it.
+### Obliviousness model
+
+Every op pads to a fixed round budget: real fetches are counted in `_op_rounds`, then `_pad_to(budget)`
+adds dummy read+evict rounds. `_short_circuit_read` routes dummy (`key is None`) and empty-tree ops
+through the same padding, so a hit, a miss, a dummy, and an empty map all look identical. Budgets come
+from `_op_round_bounds` as functions of the height bound `h`. With the default
+`distinguishable=False`, every op pads to the largest bound so the op type is hidden; `True` lets each
+op use its own bound.
+
+Bounds count fetch rounds plus matching eviction rounds:
+
+- **AVL:** search/insert `2h+1`. Insert needs at most one rotation, and its nodes are already on the
+  descent path. Delete is `6h`: locate the node plus its successor (one downward path, ≤ h), a rebalance
+  that can rotate at every ancestor fetching the off-path child and grandchild (≤ 2h), and evictions.
+  Two-children deletes replace the node from the taller subtree, the same choice as `AVLTree.delete`.
+- **B+:** search/insert `2h+1`. Delete is `4h`: it prefetches the path child *and* one sibling (left
+  preferred) at every level whether or not an underflow happens, so the read count never reveals a
+  borrow or merge.
+
+`search` streams: it re-homes and evicts each node before reading the next, so `local` stays O(1).
+
+**Height bounds.** AVL uses `max(1, ceil(1.44·log₂ n))` and B+ uses
+`max(1, ceil(log_⌈order/2⌉ n))`, both floored at 1 so single-element maps keep a positive budget. In
+multi-tree mode `update_mul_tree_height` first bounds the per-slot tree size with the Lambert-W
+max-load formula of eprint 2021/1280 at a 2⁻¹²⁸ overflow probability, then applies the same height
+bound. The AVL bound is safe but runs 1–2 levels above the exact minimal-node recurrence.
+
+**Cached variants are deliberately not per-op oblivious.** They serve nodes left in the stash by
+earlier ops without a server round, keep the visited path in `local` until the next op, and pad to
+`h` rounds (`2h` for AVL delete). They are meant for use inside a larger oblivious composition.
+`BPlusOmapCached.delete` reads each level's child and sibling in one batched round (`h` rounds, same
+bandwidth as `2h−1` paths).
+
+### Plaintext reference trees (`dependency/avl_tree.py`, `bplus_tree.py`)
+
+`AVLTree`/`BPlusTree` build the initial ODS storage (`get_data_list`) and are the standard the oblivious
+ports mirror. Each keeps a recursive twin of `insert`/`delete` that tests cross-check structurally.
+
+- AVL routes equal-or-larger keys right.
+- B+ leaf splits keep the median in the right half and copy it up as the separator. Internal splits
+  move the median up and carry the extra child pointer. The median is read before the split mutates the
+  node. Underflow repair uses a single sibling (left preferred): borrow if it can spare a key, else merge
+  with the left node absorbing the right.
+- `multi_search`/`multi_insert` are level-synchronized: every cursor advances one level per round, so a
+  batch costs at most `h` rounds of growing width. `multi_insert` fetches the union of insertion paths
+  first, then replays single inserts against that partial tree, raising if a node outside it is touched.
 
 ---
 
 ## 6. Graph layer (`src/oblivlib/graph/`)
 
-`GraphOS` (VLDB 2024) and `Grove` (delayed-duplications) build on `MulPathOram` + `AVLOmapCached`,
-using `src/oblivlib/dependency/graph.py` for the graph representation.
-
----
+`GraphOS` (VLDB 2024) and `Grove` build on `MulPathOram` + `AVLOmapCached`, using
+`dependency/graph.py` for graph generation. Broken against the current API (§10).
 
 ## 7. SORAM (`src/oblivlib/soram/`)
 
-A weaker-threat-model ORAM that hides access patterns only over windows of `c` consecutive
-operations — more efficient than full ORAM. Tests are excluded from the default `pytest` run.
+A weaker-threat-model ORAM that hides access patterns only over windows of `c` consecutive operations.
+Excluded from the default test run and from type checking (§10).
 
 ---
 
-## 8. Crypto primitives (`src/oblivlib/dependency/crypto.py`)
+## 8. Crypto (`src/oblivlib/dependency/crypto.py`)
 
-- `Encryptor` (abstract) → `AesGcm` (AES-GCM, returns `nonce ‖ ciphertext ‖ tag`).
-- `PseudoRandomFunction` (abstract) → `Blake2Prf` (keyed BLAKE2b; `digest`, `digest_mod_n`).
-- `PseudoRandomPermutation` (abstract) → `FeistelPrp` (4-round Feistel, SHA-256 round function with a
-  key-seeded hash cached and `.copy()`d per round, cycle-walking for non-power-of-2 domains).
+- `AesGcm`: `nonce(12) ‖ ciphertext ‖ tag(16)`. GCM adds no padding, so length is plaintext + 28.
+- `Blake2Prf`: keyed BLAKE2b, with `digest_mod_n` for leaf derivation.
+- `FeistelPrp`: a 4-round balanced Feistel (the Luby–Rackoff bound for a strong PRP) over an even bit
+  width. The SHA-256 round function clones a key-seeded hash per round, which is equivalent to hashing
+  `key ‖ round ‖ value`. Non-power-of-2 domains use cycle-walking, which stays a bijection.
 
-**Encryption granularity is per bucket.** Both the init seal (`Storage.encrypt`) and per-operation
-path encryption (`_encrypt_path_data`) build *one ciphertext per bucket* via the shared
-`Helper.encrypt_bucket` / `decrypt_bucket`: concatenate the `bucket_size` fixed-width blocks (real +
-dummies) and encrypt once. This means one `nonce+tag` per bucket instead of per block (less bandwidth,
-`bucket_size`× fewer crypto calls). GCM's authentication is **defense-in-depth** under the
-honest-but-curious model (§1), not required for security — and note that per-bucket GCM is **not**
-malicious-server integrity: it has no replay/freshness protection (that would need a Merkle/version
-tree over the access path). The 96-bit random nonce is standard but caps safe use at ~2³² encryptions
-per key; `AESGCMSIV` would lift that ceiling if ever needed at scale.
+**Encryption is per bucket.** The init seal (`Storage.encrypt`) and per-op `_encrypt_path_data` both
+concatenate `bucket_size` fixed-width blocks (dummies included) and encrypt once via
+`Helper.encrypt_bucket`, so there is one nonce+tag per bucket. GCM authentication is defense in depth
+under the honest-but-curious model, not malicious-server integrity: it has no replay or freshness
+protection. Random 96-bit nonces cap safe use at ~2³² encryptions per key.
 
-**Per-block serialization is a `BlockCodec`** (`src/oblivlib/dependency/codec.py`). The bucket seal above
-packs fixed-width per-block payloads; turning one `Data` into that payload (and back) is the codec's
-job, so `TreeStorageBase._encrypt/_decrypt_path_data` (§4) are written once and driven by
-`self._codec`. `DefaultCodec` stores the value verbatim (ORAM / plain ODS); `NodeCodec` (parametrized
-by the node class, `AVLData` / `BPlusData`) stores the node's value as its own pickle bytes and
-rebuilds it on load. A codec
-**builds the payload without mutating the live block** — the old AVL/B+ path did an in-place
-`data.value = value.dump()`, a latent hazard now gone. A new value-carrying scheme provides a codec
-instead of copying the encrypt/decrypt methods (AVL/B+ override only `_codec`).
+**Per-block serialization is a `BlockCodec`** (`codec.py`). `DefaultCodec` stores the value verbatim.
+`NodeCodec(block_size, AVLData | BPlusData)` stores a node value as its own pickle and rebuilds it on
+load. Codecs never mutate the live block. A new value-carrying scheme overrides `_codec` instead of
+reimplementing path encryption.
 
-When a scheme's `encryptor` is `None`, data is stored in plaintext (the encrypt/decrypt steps are
-skipped) — useful for debugging and used by the tests for speed.
+`encryptor=None` stores plaintext and skips both steps; the tests use this for speed.
 
 ---
 
 ## 9. Invariants and contracts
 
-- **Path ORAM invariant:** a block assigned to leaf `x` is always on the root→`x` path or in the stash.
-- **Level math is integer:** `level = (num_data-1).bit_length() + 1` in *both* `BinaryTree`
-  (`compute_level`) and `TreeStorageBase.__init__`; the two must stay in agreement.
-- **Recursive-pos-map schemes require `num_data > on-chip size`** (`on_chip_mem` for DA/Recursive,
-  `on_chip_size` for Freecursive). Smaller values leave no position-map levels; the constructor now
-  raises a clear `ValueError` instead of crashing deep inside.
-- **Value size:** in encrypted/file mode, a value's pickled size must be ≤ `data_size`.
-- **Per-bucket encryption is self-consistent:** the init seal (`Storage.encrypt`) and the
-  per-operation `_encrypt_path_data` must produce the *same* per-bucket blob layout — same
-  `block_size` and per-block prep — or `decrypt_bucket` splits at the wrong boundaries. `block_size`
-  is now `codec.block_size` (§8): `_dumped_data_size` for the `DefaultCodec` (ORAM/ODS),
-  `_max_block_size` for the `NodeCodec`s, and is also what each scheme passes as the Storage
-  `data_size`. The init seal does not call the codec, but the codec reproduces the seal's per-block
-  bytes exactly — keep them in step.
-- **Shared client:** multiple schemes on one client must use distinct `name`s.
-- **`UNSET` vs `None`:** `operate_on_key(key)` reads; `operate_on_key(key, None)` writes `None`. The
-  return value is always the value *before* any write.
+- A block mapped to leaf `x` is on the root→`x` path or in the stash.
+- Recursive schemes require `num_data` > on-chip size (`on_chip_mem` for DA/Recursive, `on_chip_size`
+  for Freecursive); the constructor raises otherwise.
+- In encrypted or file mode a value's pickle must fit `data_size`.
+- The init seal and `_encrypt_path_data` must produce identical per-bucket layouts: same
+  `codec.block_size` (`_dumped_data_size` for `DefaultCodec`, `_max_block_size` for `NodeCodec`) and
+  same per-block bytes. That size is also the `data_size` each scheme passes to `Storage`.
+- Every scheme on a shared client has a distinct `name`.
+- ORAM: `operate_on_key(key)` reads, `operate_on_key(key, None)` writes `None`, and the return value is
+  always the pre-write value.
+- A real op never exceeds its round budget: `_perform_dummy_operation` raises on a negative pad count,
+  so a broken bound fails loudly rather than leaking.
 
 ---
 
-## 10. Known issues / gotchas
+## 10. Known issues
 
-- **`FlexibleBinaryTree` (`src/oblivlib/dependency/flexible_binary_tree.py`) is revived but still orphaned.**
-  It was non-functional (couldn't construct against the current `Storage`, old float math, dead
-  module-level pickle code). It is now wired to the current `Storage` API (mirroring `BinaryTree`:
-  `encryption: bool` + `data_size`/`disk_size`; the caller drives encryption), uses integer math, has
-  the dead code removed, and has a characterization suite (`tests/dependency/test_flexible_binary_tree.py`,
-  36 tests). It is still **not imported anywhere** (kept for future soram use), and its
-  `scale_up`/`scale_down` semantics are *characterized, not specified* — when soram adopts it, validate
-  the scaling against the real requirements. `get_cross_index` here takes raw storage indices (not leaf
-  labels) and assumes same-depth inputs (callers align via `adjust_to_same_level`).
-- **`src/oblivlib/graph/` (`GraphOS`, `Grove`) is broken against the current API and untested.** Both call
-  ORAM/OMAP methods that no longer exist — `MulPathOram.retrieve_path`/`evict_path`/
-  `process_path_to_stash`/`prepare_evict_path`, `InteractServer.read_mul_query`/`write_mul_query`,
-  `AVLOmapCached.search_with_meta` — because the batch ORAM API was reshaped to
-  `operate_on_keys`/`eviction_for_mul_keys` and graph was never ported. It imports fine but raises on
-  first real use; there are no graph tests or callers. Like `soram`, it is **excluded from
-  `pyrightconfig.json`** pending a deliberate port to the current API (do it with tests).
-- **Type checking.** The package is **pyright-clean** (basedpyright `recommended` mode; see `pyrightconfig.json`) across
-  `dependency`/`oram`/`omap`, with **no `# type: ignore`s**. `soram` and `graph` are excluded as
-  broken-pending-port (above). The ODS base `OstBaseOmap` is **generic over its local-node
-  container** (`LocalT` bound to `LocalNodesBase`), so AVL/B+ supply `LocalNodes` as a type argument
-  (`OstBaseOmap[AvlOmapConfig, LocalNodes]`) instead of narrowing a base `_local` attribute —
-  which is what used to require a `reportIncompatibleVariableOverride` suppression.
-- **Wire format is `pickle`.** Safe under the honest-but-curious model (§1), but it would be a remote
-  code-execution risk against a *malicious* server, and the bandwidth numbers include pickle framing
-  overhead rather than raw ciphertext volume.
-- **Two round trips per access.** `operate_on_key` does a read `execute()` then a write `execute()`.
-  The deferred-eviction primitives could amortize this to one round trip per access (piggyback access
-  N's write-back on access N+1's read), but the default path does not.
+- **`FlexibleBinaryTree`** is orphaned (kept for soram). Its `scale_up`/`scale_down` behaviour is
+  characterized by tests, not specified; validate it against real requirements when soram adopts it.
+  Its leaf labels are `(leaf, level)` tuples stored in `Data.leaf` (typed `int`) through a cast. Its
+  `get_cross_index` takes raw storage indices at equal depth.
+- **`graph/` and `soram/`** call ORAM/OMAP APIs that no longer exist (the old batch-path primitives,
+  `read_mul_query`, `search_with_meta`). They import but fail on first use, have no tests, and are
+  excluded from `pyrightconfig.json` pending a port.
+- **Type checking:** basedpyright `recommended` is clean across `dependency`/`oram`/`omap` with no
+  `type: ignore`. `OstBaseOmap` is generic over its `LocalNodes` container rather than narrowing a base
+  attribute.
+- **Tree OMAPs in plaintext file mode are broken.** `Storage` serializes file slots with
+  `Data.dump_pad`, not the scheme's codec, so an ODS node object can overflow a slot sized for the
+  byte-encoded node. AVL fails; B+ passes only through slack. The encrypted path works because
+  `get_data_list(encryption=True)` pre-encodes node values. The tests mark this as `xfail`.
+- **Wire format is pickle:** fine under honest-but-curious, but an RCE vector against a malicious peer.
+  Bandwidth figures include pickle framing.
+- **Two round trips per ORAM access.** The deferred-eviction primitives could piggyback access N's
+  write-back on access N+1's read; the default path does not.
 
 ---
 
-## 11. Testing architecture (`tests/`)
+## 11. Tests (`tests/`)
 
-- `tests/conftest.py`: shared fixtures (`num_data` — default `2**12`, override a single run with the
-  `NUM_DATA` env var — `client`, `encryptor`, `test_file`) and the soram exclusion. No rootdir
-  conftest: using an env var instead of a custom `--option` avoids the `pytest_addoption`-must-load-
-  before-arg-parsing constraint that would force a top-level conftest.
-- `tests/dependency/`: `conftest.py` exposes `make_search_tree` — a parametrized factory (AVL / B+)
-  so one behavioral suite (`test_search_tree_common.py`) covers both trees (int/str keys, missing-key
-  contract, delete + stress). Scheme-specific *structural* assertions stay in `test_avl_tree.py` /
-  `test_bplus_tree.py`, each with a full tree-invariant validator (BST + balance + heights for AVL;
-  sorted keys, child-count, uniform leaf depth for B+). `test_storage.py` is parametrized over the
-  four backends and characterizes the per-bucket encrypt/decrypt round-trip, full-bucket/multi-row,
-  construction `ValueError`s, the padding boundary, and disk reopen. `test_binary_tree.py` checks the
-  index math (incl. exactness at deep levels and the closed-form LCA); `test_crypto.py` /
-  `test_helper.py` cover the primitives and boundary cases. Within each per-module file the test
-  methods are ordered to mirror the function order of the `dependency/` source they cover, so a source
-  module and its test read top-to-bottom in lock-step. Coverage is not 1:1, though: a trivial helper
-  already exercised through a higher-level test (e.g. `get_parent_index` via `get_path_indices`) carries
-  no dedicated test of its own.
-- `tests/oram/conftest.py`: the unification machinery.
-  - `make_oram` — a **parametrized factory fixture**; any test taking it runs once per ORAM type.
-    Each param is a factory taking common kwargs (`num_data, data_size, client, filename, encryptor`).
-    `FreecursiveOram` appears twice (prob/hard reset).
-  - `storage_kwargs` — parametrized over the four backends (memory/file × plaintext/encrypted).
-- `tests/oram/test_oram_common.py`: the shared single-key behavioral suite. `test_round_trip` crosses
-  `make_oram × storage_kwargs` (every ORAM × every backend) in one method.
-- `tests/oram/test_mul_path_oram.py`: `MulPathOram`'s **batch-only** API (`operate_on_keys`, etc.).
-  It is separate not because MulPathOram is excluded from the common suite (it isn't — it's in
-  `ORAM_SPECS`) but because these methods exist on no other scheme.
-- `tests/oram/test_oram_edge_cases.py`: non-power-of-two sizes, the level/leaf-range invariant, the
-  `num_data > on-chip` guard, the write-returns-old-value / `None`-is-writable contract, and
-  arbitrary (non-int) value types.
-- `tests/oram/test_oram_integration.py`: the remote client/server protocol (`InteractRemoteServer` +
-  `RemoteServer`, exercised through an in-process loopback socket that pickles like the wire) and
-  multiple ORAMs sharing one client under distinct names.
+- `tests/conftest.py`: the `num_data` fixture (default `2**12`, overridable via the `NUM_DATA` env var,
+  which avoids needing a rootdir `pytest_addoption`), `client`, `encryptor`, `test_file`, and the soram
+  exclusion.
+- `tests/dependency/`: `make_search_tree` parametrizes one behavioural suite
+  (`test_search_tree_common.py`) over AVL and B+. Per-tree files hold the structural invariant validators
+  and recursive/iterative and batched/sequential cross-checks. Storage tests are parametrized over the
+  four backends. Test order mirrors source order. Trivial helpers covered transitively get no dedicated
+  test.
+- `tests/oram/`: `make_oram` parametrizes over `ORAM_SPECS` (Freecursive twice, prob/hard) and
+  `storage_kwargs` over the four backends. Adding one `ORAM_SPECS` line enrols a scheme in the whole
+  common suite. `MulPathOram`'s batch API, edge cases, and the remote protocol (through an in-process
+  pickling loopback) have their own files.
+- `tests/omap/`: `omap_spec` parametrizes over `OMAP_SPECS`, each entry declaring its guarantees
+  (`per_op_oblivious`, `delete_oblivious`, …). The obliviousness tests draw from filtered fixtures, so
+  they are *collected* only for variants that claim the property. Cached variants are excluded by
+  construction, so there are no standing skips. Composed maps have their own files.
 
-**To add a new ORAM:** add one line to `ORAM_SPECS` and the whole common suite covers it.
-**To add a new shared behavior:** add a method to `TestOramCommon` and every ORAM runs it.
-
-`tests/omap/` now has the dependency/oram-style unification: `conftest.py` exposes the `omap_spec`
-factory over `OMAP_SPECS` (AVL / B+ × cached / non-cached, each recording its guarantees:
-`per_op_oblivious`, `delete_oblivious`, …), and `test_omap_common.py` runs one shared suite over it —
-`TestOmapBehavior` (model oracle, invariants, edge sizes, string keys, encryption/file backends,
-init-with-data, delete oracle) and `TestOmapObliviousness` (per-op access-pattern uniformity). The
-obliviousness tests draw from **filtered fixtures** (`oblivious_omap_spec` / `delete_oblivious_omap_spec`)
-so they are *collected* only for the variants that claim the property — the cached variants are excluded
-by design rather than skipped at runtime (so the suite has no standing skips). `test_codec.py` checks
-the `BlockCodec` round-trip and that `dump_block` does not mutate the live block. Scheme-specific tests
-stay in `test_avl_omap.py` etc.; `test_group_omap.py` covers `GroupOmap`.
-
-**To add a new OMAP:** add one line to `OMAP_SPECS` with its capability flags and the whole common
-suite covers it (and only the obliviousness tests its flags opt into).
-
-**Remaining coverage gaps:** the live `ZMQSocket` transport over a real TCP connection (the
-client/server *logic* is covered via the loopback socket, but ZMQ itself is not); the
-`get_bandwidth`/`reset_bandwidth` counters; and degenerate inputs like an empty `operate_on_keys({})`
-batch or a forced stash-overflow `MemoryError`.
+Uncovered: an empty `operate_on_keys({})` batch and a forced stash-overflow `MemoryError`.

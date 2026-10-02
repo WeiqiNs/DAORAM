@@ -51,7 +51,6 @@ def _live_blocks(omap):
         for data in tree.storage[index]:
             if data is not None and getattr(data, "key", None) is not None:
                 blocks[data.key] = data
-    # The freshest copy of a block lives in stash/local, not the (stale) server path it was read from.
     for data in list(omap._stash) + omap._local.to_list():
         if data.key is not None:
             blocks[data.key] = data
@@ -192,8 +191,6 @@ OMAP_SPECS = [
         id="avl_cached",
     ),
     pytest.param(
-        # Non-cached B+ delete pre-fetches a sibling per level, so every path reads a fixed 2h-1
-        # rounds regardless of borrow/merge -- oblivious, like search/insert.
         OmapSpec(
             BPlusOmap,
             BPlusOmapConfig,

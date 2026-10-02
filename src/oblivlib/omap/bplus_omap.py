@@ -33,7 +33,7 @@ class LocalNodes(LocalNodesBase[BPlusNode]):
 
     def __init__(self) -> None:
         super().__init__()
-        self.child_index_of: dict[Any, int] = {}  # key -> index in its parent's values
+        self.child_index_of: dict[Any, int] = {}
 
     @staticmethod
     def is_leaf_node(node: BPlusNode) -> bool:
@@ -94,17 +94,10 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
     def __init__(self, config: BPlusOmapConfig):
         super().__init__(config)
 
-        # Split point and the next block id to hand out.
         self._mid: int = config.order // 2
         self._block_id: int = 0
 
-        # Worst-case B+ height for num_data nodes, floored at 1 so a single-element map (where log gives
-        # 0) still has a positive dummy-eviction budget.
         self._max_height: int = max(1, math.ceil(math.log(self._num_data, math.ceil(config.order / 2))))
-
-        # B+ uses a larger block size, so update disk_size for file storage (one blob per bucket).
-        if self._filename and self._encryptor:
-            self._disk_size = self._encryptor.ciphertext_length(self._bucket_size * self._max_block_size)
 
     @override
     def _new_local(self) -> LocalNodes:
@@ -112,11 +105,9 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
 
     @override
     def update_mul_tree_height(self, num_tree: int) -> None:
-        # Per-bucket item count from https://eprint.iacr.org/2021/1280, then the B+ height bound.
-        tree_size = math.ceil(math.e ** (Helper.lambert_w(math.e**-1 * (math.log(num_tree, 2) + 128 - 1)).real + 1))
+        tree_size = Helper.max_bucket_load(num_tree)
         self._max_height = max(1, math.ceil(math.log(tree_size, math.ceil(self._order / 2))))
 
-    # Scheme-specific construction parameter — read-only view onto the frozen config.
     @property
     def _order(self) -> int:
         return self._config.order
@@ -124,10 +115,9 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
     @cached_property
     @override
     def _max_block_size(self) -> int:
-        # Two block types (internal vs leaf); size to the larger.
         return max(
             len(
-                Data(  # internal: values are (id, leaf) integer pairs
+                Data(
                     key=self._num_data - 1,
                     leaf=self._num_data - 1,
                     value=BPlusData(
@@ -137,7 +127,7 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                 ).dump()
             ),
             len(
-                Data(  # leaf: values are actual values
+                Data(
                     key=self._num_data - 1,
                     leaf=self._num_data - 1,
                     value=BPlusData(
@@ -166,7 +156,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         for kv_pair in data:
             root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
-        # get_data_list assigns each node a block id (starting at _block_id) and a leaf.
         blocks = bplus_tree.get_data_list(root=root, block_id=self._block_id, encryption=self._encryptor is not None)
         self._block_id += len(blocks)
         assert root.id is not None and root.leaf is not None
@@ -178,13 +167,11 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Callers guarantee a non-empty tree.
         root = self.root
         assert root is not None
 
         self._move_node_to_local_without_eviction(key=root[0], leaf=root[1], parent_key=None, child_index=None)
 
-        # The root was just loaded into local; re-home it onto a fresh leaf.
         node = self._local.require_root()
         old_leaf = node.leaf
         node.leaf = self._get_new_leaf()
@@ -203,14 +190,12 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                     break
 
             child_key, child_leaf = node.value.values[child_index]
-            # Update the stored child leaf, then stash + evict the current node before the next read.
             node.value.values[child_index] = (child_key, new_leaf)
             self._stash.append(self._local.remove(node.key))
             self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
             self._client.execute()
             self._move_node_to_local_without_eviction(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
 
-            # The child we just descended to was loaded into local.
             node = self._local.require_root()
             old_leaf = node.leaf
             node.leaf = new_leaf
@@ -222,13 +207,11 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
-        # Callers guarantee a non-empty tree.
         root = self.root
         assert root is not None
 
         self._move_node_to_local(key=root[0], leaf=root[1], parent_key=None, child_index=None)
 
-        # The root was just loaded into local; re-home it onto a fresh leaf.
         node = self._local.require_root()
         node.leaf = self._get_new_leaf()
         self.root = (node.key, node.leaf)
@@ -249,7 +232,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=node.key, child_index=child_index)
             node.value.values[child_index] = (child_key, new_leaf)
 
-            # The child is now the last node in the path.
             node = self._local.require_leaf()
             node.leaf = new_leaf
 
@@ -270,7 +252,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             node.value.values = node.value.values[: self._mid + 1]
 
         self._stash.append(right_node)
-        # Both halves are mutated in place, so only the new right node needs returning.
         return right_node.key, right_node.require_leaf()
 
     def _insert_in_parent(self, child_node: BPlusNode, parent_node: BPlusNode) -> None:
@@ -299,7 +280,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         parent_node = self._get_bplus_data(keys=[insert_key], values=values)
         self._stash.append(parent_node)
 
-        # A fresh block always has a sampled leaf.
         assert parent_node.leaf is not None
         self.root = (parent_node.key, parent_node.leaf)
 
@@ -317,7 +297,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                 leaf.value.values.append(value)
                 break
 
-        # Splits add nodes to the stash, not new server reads.
         self._perform_insertion()
 
     def _perform_insertion(self):
@@ -330,7 +309,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             node = self._local.require(node_key)
 
             if len(node.value.keys) >= self._order:
-                # Overflow: push the split into the parent, or grow a new root.
                 if index > 0:
                     parent_key = path[index - 1]
                     parent_node = self._local.require(parent_key)
@@ -340,7 +318,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                     self._create_parent(child_node=node)
                     break
             else:
-                # No overflow above this point: stop.
                 break
 
     def _find_path_with_siblings(
@@ -352,7 +329,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         whether or not a later underflow needs the sibling, so the read count depends only on the (public)
         tree height, never on the borrow/merge outcome. Returns (path_nodes by level, child_indices,
         siblings by child-level, sibling_indices by child-level, num path reads performed)."""
-        # The base scheme operates on an empty local; each node is popped out to the dicts as it is read.
         if self._local:
             raise MemoryError("The local storage was not emptied before this operation.")
 
@@ -363,7 +339,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         level = 0
         num_rounds = 0
 
-        # Callers guarantee a non-empty tree.
         root = self.root
         assert root is not None
 
@@ -374,7 +349,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         self.root = (node.key, node.leaf)
         path_nodes[level] = node
 
-        # Descend to the leaf, reading the path child and one sibling at each level.
         while not (len(node.value.keys) == len(node.value.values)):
             new_leaf = self._get_new_leaf()
 
@@ -388,7 +362,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                     break
             child_indices.append(child_index)
 
-            # Read the path child, re-homing it onto a fresh leaf.
             child_key, child_leaf = node.value.values[child_index]
             self._move_node_to_local(key=child_key, leaf=child_leaf, parent_key=None, child_index=None)
             num_rounds += 1
@@ -396,7 +369,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             node.value.values[child_index] = (child_key, new_leaf)
             child_node.leaf = new_leaf
 
-            # Read one sibling (prefer left, else right) so an underflow needs no extra round.
             sibling_index: int | None = None
             if child_index > 0:
                 sibling_index = child_index - 1
@@ -433,13 +405,11 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         resolves underflow bottom-up with the pre-fetched siblings (borrow-or-merge), and collapses the
         root. Merged-away nodes are dropped from ``path_nodes``/``siblings`` so the caller flushes only
         survivors. Returns the deleted value, or None if the key was absent."""
-        # Minimum keys a (non-root) node may hold before it underflows (== BPlusTree._min_keys).
         min_keys = (self._order - 1) // 2
 
         leaf_level = len(path_nodes) - 1
         leaf = path_nodes[leaf_level]
 
-        # Find and remove the key from the leaf.
         key_index = None
         deleted_value = None
         for i, k in enumerate(leaf.value.keys):
@@ -453,12 +423,10 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             leaf.value.values.pop(key_index)
 
             if not child_indices:
-                # Root is the leaf: drop it if now empty, else it stays as the (still rooted) leaf.
                 if len(leaf.value.keys) == 0:
                     self.root = None
                     del path_nodes[leaf_level]
             else:
-                # Resolve underflow bottom-up using the pre-fetched siblings.
                 node_level = leaf_level
                 node = leaf
                 for level in range(len(child_indices) - 1, -1, -1):
@@ -476,7 +444,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                     is_left_sibling = sib_index < child_index
                     is_leaf = len(node.value.keys) == len(node.value.values)
 
-                    # Borrow a key from the sibling if it can spare one.
                     if len(sibling.value.keys) > min_keys:
                         if is_left_sibling:
                             if is_leaf:
@@ -498,7 +465,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                                 parent.value.keys[child_index] = sibling.value.keys.pop(0)
                         break
 
-                    # Otherwise merge node and sibling into one.
                     if is_left_sibling:
                         if is_leaf:
                             sibling.value.keys.extend(node.value.keys)
@@ -509,7 +475,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                             sibling.value.values.extend(node.value.values)
                         parent.value.keys.pop(child_index - 1)
                         parent.value.values.pop(child_index)
-                        # node was merged away into its left sibling.
                         del path_nodes[node_level]
                     else:
                         if is_leaf:
@@ -521,13 +486,11 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                             node.value.values.extend(sibling.value.values)
                         parent.value.keys.pop(child_index)
                         parent.value.values.pop(child_index + 1)
-                        # the right sibling was merged away into node.
                         del siblings[child_level]
 
                     node_level = level
                     node = parent
 
-                # The root may now be empty: drop it, or promote its single remaining child.
                 root_node = path_nodes.get(0)
                 if root_node is not None and len(root_node.value.keys) == 0:
                     if len(root_node.value.keys) == len(root_node.value.values):
@@ -561,7 +524,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         distinguishable=False (fixed read/evict round count); cheaper/depth-varying when True."""
         self._op_rounds = 0
         budget = self._op_budget("search")
-        # A dummy op (key is None) or an empty tree finds nothing.
         if self._short_circuit_read(key=key, num_round=budget):
             return None
 
@@ -570,7 +532,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
 
         old_leaf = self._find_leaf(key=key)
 
-        # The traversal always lands on a leaf node now in local.
         leaf = self._local.require_leaf()
         search_value = None
 
@@ -581,7 +542,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
                     leaf.value.values[index] = value
                 break
 
-        # Flush the leaf, run one final eviction, then pad up to the budget.
         self._flush_local_to_stash()
         self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[old_leaf]))
         self._client.execute()
@@ -596,18 +556,14 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         self._op_rounds = 0
         budget = self._op_budget("insert")
         if key is None:
-            # A dummy insert must be indistinguishable from a real one.
             self._pad_to(budget)
             return
 
-        # Empty tree: the new block is the root.
         if self.root is None:
             data_block = self._get_bplus_data(keys=[key], values=[value])
             self._stash.append(data_block)
-            # A fresh block always has a sampled leaf.
             assert data_block.leaf is not None
             self.root = (data_block.key, data_block.leaf)
-            # Pad to the same total a populated-tree insert uses (so the first insert blends in).
             self._pad_to(budget)
             return
 
@@ -630,7 +586,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         self._op_rounds = 0
         budget = self._op_budget("delete")
 
-        # A dummy/empty/missing delete removes nothing; pad like a real one.
         if self._short_circuit_read(key=key, num_round=budget):
             return None
 
@@ -643,7 +598,6 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
             sibling_indices=sibling_indices,
         )
 
-        # Flush every surviving node to stash, then pad the real rounds up to the delete budget.
         for node in path_nodes.values():
             self._stash.append(node)
         for sib in siblings.values():

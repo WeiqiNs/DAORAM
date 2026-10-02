@@ -15,11 +15,10 @@ ServerStorage = dict[str, BinaryTree | list]
 
 class InteractServer(ABC):
     def __init__(self):
-        # Reads accumulate keys/indices; writes accumulate data (a later write overwrites an earlier one).
         self._read_paths: dict[str, list[int]] = {}
         self._read_buckets: dict[str, list[BucketKey]] = {}
         self._read_blocks: dict[str, list[BlockKey]] = {}
-        self._read_lists: dict[str, list[int] | None] = {}  # None means "read the whole list".
+        self._read_lists: dict[str, list[int] | None] = {}
 
         self._write_paths: dict[str, PathData] = {}
         self._write_buckets: dict[str, BucketData] = {}
@@ -116,17 +115,16 @@ class InteractLocalServer(InteractServer):
     def init_storage(self, storage: ServerStorage) -> None:
         self._storage.update(storage)
 
-    def _get_tree(self, label: str) -> BinaryTree:
+    def _hosted(self, label: str) -> BinaryTree | list:
         if label not in self._storage:
             raise KeyError(f"Label {label} is not hosted in the server storage.")
-        # Tree labels always map to a BinaryTree (callers keep tree and list labels disjoint).
-        return cast(BinaryTree, self._storage[label])
+        return self._storage[label]
+
+    def _get_tree(self, label: str) -> BinaryTree:
+        return cast(BinaryTree, self._hosted(label))
 
     def _get_list(self, label: str) -> list:
-        if label not in self._storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
-        # List labels always map to a list (callers keep tree and list labels disjoint).
-        return cast(list, self._storage[label])
+        return cast(list, self._hosted(label))
 
     @override
     def execute(self) -> ExecuteResult:

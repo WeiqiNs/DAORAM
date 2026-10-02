@@ -16,15 +16,12 @@ from oblivlib.oram.tree_base_oram import TreeBaseOram
 
 class OramOstOmap(BaseOmap):
     def __init__(self, config: OramOstOmapConfig, ost: OstBaseOmap[Any, Any], oram: TreeBaseOram):
-        # The frozen config is the single source of truth for the construction parameters.
         self._config: OramOstOmapConfig = config
         self._ost: OstBaseOmap[Any, Any] = ost
         self._oram: TreeBaseOram = oram
 
-        # The ODS only needs its per-tree height adjusted for the number of trees it now holds.
         self._ost.update_mul_tree_height(num_tree=self._num_data)
 
-        # PRF used to hash input keys into the ORAM.
         self._prf: Blake2Prf = Blake2Prf()
 
     @property
@@ -36,11 +33,9 @@ class OramOstOmap(BaseOmap):
         if data is None:
             data = []
 
-        # Group the pairs by their hashed ORAM slot, one value-list per slot.
         data_map = Helper.hash_data_to_map(prf=self._prf, data=data, map_size=self._num_data)
         data_list = [data_map[key] for key in range(self._num_data)]
 
-        # Build one ODS tree per slot, then store each tree's root in the ORAM.
         roots = self._ost.init_mul_tree_server_storage(data_list=data_list)
         self._oram.init_server_storage(data_map={key: root for key, root in enumerate(roots)})
 
@@ -48,7 +43,6 @@ class OramOstOmap(BaseOmap):
     def search(self, key: str | int | bytes, value: Any = None) -> Any:
         """Search for ``key``, writing ``value`` first when given; returns the old value."""
         oram_key = Helper.hash_data_to_leaf(prf=self._prf, data=key, map_size=self._num_data)
-        # Fetch the slot's ODS root, run the op, write the (possibly updated) root back.
         root = self._oram.operate_on_key_without_eviction(key=oram_key)
         self._ost.root = root
         value = self._ost.search(key=key, value=value)

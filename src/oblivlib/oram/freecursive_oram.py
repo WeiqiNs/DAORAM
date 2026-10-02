@@ -6,7 +6,6 @@ leaves, but counter resets are triggered probabilistically (``reset_method="prob
 """
 
 import math
-import random
 import secrets
 from dataclasses import replace
 from functools import cached_property
@@ -15,6 +14,8 @@ from typing import Any, NamedTuple, override
 from oblivlib.dependency import UNSET, BinaryTree, Blake2Prf, Data, DataMap, Helper, PathData, ServerStorage
 from oblivlib.dependency.config import FreecursiveOramConfig
 from oblivlib.oram.tree_base_oram import TreeBaseOram
+
+_CSPRNG = secrets.SystemRandom()
 
 
 class ResetEntry(NamedTuple):
@@ -26,8 +27,8 @@ class ResetEntry(NamedTuple):
     new_leaf: int | None
 
 
-ResetChunk = list[ResetEntry]  # a (1- or 2-long) group of reset entries read together
-ResetLeaves = list[ResetChunk]  # the full reset plan for a block: all of its chunks
+ResetChunk = list[ResetEntry]
+ResetLeaves = list[ResetChunk]
 
 
 class ProcessedData(NamedTuple):
@@ -61,8 +62,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         _last_oram_data: int | None = None,
         _last_oram_level: int | None = None,
     ):
-        # _is_pos_map marks an internal position-map child oram (shares the parent's client); the
-        # _last_oram_* args carry the dimensions of the oram directly above it.
         if not _is_pos_map:
             if config.client is None:
                 raise ValueError("Client is required for main ORAM.")
@@ -73,15 +72,11 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         super().__init__(config)
 
-        # Runtime state tracking the oram above this one; reassigned in _compress_pos_map.
         self._last_oram_data = _last_oram_data
         self._last_oram_level = _last_oram_level
 
-        # Derived: default reset probability is 1/num_ic when the config leaves it unset.
         self._reset_prob = 1 / config.num_ic if config.reset_prob is None else config.reset_prob
 
-        # Leaves held between a read-without-eviction and its later eviction. _tmp_leaf for the
-        # simple case; _tmp_leaves / _tmp_reset_leaves when a reset spans multiple paths.
         self._tmp_leaf: int | None = None
         self._tmp_leaves: list[int] | None = None
         self._tmp_reset_leaves: ResetLeaves | None = None
@@ -93,7 +88,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         self._init_pos_map()
 
-    # Scheme-specific construction parameters — read-only views onto the frozen config.
     @property
     def _num_ic(self) -> int:
         return self._config.num_ic
@@ -187,7 +181,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         server_storage: ServerStorage = {}
 
-        # All counters (gc and ic) start at zero.
         value = Helper.binary_str_to_bytes("0" * self._count_length)
 
         last_oram_data = self._num_data
@@ -200,8 +193,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
                 f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
             )
 
-            # The label this level's tree is stored under; also the child oram's name so the
-            # child can drive its own server I/O on the shared client.
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
             cur_pos_map_oram = FreecursiveOram(
@@ -323,7 +314,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         ic = [int(ic_str[i * self._ic_length : (i + 1) * self._ic_length], 2) for i in range(self._num_ic)]
 
         reset_leaves: list[ResetEntry]
-        # When the block straddles the end of the data, pad out-of-range slots with random leaves.
         if (key + 1) * self._num_ic > self._last_oram_data:
             reset_leaves = [
                 ResetEntry(
@@ -358,7 +348,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         ic = int(data[ic_start:ic_end], 2)
 
         if self._reset_method == "prob":
-            if random.random() <= self._reset_prob:
+            if _CSPRNG.random() <= self._reset_prob:
                 reset_leaves = self._get_reset_leaves(key=key, data=data)
                 self._on_chip_storage[key] = Helper.binary_str_to_bytes(
                     f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
@@ -394,7 +384,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
     def _update_data_prob_reset(self, key: int, data: Data, offset: int) -> ProcessedData:
         """Probabilistic-reset counter update on a stored Data block; returns (cur_leaf, new_leaf, reset_leaves)."""
-        # A position-map block always carries its counter bytes as value.
         data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         gc = int(data.value[: self._gc_length], 2)
@@ -403,7 +392,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         ic_end = self._gc_length + (offset + 1) * self._ic_length
         ic = int(data.value[ic_start:ic_end], 2)
 
-        if random.random() <= self._reset_prob:
+        if _CSPRNG.random() <= self._reset_prob:
             reset_leaves = self._get_reset_leaves(key=key, data=data.value)
             data.value = Helper.binary_str_to_bytes(
                 f"{bin(gc + 1)[2:].zfill(self._gc_length)}{'0' * self._ic_length * self._num_ic}"
@@ -421,7 +410,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
     def _update_data_hard_reset(self, key: int, data: Data, offset: int) -> ProcessedData:
         """Hard-reset (on overflow) counter update on a stored Data block; returns (cur_leaf, new_leaf, reset_leaves)."""
-        # A position-map block always carries its counter bytes as value.
         data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
 
         gc = int(data.value[: self._gc_length], 2)
@@ -505,7 +493,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
                 result = self._client.execute()
                 path = result.require(self._name)
 
-                # Whichever reset key is the one we want next drives the next iteration.
                 if ck_a == cur_key:
                     assert ck_a is not None and nl_a is not None
                     next_cur_leaf, next_new_leaf, reset_leaves = self._retrieve_pos_map_block(
@@ -549,7 +536,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         cur_leaf, new_leaf, reset_leaves = self._update_on_chip_data(key=pos_map_keys[0][0], offset=pos_map_keys[0][1])
 
         for pos_map_index, (cur_key, cur_index) in enumerate(pos_map_keys[1:]):
-            # Each level owns its server I/O; the parent only threads the leaves along the chain.
             cur_leaf, new_leaf, reset_leaves = self._pos_maps[pos_map_index]._access_pos_map_level(
                 cur_key=cur_key,
                 cur_index=cur_index,
@@ -685,7 +671,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         if not found:
             raise KeyError(f"Key {key} not found.")
 
-        # Simple case: single deferred path. Reset case: finish the remaining reset chunks.
         if self._tmp_leaf is not None:
             evicted_path = self._evict_stash(leaves=[self._tmp_leaf])
             self._client.add_write_path(label=self._name, data=evicted_path)
@@ -694,7 +679,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
             assert self._tmp_leaves is not None
             evicted_path = self._evict_stash(leaves=self._tmp_leaves)
             self._client.add_write_path(label=self._name, data=evicted_path)
-            # Must execute here due to internal dependencies with reset operations.
             self._client.execute()
             self._tmp_leaves = None
             if self._tmp_reset_leaves is not None:

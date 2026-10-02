@@ -5,7 +5,6 @@ from typing import Any, NamedTuple
 
 from oblivlib.dependency.helper import Data
 
-# Distinguishes "value not provided" from an explicit None.
 UNSET = object()
 
 
@@ -28,7 +27,6 @@ PathData = dict[int, Bucket]
 BucketData = dict[BucketKey, Bucket]
 BlockData = dict[BlockKey, Block]
 
-# Position map: {key -> leaf}. Data map: {key -> arbitrary value}.
 PosMap = dict[int, int]
 DataMap = dict[int, Any]
 
@@ -46,7 +44,6 @@ class ExecuteResult:
     error: str | None = None
 
     def require(self, label: str) -> Any:
-        # Raise the original execute() error rather than the masking KeyError a bare results[label] hits.
         if not self.success:
             raise RuntimeError(f"execute() failed: {self.error}")
         if label not in self.results:

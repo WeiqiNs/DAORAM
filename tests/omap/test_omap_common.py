@@ -85,10 +85,24 @@ class TestOmapBehavior:
         for i in range(60):
             assert omap.search(key=i) == i * 3
 
-    def test_file_backend_round_trip(self, omap_spec, client, test_file, encryptor):
-        omap = omap_spec.make(client=client, num_data=128, filename=str(test_file), encryptor=encryptor)
-        omap.init_server_storage()
-        for i in range(60):
+    @pytest.mark.parametrize(
+        "encrypted",
+        [
+            True,
+            pytest.param(
+                False,
+                marks=pytest.mark.xfail(
+                    reason="plaintext file slots are sized for byte-encoded nodes; Storage must serialize via the codec"
+                ),
+            ),
+        ],
+    )
+    def test_file_backend_round_trip(self, omap_spec, client, test_file, encryptor, encrypted):
+        omap = omap_spec.make(
+            client=client, num_data=128, filename=str(test_file), encryptor=encryptor if encrypted else None
+        )
+        omap.init_server_storage(data=[(i, i * 5) for i in range(30)])
+        for i in range(30, 60):
             omap.insert(key=i, value=i * 5)
         for i in range(60):
             assert omap.search(key=i) == i * 5
@@ -130,7 +144,7 @@ class TestOmapBehavior:
         for _ in range(800):
             key = rng.choice(keyspace)
             if rng.random() < 0.5:
-                if key not in model:  # AVL build does not handle duplicate keys
+                if key not in model:
                     value = rng.randint(0, 10**6)
                     omap.insert(key=key, value=value)
                     model[key] = value
@@ -170,7 +184,7 @@ class TestOmapBehavior:
                     model[key] = value
             elif roll < 0.75:
                 assert omap.search(key=key) == model.get(key)
-            elif model:  # delete needs a non-empty tree; exercise both present and absent keys
+            elif model:
                 assert omap.delete(key=key) == model.get(key)
                 model.pop(key, None)
         if omap_spec.cached:

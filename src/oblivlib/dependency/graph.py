@@ -2,7 +2,6 @@
 
 import random
 
-# A graph as an adjacency list: {vertex: neighbors}.
 Graph = dict[int, list[int]]
 
 
@@ -29,7 +28,6 @@ def fixed_undirected_graph_gen(num_ver: int, num_neigh: int) -> Graph:
 
     result: Graph = {v: [] for v in range(1, num_ver + 1)}
 
-    # Connect each vertex to its num_neigh/2 nearest neighbors on each side of a ring.
     for i in range(1, num_ver + 1):
         for j in range(1, num_neigh // 2 + 1):
             u = ((i - 1 + j) % num_ver) + 1
@@ -49,7 +47,6 @@ def random_undirected_graph_gen(num_ver: int, num_neigh: int, seed: int | None =
 
     num_matchings = num_ver - 1
 
-    # Generate all perfect matchings via round-robin 1-factorization.
     factorization = []
     for r in range(num_matchings):
         matching = [(num_ver, r + 1)]
@@ -63,7 +60,6 @@ def random_undirected_graph_gen(num_ver: int, num_neigh: int, seed: int | None =
 
     chosen_rounds = rng.sample(range(num_matchings), num_neigh)
 
-    # Randomly permute vertex labels to avoid structural bias.
     perm = list(range(1, num_ver + 1))
     rng.shuffle(perm)
     relabel = {old: i + 1 for i, old in enumerate(perm)}

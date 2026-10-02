@@ -19,7 +19,6 @@ from oblivlib.oram.tree_base_oram import TreeBaseOram
 
 class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
     def __init__(self, config: RecursiveOramConfig, *, _is_pos_map: bool = False):
-        # _is_pos_map marks an internal position-map child oram, which shares the parent's client.
         if not _is_pos_map:
             if config.client is None:
                 raise ValueError("Client is required for main ORAM.")
@@ -30,14 +29,12 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
         super().__init__(config)
 
-        # The recursive position maps, ordered from smallest to the one above the data oram.
         self._pos_maps: list[RecursivePathOram] = []
 
         self._tmp_leaf: int | None = None
 
         self._init_pos_map()
 
-    # Scheme-specific construction parameters — read-only views onto the frozen config.
     @property
     def _on_chip_mem(self) -> int:
         return self._config.on_chip_mem
@@ -83,8 +80,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
                 f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
             )
 
-            # The label this level's tree is stored under; also the child oram's name so the
-            # child can drive its own server I/O on the shared client.
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
             cur_pos_map_oram = RecursivePathOram(
@@ -108,7 +103,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
             )
 
             for key, leaf in cur_pos_map_oram._pos_map.items():
-                # Pad with random leaves when pos_map_size is not a multiple of compression_ratio.
                 value = [
                     last_pos_map[i] if i < last_pos_map_size else secrets.randbelow(pos_map_size)
                     for i in range(key * self._compression_ratio, (key + 1) * self._compression_ratio)
@@ -124,7 +118,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
             server_storage[pos_map_name] = tree
             self._pos_maps.append(cur_pos_map_oram)
 
-        # Keep only the smallest map on chip.
         self._pos_map = last_pos_map
 
         self._pos_maps.reverse()
@@ -147,7 +140,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
         for data in self._stash[:to_index]:
             if data.key == key:
-                # A position-map block's value is the list of child leaves.
                 read_value = data.value[offset]
                 data.value[offset] = value
                 data.leaf = new_leaf
@@ -171,7 +163,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
                 if data.key is None:
                     continue
                 elif data.key == key:
-                    # A position-map block's value is the list of child leaves.
                     read_value = data.value[offset]
                     data.value[offset] = value
                     data.leaf = new_leaf
@@ -222,7 +213,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
                 new_cur_leaf = self._pos_maps[pos_map_index]._get_new_leaf()
                 self._pos_map[cur_key] = new_cur_leaf
 
-            # New leaf for the next level; sampled from the data oram on the last iteration.
             new_next_leaf = (
                 self._pos_maps[pos_map_index + 1]._get_new_leaf()
                 if pos_map_index < self._num_oram_pos_map - 1
@@ -231,7 +221,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
             assert cur_leaf is not None and new_cur_leaf is not None
 
-            # Each level owns its server I/O; the parent only threads the leaf along the chain.
             next_leaf = self._pos_maps[pos_map_index]._access_pos_map_level(
                 cur_key=cur_key,
                 cur_index=cur_index,

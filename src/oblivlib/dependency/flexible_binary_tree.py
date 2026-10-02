@@ -34,7 +34,6 @@ class FlexibleBinaryTree:
 
         self._level = (num_data - 1).bit_length() + 1
         self._size = (1 << self._level) - 1
-        # Storage index of leaf 0 (= the number of internal nodes); leaves are start_leaf..size-1.
         self._start_leaf = (1 << (self._level - 1)) - 1
 
         self._storage = Storage(
@@ -125,8 +124,6 @@ class FlexibleBinaryTree:
         The block's leaf and the path's leaf may live at different levels, so both are brought to a
         common level before computing where their paths cross.
         """
-        # The block's leaf is a (leaf, level) label, but data.leaf is typed int | None on the shared
-        # Data class, so reinterpret it (via object) as the tuple.
         data_leaf = cast(tuple[int, int], cast(object, data.leaf))
         leaf_a_index = (1 << (data_leaf[1] - 1)) - 1 + data_leaf[0]
         leaf_b_index = (1 << (leaf[1] - 1)) - 1 + leaf[0]
@@ -134,7 +131,6 @@ class FlexibleBinaryTree:
             leaf_a_index, leaf_b_index, data_leaf[1], leaf[1]
         )
 
-        # Deepest legal bucket: the crossing depth, capped at the path's own depth.
         index = FlexibleBinaryTree.get_cross_index_level(leaf_a=leaf_a_index, leaf_b=leaf_b_index)
         index = min(index, level - 1)
 
@@ -169,7 +165,6 @@ class FlexibleBinaryTree:
         ``leaves`` are storage indices; the block may sit no deeper than the deepest point at which
         its own leaf crosses any of them.
         """
-        # Here the block's leaf is already a storage index (an int), as are the target leaves.
         data_leaf = cast(int, data.leaf)
         max_index = max(FlexibleBinaryTree.get_cross_index(leaf_a=data_leaf, leaf_b=leaf) for leaf in leaves)
 
@@ -283,7 +278,6 @@ class FlexibleBinaryTree:
             path_indices = self.get_path_indices(self._start_leaf + leaf_index)
             path_block_counts = sum(len(self._storage[bucket_index]) for bucket_index in path_indices)
 
-            # After dropping the leaf bucket, the remaining (level - 2) buckets must hold what's left.
             if (path_block_counts - self._bucket_size) > (self._level - 2) * self._bucket_size:
                 return False
 
@@ -307,8 +301,6 @@ class FlexibleBinaryTree:
 
     def fill_data_to_storage_leaf(self, data: Data) -> bool:
         """Place data in the lowest non-full bucket on its leaf path; return False if the path is full."""
-        # The block's leaf is a (leaf, level) label, but data.leaf is typed int | None on the shared
-        # Data class, so reinterpret it (via object) as the tuple.
         for path_index in self.get_leaf_path(leaf=cast(tuple[int, int], cast(object, data.leaf))):
             if len(self._storage[path_index]) < self._bucket_size:
                 self._storage[path_index] = self._storage[path_index] + [data]

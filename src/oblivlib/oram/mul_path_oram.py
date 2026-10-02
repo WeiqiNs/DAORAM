@@ -10,7 +10,6 @@ from oblivlib.oram.path_oram import PathOram
 
 class MulPathOram(PathOram[MulPathOramConfig]):
     def __init__(self, config: MulPathOramConfig):
-        # stash_scale_multiplier widens the stash for the larger batch; bake it into stash_scale.
         super().__init__(replace(config, stash_scale=config.stash_scale * config.stash_scale_multiplier))
 
         self._tmp_leaves: list[int] = []

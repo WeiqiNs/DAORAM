@@ -1,10 +1,4 @@
-"""Storage backend for ORAM tree nodes, supporting memory and file-based storage.
-
-When encryption is enabled each bucket is stored as a single ciphertext (one nonce+tag per bucket
-rather than per block); see `Helper.encrypt_bucket`. The file backend is two-phase: it holds
-plaintext block-slots while the tree is being filled, then `encrypt()` seals each row into one blob
-in a single streaming pass (one bucket in memory at a time).
-"""
+"""Bucket storage for tree nodes: in-memory or a pre-allocated file, sealed one ciphertext per bucket."""
 
 import os
 from abc import ABC, abstractmethod
@@ -41,18 +35,15 @@ class _Backend(ABC):
     def decrypt(self, encryptor: Encryptor) -> None:
         """Reverse ``encrypt``, restoring plaintext blocks (dummies kept)."""
 
-    def close(self) -> None:  # noqa: B027 - optional hook with a default no-op, intentionally not abstract
+    def close(self) -> None:  # noqa: B027
         ...
 
     def _bucket_to_blocks(self, bucket: list[Data]) -> list[bytes]:
-        # Pad each block to data_size for fixed-width concatenation. data_size is always set here: these
-        # padding paths only run under encryption, which Storage.__init__ guarantees implies a data_size.
         assert self._data_size is not None
         return [data.dump_pad(self._data_size) for data in bucket]
 
     @property
     def _dummy_block(self) -> bytes:
-        # data_size is set whenever encryption (and thus padding) is in use; see _bucket_to_blocks.
         assert self._data_size is not None
         return Data().dump_pad(self._data_size)
 
@@ -82,7 +73,6 @@ class _MemoryBackend(_Backend):
 
     @override
     def decrypt(self, encryptor: Encryptor) -> None:
-        # Decryption only runs on encrypted storage, which implies a known data_size.
         assert self._data_size is not None
         for i, bucket in enumerate(self._internal_data):
             blocks = Helper.decrypt_bucket(encryptor, bucket[0], self._data_size)
@@ -109,9 +99,7 @@ class _FileBackend(_Backend):
         super().__init__(bucket_size=bucket_size, encryption=encryption, data_size=data_size)
         self._size = size
         self._sealed = False
-        # Plaintext block width on disk; falls back to disk_size when no separate data_size is given.
         self._slot_size = data_size if data_size is not None else disk_size
-        # Bytes per row: one blob when encrypted, else bucket_size block slots.
         self._row_bytes = disk_size if encryption else bucket_size * disk_size
 
         total_bytes = size * self._row_bytes
@@ -132,11 +120,9 @@ class _FileBackend(_Backend):
         self._file.seek(self._row_offset(index))
         row = self._file.read(self._row_bytes)
 
-        # Sealed encrypted row: a single blob (empty if the row was never written).
         if self._encryption and self._sealed:
             return [row] if row.strip(b"\x00") else []
 
-        # Block-slot layout (plaintext, or encrypted-during-fill): split and drop empty slots.
         zero = b"\x00" * self._slot_size
         slots = (row[i * self._slot_size : (i + 1) * self._slot_size] for i in range(self._bucket_size))
         return [Data.load_unpad(data=slot) for slot in slots if slot != zero]
@@ -145,7 +131,6 @@ class _FileBackend(_Backend):
     def write_row(self, index: int, data: Bucket) -> None:
         payload: bytes
         if self._encryption and self._sealed:
-            # data is a single [blob] (bytes); pad to the fixed row width.
             blob = data[0] if data else b""
             assert isinstance(blob, bytes)
             payload = blob
@@ -160,9 +145,7 @@ class _FileBackend(_Backend):
     def encrypt(self, encryptor: Encryptor) -> None:
         dummy = self._dummy_block
         assert self._file is not None
-        # Stream one row at a time: read its plaintext blocks, seal into a blob, write it back.
         for index in range(self._size):
-            # Pre-seal rows hold plaintext Data blocks (read_row splits the block-slot layout).
             row = cast(list[Data], self.read_row(index))
             blocks = self._bucket_to_blocks(row)
             blob = Helper.encrypt_bucket(encryptor, blocks, dummy, self._bucket_size)
@@ -174,7 +157,6 @@ class _FileBackend(_Backend):
     def decrypt(self, encryptor: Encryptor) -> None:
         self._sealed = False
         assert self._file is not None
-        # Decryption only runs on encrypted storage, which implies a known data_size.
         assert self._data_size is not None
         for index in range(self._size):
             self._file.seek(self._row_offset(index))
@@ -211,7 +193,6 @@ class Storage:
 
         self._backend: _Backend
         if filename is not None:
-            # The guard above guarantees disk_size is set whenever a filename is given.
             assert disk_size is not None
             self._backend = _FileBackend(
                 filename=filename,

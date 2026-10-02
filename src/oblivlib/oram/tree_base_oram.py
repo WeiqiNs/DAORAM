@@ -7,7 +7,7 @@ Private members use single underscores (not name-mangled ``__``) so subclasses c
 
 import os
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, override
 
 from oblivlib.dependency import UNSET, BinaryTree, Data, DataMap, OramConfig, PathData, PosMap
 from oblivlib.dependency.tree_storage_base import TreeStorageBase
@@ -22,7 +22,6 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
     @property
     def total_stash_size(self) -> int:
         """Stash size including the stashes of any recursive position-map orams."""
-        # Flat schemes define no _pos_maps, so the sum is empty and this is just stash_size.
         pos_maps: list[TreeBaseOram] = getattr(self, "_pos_maps", [])
         return self.stash_size + sum(pos_map.stash_size for pos_map in pos_maps)
 
@@ -62,29 +61,11 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
 
         return tree
 
-    def _evict_stash(self, leaves: list[int]) -> PathData:
-        """Evict stash blocks onto the given paths; blocks that don't fit stay in the stash."""
-        temp_stash = []
-
-        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
-
-        for data in self._stash:
-            inserted = BinaryTree.fill_data_to_path(
-                data=data, path=path, leaves=leaves, level=self._level, bucket_size=self._bucket_size
-            )
-            if not inserted:
-                temp_stash.append(data)
-
-        self._stash = temp_stash
-
-        return self._encrypt_path_data(path=path)
-
+    @override
     def _check_stash(self) -> None:
-        """Record this oram's peak stash size and raise if the stash overflowed. Called right after a
-        path is read into the stash -- its largest point, before eviction shrinks it again."""
+        """Record this oram's peak stash size (called when the stash is largest) and raise on overflow."""
         self._max_stash = max(self._max_stash, self.stash_size)
-        if self.stash_size > self._stash_size:
-            raise MemoryError("Stash overflow!")
+        super()._check_stash()
 
     def _retrieve_data_stash(self, key: int, to_index: int, new_leaf: int, value: Any = UNSET) -> Any:
         """Find key in the stash (searched after the path); read it, optionally write value, remap to new_leaf."""

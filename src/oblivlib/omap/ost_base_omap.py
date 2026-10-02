@@ -8,19 +8,15 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import Any, cast, override
 
-from oblivlib.dependency import BinaryTree, Data, KVPair, PathData
+from oblivlib.dependency import BinaryTree, Data, KVPair
 from oblivlib.dependency.config import OmapConfig
 from oblivlib.dependency.tree_storage_base import TreeStorageBase
 from oblivlib.omap.base_omap import BaseOmap
 
-# The (data key, path) pointer to a tree root.
 ROOT = tuple[Any, int]
-# Input key-value pairs.
 KV_LIST = list[tuple[Any, Any]]
 
 
-# LocalNodesBase's type parameter is the typed node view (AVLNode / BPlusNode Protocol) a concrete
-# LocalNodes container exposes.
 class LocalNodesBase[NodeT]:
     """Shared bookkeeping for the nodes downloaded into ``local`` during one tree-ODS operation: the
     node dict, parent links, traversal path, and root key. Concrete subclasses (AVL / B+ ``LocalNodes``)
@@ -28,10 +24,10 @@ class LocalNodesBase[NodeT]:
     stored as plain ``Data`` and cast to that view."""
 
     def __init__(self) -> None:
-        self.nodes: dict[Any, Data] = {}  # key -> Data node
-        self.parent_of: dict[Any, Any] = {}  # key -> parent_key
+        self.nodes: dict[Any, Data] = {}
+        self.parent_of: dict[Any, Any] = {}
         self.root_key: Any = None
-        self.path: list[Any] = []  # keys in traversal order (root to current)
+        self.path: list[Any] = []
 
     def __len__(self) -> int:
         return len(self.nodes)
@@ -40,8 +36,6 @@ class LocalNodesBase[NodeT]:
         return len(self.nodes) > 0
 
     def add(self, node: Data, parent_key: Any = None, child_index: int | None = None) -> None:
-        # child_index is part of the shared signature so the base move methods pass it uniformly; only
-        # the B+ override records it, so the base discards it.
         del child_index
         self.nodes[node.key] = node
         self.parent_of[node.key] = parent_key
@@ -96,15 +90,10 @@ class LocalNodesBase[NodeT]:
         self.path.clear()
 
 
-# OstBaseOmap's type parameters: OmapConfigT (the scheme's config) and LocalT (the scheme-specific node
-# container ``_local`` holds, bound to LocalNodesBase so the base can type it without knowing the concrete
-# scheme). Each scheme re-declares both (see AVLOmap / BPlusOmap).
 class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStorageBase[OmapConfigT], BaseOmap, ABC):
     def __init__(self, config: OmapConfigT):
         super().__init__(config)
 
-        # ODS-specific runtime state: the root pointer, the nodes downloaded into local this op, and the
-        # real-round counter (excludes dummy padding; the final pad tops it up to the op budget).
         self._root: ROOT | None = None
         self._local: LocalT = self._new_local()
         self._op_rounds: int = 0
@@ -114,7 +103,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         """Create this scheme's empty local-node container (its concrete ``LocalNodes``)."""
         raise NotImplementedError
 
-    # Scheme-specific construction parameters — read-only views onto the frozen config (see OmapConfig).
     @property
     def _key_size(self) -> int:
         return self._config.key_size
@@ -158,7 +146,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         self, key: Any, leaf: int | None, parent_key: Any = None, child_index: int | None = None
     ) -> None:
         """Read ``leaf``'s path, move the block for ``key`` into local, then evict and write back."""
-        # A node being fetched always lives on a real path (child pointers carry a concrete leaf).
         assert leaf is not None
         self._move_node_to_local_without_eviction(key=key, leaf=leaf, parent_key=parent_key, child_index=child_index)
 
@@ -172,7 +159,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         found = False
         to_index = len(self._stash)
 
-        # This is one real server round; count it so the final pad knows how many remain.
         self._op_rounds += 1
 
         assert leaf is not None
@@ -181,7 +167,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         path_data = result.require(self._name)
         path = self._decrypt_path_data(path=path_data)
 
-        # Keep the requested block in local; route every other block on the path to the stash.
         for bucket in path.values():
             for data in bucket:
                 if data.key == key:
@@ -190,10 +175,8 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
                 else:
                     self._stash.append(data)
 
-        if len(self._stash) > self._stash_size:
-            raise MemoryError("Stash overflow!")
+        self._check_stash()
 
-        # Not found on the fetched path -- it must already be in the stash from an earlier op.
         if not found:
             stash_idx = self._find_in_stash(key)
             if 0 <= stash_idx < to_index:
@@ -202,23 +185,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
                 return
 
             raise KeyError(f"The search key {key} is not found.")
-
-    def _evict_stash(self, leaves: list[int]) -> PathData:
-        """Evict stash blocks onto the given paths; blocks that don't fit stay in the stash."""
-        temp_stash = []
-
-        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
-
-        for data in self._stash:
-            inserted = BinaryTree.fill_data_to_path(
-                data=data, path=path, leaves=leaves, level=self._level, bucket_size=self._bucket_size
-            )
-            if not inserted:
-                temp_stash.append(data)
-
-        self._stash = temp_stash
-
-        return self._encrypt_path_data(path=path)
 
     def _perform_dummy_operation(self, num_round: int) -> None:
         """Read, stash, and evict ``num_round`` random paths -- the padding that hides real round counts."""
@@ -237,8 +203,7 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
                 for data in bucket:
                     self._stash.append(data)
 
-            if len(self._stash) > self._stash_size:
-                raise MemoryError("Stash overflow!")
+            self._check_stash()
 
             self._client.add_write_path(label=self._name, data=self._evict_stash(leaves=[leaf]))
             self._client.execute()
@@ -297,7 +262,6 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         """Build the ODS-tree binary storage for the input key-value pairs."""
         tree = self._new_ods_tree()
 
-        # Build the scheme's in-memory tree from the pairs, then flush its nodes to ORAM storage.
         if data:
             blocks, root = self._build_ods_blocks(data=self._normalize_pairs(data))
             for block in blocks:

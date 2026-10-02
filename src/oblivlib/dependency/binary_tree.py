@@ -18,12 +18,10 @@ class BinaryTree:
         disk_size: int | None = None,
         encryption: bool = False,
     ) -> None:
-        self._num_data = num_data
         self._bucket_size = bucket_size
 
         self._level = self.compute_level(num_data)
         self._size = (1 << self._level) - 1
-        # Storage index of leaf 0 (= the number of internal nodes); leaves are start_leaf..size-1.
         self._start_leaf = (1 << (self._level - 1)) - 1
 
         self._storage = Storage(
@@ -110,8 +108,6 @@ class BinaryTree:
     def fill_data_to_path(data: Data, path: PathData, leaves: list[int], level: int, bucket_size: int) -> bool:
         """Place data in the lowest bucket of the PathData dict with room; return False if none has room."""
         data_leaf = data.require_leaf()
-        # Deepest bucket on its own path that the path set covers: the lowest crossing point between the
-        # block's leaf and any target leaf.
         max_index = max(BinaryTree.get_cross_index(leaf_a=data_leaf, leaf_b=leaf, level=level) for leaf in leaves)
 
         while max_index >= 0:
@@ -179,7 +175,6 @@ class BinaryTree:
         for (leaf, bucket_id, block_id), block in data.items():
             by_bucket[BucketKey(leaf, bucket_id)].append((block_id, block))
 
-        # Read each bucket, modify it, then write it back explicitly so file-based storage works.
         for (leaf, bucket_id), blocks in by_bucket.items():
             storage_idx = self.get_leaf_block(leaf, bucket_id)
             bucket = self._storage[storage_idx]
