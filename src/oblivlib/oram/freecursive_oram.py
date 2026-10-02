@@ -262,45 +262,13 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         raise KeyError(f"Key {key} not found.")
 
-    def _update_stash_leaves(
-        self, key_a: int | None, key_b: int | None, n_leaf_a: int | None, n_leaf_b: int | None, to_index: int
-    ) -> None:
-        """Remap key_a and key_b in the stash; to_index bounds the search to pre-existing blocks."""
-        for data in self._stash[:to_index]:
-            if key_a is not None and data.key == key_a:
-                data.leaf = n_leaf_a
-                key_a = None
-            elif key_b is not None and data.key == key_b:
-                data.leaf = n_leaf_b
-                key_b = None
-
-        if key_a is not None:
-            raise KeyError(f"Key {key_a} not found.")
-        if key_b is not None:
-            raise KeyError(f"Key {key_b} not found.")
-
     def _update_block_leaves(
         self, key_a: int | None, key_b: int | None, n_leaf_a: int | None, n_leaf_b: int | None, path: PathData
     ) -> None:
         """Pull the path into the stash and remap key_a and key_b (a null op that hides the access)."""
-        to_index = len(self._stash)
-
-        decrypted = self._decrypt_path_data(path=path)
-
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-                elif key_a is not None and data.key == key_a:
-                    data.leaf = n_leaf_a
-                    key_a = None
-                elif key_b is not None and data.key == key_b:
-                    data.leaf = n_leaf_b
-                    key_b = None
-                self._stash.append(data)
-
-        if key_a is not None or key_b is not None:
-            self._update_stash_leaves(key_a=key_a, key_b=key_b, n_leaf_a=n_leaf_a, n_leaf_b=n_leaf_b, to_index=to_index)
+        self._absorb_path(path=path)
+        self._update_stash_leaf(key=key_a, new_leaf=n_leaf_a)
+        self._update_stash_leaf(key=key_b, new_leaf=n_leaf_b)
 
     def _get_reset_leaves(self, key: int, data: str, reset_size: int = 2) -> ResetLeaves:
         """On reset, return the (key, cur_leaf, new_leaf) chunks for every count in the block.
@@ -432,47 +400,17 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
         return ProcessedData(cur_leaf, new_leaf, None)
 
-    def _retrieve_pos_map_stash(self, key: int, offset: int, new_leaf: int, to_index: int) -> ProcessedData:
-        """Find key in the stash, advance its counter, and remap it to new_leaf."""
-        for data in self._stash[:to_index]:
-            if data.key == key:
-                next_cur_leaf, next_new_leaf, reset_leaves = (
-                    self._update_data_prob_reset(key=key, data=data, offset=offset)
-                    if self._reset_method == "prob"
-                    else self._update_data_hard_reset(key=key, data=data, offset=offset)
-                )
-                data.leaf = new_leaf
-                return ProcessedData(next_cur_leaf, next_new_leaf, reset_leaves)
-
-        raise KeyError(f"Key {key} not found.")
-
     def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, path: PathData) -> ProcessedData:
         """Pull the path into the stash, advance key's counter, and remap it to new_leaf."""
-        next_cur_leaf, next_new_leaf, reset_leaves = None, None, None
-        to_index = len(self._stash)
-        decrypted = self._decrypt_path_data(path=path)
-
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-                elif data.key == key:
-                    next_cur_leaf, next_new_leaf, reset_leaves = (
-                        self._update_data_prob_reset(key=key, data=data, offset=offset)
-                        if self._reset_method == "prob"
-                        else self._update_data_hard_reset(key=key, data=data, offset=offset)
-                    )
-                    data.leaf = new_leaf
-                self._stash.append(data)
-
-        self._check_stash()
-
-        if next_cur_leaf is None and reset_leaves is None:
-            next_cur_leaf, next_new_leaf, reset_leaves = self._retrieve_pos_map_stash(
-                key=key, offset=offset, new_leaf=new_leaf, to_index=to_index
-            )
-
-        return ProcessedData(next_cur_leaf, next_new_leaf, reset_leaves)
+        self._absorb_path(path=path)
+        data = self._require_in_stash(key=key)
+        processed = (
+            self._update_data_prob_reset(key=key, data=data, offset=offset)
+            if self._reset_method == "prob"
+            else self._update_data_hard_reset(key=key, data=data, offset=offset)
+        )
+        data.leaf = new_leaf
+        return processed
 
     def _access_pos_map_level(
         self, cur_key: int, cur_index: int, cur_leaf: int | None, new_leaf: int | None, reset_leaves: ResetLeaves | None

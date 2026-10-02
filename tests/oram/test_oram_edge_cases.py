@@ -1,3 +1,6 @@
+import random
+import secrets
+
 import pytest
 
 from oblivlib.dependency import DaOramConfig, FreecursiveOramConfig, PathOramConfig, RecursiveOramConfig
@@ -32,6 +35,21 @@ def test_leaf_range_is_smallest_power_of_two_at_least_n(client, n):
 def test_num_data_at_most_on_chip_raises(cls, config_cls, client):
     with pytest.raises(ValueError):
         cls(config_cls(num_data=8, data_size=10, client=client))
+
+
+def test_da_oram_reset_block_left_in_pos_map_stash(monkeypatch, client):
+    monkeypatch.setattr(secrets, "randbelow", random.Random(9).randrange)
+    oram = DAOram(
+        DaOramConfig(num_data=1024, data_size=8, client=client, bucket_size=1, stash_scale=1000, prf_key=b"\x00" * 32)
+    )
+    model = {i: i for i in range(1024)}
+    oram.init_server_storage(data_map=dict(model))
+
+    workload = random.Random(9)
+    for value in range(3000):
+        key = workload.randrange(1024)
+        assert oram.operate_on_key(key=key, value=value) == model[key]
+        model[key] = value
 
 
 @pytest.mark.parametrize(

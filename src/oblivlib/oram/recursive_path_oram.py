@@ -133,49 +133,13 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
         self._client.init_storage(storage=storage)
 
-    def _retrieve_pos_map_stash(self, key: int, value: int, offset: int, new_leaf: int, to_index: int) -> int:
-        """Find key in the stash, read the leaf at offset, write the new leaf there, and remap to new_leaf."""
-        found = False
-        read_value: int | None = None
-
-        for data in self._stash[:to_index]:
-            if data.key == key:
-                read_value = data.value[offset]
-                data.value[offset] = value
-                data.leaf = new_leaf
-                found = True
-
-        if not found:
-            raise KeyError(f"Key {key} not found.")
-
-        assert read_value is not None
-        return read_value
-
-    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, value: int, path: PathData) -> Any:
+    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, value: int, path: PathData) -> int:
         """Pull the path into the stash; read the leaf at offset for key, overwrite it with value, remap to new_leaf."""
-        read_value = None
-        to_index = len(self._stash)
-
-        decrypted = self._decrypt_path_data(path=path)
-
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-                elif data.key == key:
-                    read_value = data.value[offset]
-                    data.value[offset] = value
-                    data.leaf = new_leaf
-
-                self._stash.append(data)
-
-        self._check_stash()
-
-        if read_value is None:
-            read_value = self._retrieve_pos_map_stash(
-                key=key, value=value, offset=offset, new_leaf=new_leaf, to_index=to_index
-            )
-
+        self._absorb_path(path=path)
+        data = self._require_in_stash(key=key)
+        read_value = data.value[offset]
+        data.value[offset] = value
+        data.leaf = new_leaf
         return read_value
 
     def _access_pos_map_level(

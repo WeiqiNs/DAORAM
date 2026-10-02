@@ -67,43 +67,25 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
         self._max_stash = max(self._max_stash, self.stash_size)
         super()._check_stash()
 
-    def _retrieve_data_stash(self, key: int, to_index: int, new_leaf: int, value: Any = UNSET) -> Any:
-        """Find key in the stash (searched after the path); read it, optionally write value, remap to new_leaf."""
-        for data in self._stash[:to_index]:
-            if data.key == key:
-                read_value = data.value
-                if value is not UNSET:
-                    data.value = value
-                data.leaf = new_leaf
-                return read_value
+    def _absorb_path(self, path: PathData) -> None:
+        for bucket in self._decrypt_path_data(path=path).values():
+            self._stash.extend(data for data in bucket if data.key is not None)
+        self._check_stash()
 
+    def _require_in_stash(self, key: int) -> Data:
+        for data in self._stash:
+            if data.key == key:
+                return data
         raise KeyError(f"Key {key} not found.")
 
     def _retrieve_data_block(self, key: int, new_leaf: int, path: PathData, value: Any = UNSET) -> Any:
         """Pull the path into the stash, read key (optionally writing value), and remap it to new_leaf."""
-        found = False
-        read_value = None
-        to_index = len(self._stash)
-
-        decrypted = self._decrypt_path_data(path=path)
-
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-                elif data.key == key:
-                    read_value = data.value
-                    if value is not UNSET:
-                        data.value = value
-                    data.leaf = new_leaf
-                    found = True
-                self._stash.append(data)
-
-        self._check_stash()
-
-        if not found:
-            read_value = self._retrieve_data_stash(key=key, to_index=to_index, value=value, new_leaf=new_leaf)
-
+        self._absorb_path(path=path)
+        data = self._require_in_stash(key=key)
+        read_value = data.value
+        if value is not UNSET:
+            data.value = value
+        data.leaf = new_leaf
         return read_value
 
     @abstractmethod

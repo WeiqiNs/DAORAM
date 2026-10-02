@@ -348,82 +348,21 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         return cur_leaf, new_leaf
 
-    def _retrieve_pos_map_stash_with_reset(
-        self, key: int | None, offset: int, new_leaf: int, to_index: int, r_key: int | None, r_new_leaf: int | None
-    ) -> ProcessedData:
-        """Find key (and optional reset key r_key) in the stash, update the counter, and remap their leaves.
-
-        :param r_key: Key of the block to reset, or None.
-        :return: (next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf); the reset
-            fields are r_index=-1, a random cur leaf, and None new leaf when no reset happens.
-        """
-        next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf = None, None, None, None, None
-
-        for data in self._stash[:to_index]:
-            if key is not None and data.key == key:
-                next_cur_leaf, next_new_leaf = self._update_data(key=key, data=data, offset=offset)
-                r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
-                data.leaf = new_leaf
-                key = None
-            elif data.key == r_key:
-                data.leaf = r_new_leaf
-                r_key = None
-            if key is None and r_key is None:
-                break
-
-        if key is not None:
-            raise KeyError(f"Key {key} not found.")
-        if r_key is not None:
-            raise KeyError(f"The backup key {r_key} not found.")
-
-        assert (
-            next_cur_leaf is not None
-            and next_new_leaf is not None
-            and r_index is not None
-            and r_next_cur_leaf is not None
-        )
-        return ProcessedData(next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf)
-
     def _retrieve_pos_map_block_with_reset(
-        self, key: int | None, offset: int, new_leaf: int, r_key: int | None, r_new_leaf: int | None, path: PathData
+        self, key: int, offset: int, new_leaf: int, r_key: int | None, r_new_leaf: int | None, path: PathData
     ) -> ProcessedData:
-        """Pull the path into the stash, then process key and optional reset key as in the stash variant."""
-        next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf = None, None, None, None, None
+        """Pull the path into the stash, advance key's counter and remap it to new_leaf, and remap the
+        optional reset key r_key to r_new_leaf. The returned reset fields are r_index=-1, a random cur
+        leaf, and None new leaf when no reset is carried to the next level."""
+        self._absorb_path(path=path)
 
-        to_index = len(self._stash)
+        data = self._require_in_stash(key=key)
+        next_cur_leaf, next_new_leaf = self._update_data(key=key, data=data, offset=offset)
+        r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
+        data.leaf = new_leaf
 
-        decrypted = self._decrypt_path_data(path=path)
+        self._update_stash_leaf(key=r_key, new_leaf=r_new_leaf)
 
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-                elif key is not None and data.key == key:
-                    next_cur_leaf, next_new_leaf = self._update_data(key=key, data=data, offset=offset)
-                    r_index, r_next_cur_leaf, r_next_new_leaf = self._perform_reset(key=key, data=data)
-                    data.leaf = new_leaf
-                    key = None
-                elif data.key == r_key:
-                    data.leaf = r_new_leaf
-                    r_key = None
-
-                self._stash.append(data)
-
-        self._check_stash()
-
-        if key is not None or r_key is not None:
-            next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf = (
-                self._retrieve_pos_map_stash_with_reset(
-                    key=key, r_key=r_key, offset=offset, to_index=to_index, new_leaf=new_leaf, r_new_leaf=r_new_leaf
-                )
-            )
-
-        assert (
-            next_cur_leaf is not None
-            and next_new_leaf is not None
-            and r_index is not None
-            and r_next_cur_leaf is not None
-        )
         return ProcessedData(next_cur_leaf, next_new_leaf, r_index, r_next_cur_leaf, r_next_new_leaf)
 
     def _access_pos_map_level(

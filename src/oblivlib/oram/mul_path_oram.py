@@ -29,37 +29,17 @@ class MulPathOram(PathOram[MulPathOramConfig]):
         key_leaf_map: PosMap,
         values: DataMap | None = None,
     ) -> DataMap:
-        """Read every key's block off the path, remap each to ``key_leaf_map[key]``, optionally write
-        ``values``; returns {key: current value}. Keys not on the path are read from the prior stash."""
-        found_keys = set()
+        """Pull the path into the stash, then read every key's block, remap each to ``key_leaf_map[key]``,
+        and optionally write ``values``; returns {key: value before any write}."""
+        self._absorb_path(path=path)
+
         read_values: dict[int, Any] = {}
-
-        to_index = len(self._stash)
-
-        decrypted = self._decrypt_path_data(path=path)
-
-        for bucket in decrypted.values():
-            for data in bucket:
-                if data.key is None:
-                    continue
-
-                if data.key in key_leaf_map:
-                    read_values[data.key] = data.value
-                    if values and data.key in values:
-                        data.value = values[data.key]
-                    data.leaf = key_leaf_map[data.key]
-                    found_keys.add(data.key)
-
-                self._stash.append(data)
-
-        self._check_stash()
-
         for key, new_leaf in key_leaf_map.items():
-            if key not in found_keys:
-                value_to_write = values.get(key, UNSET) if values else UNSET
-                read_values[key] = self._retrieve_data_stash(
-                    key=key, to_index=to_index, new_leaf=new_leaf, value=value_to_write
-                )
+            data = self._require_in_stash(key=key)
+            read_values[key] = data.value
+            if values and key in values:
+                data.value = values[key]
+            data.leaf = new_leaf
 
         return read_values
 
