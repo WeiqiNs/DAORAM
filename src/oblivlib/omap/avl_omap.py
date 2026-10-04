@@ -6,9 +6,10 @@ import os
 from functools import cached_property
 from typing import Any, Protocol, cast, override
 
-from oblivlib.dependency import AVLData, AVLTree, AVLTreeNode, Data, Helper, KVPair
+from oblivlib.dependency import AVLData, AVLTree, AVLTreeNode, Data, KVPair
 from oblivlib.dependency.codec import BlockCodec, NodeCodec
 from oblivlib.dependency.config import AvlOmapConfig
+from oblivlib.dependency.load_bound import max_bucket_load
 from oblivlib.omap.ost_base_omap import ROOT, LocalNodesBase, OstBaseOmap
 
 
@@ -93,7 +94,7 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
 
     @override
     def update_mul_tree_height(self, num_tree: int) -> None:
-        tree_size = Helper.max_bucket_load(num_tree)
+        tree_size = max_bucket_load(num_tree)
         self._max_height = max(1, math.ceil(1.44 * math.log(tree_size, 2)))
 
     @cached_property
@@ -132,7 +133,7 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
             root = avl_tree.recursive_insert(root=root, kv_pair=kv_pair)
 
         assert root is not None
-        blocks = avl_tree.get_data_list(root=root, encryption=self._encryptor is not None)
+        blocks = avl_tree.get_data_list(root=root)
         assert root.leaf is not None
         return blocks, (root.key, root.leaf)
 

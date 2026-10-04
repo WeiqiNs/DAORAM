@@ -9,8 +9,9 @@ import os
 import pickle
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, Blake2Prf, Helper
+from oblivlib.dependency import UNSET, Blake2Prf, hash_data_to_map, key_to_bytes
 from oblivlib.dependency.config import GroupOmapConfig, MulPathOramConfig
+from oblivlib.dependency.load_bound import max_bucket_load
 from oblivlib.omap.base_omap import BaseOmap
 from oblivlib.oram import MulPathOram, TreeBaseOram
 
@@ -56,7 +57,7 @@ class GroupOmap(BaseOmap):
     @staticmethod
     def _bucket_upper_bound(num_data: int) -> int:
         """Worst-case number of items in one hash bucket (https://eprint.iacr.org/2021/1280)."""
-        return Helper.max_bucket_load(num_data)
+        return max_bucket_load(num_data)
 
     @staticmethod
     def upper_oram_data_size(num_data: int, key_size: int) -> int:
@@ -103,14 +104,9 @@ class GroupOmap(BaseOmap):
 
     def _key_to_bytes(self, key: Any) -> bytes:
         """Bytes representation of a key, for PRF input."""
-        if isinstance(key, int):
-            return key.to_bytes(16, byteorder="big")
-        elif isinstance(key, str):
-            return key.encode("utf-8")
-        elif isinstance(key, bytes):
-            return key
-        else:
-            return str(key).encode("utf-8")
+        if isinstance(key, int | str | bytes):
+            return key_to_bytes(key)
+        return str(key).encode("utf-8")
 
     def _compute_path(self, seed: bytes, key: Any) -> int:
         """Lower-ORAM leaf for an item, as PRF(seed || key)."""
@@ -134,7 +130,7 @@ class GroupOmap(BaseOmap):
         if data is None:
             data = []
 
-        data_map = Helper.hash_data_to_map(prf=self._bucket_prf, data=data, map_size=self._num_buckets)
+        data_map = hash_data_to_map(prf=self._bucket_prf, data=data, map_size=self._num_buckets)
 
         upper_data: dict[int, bytes] = {}
         lower_data: dict[int, Any] = {}

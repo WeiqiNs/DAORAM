@@ -31,6 +31,16 @@ def test_leaf_range_is_smallest_power_of_two_at_least_n(client, n):
     assert n <= oram._leaf_range < 2 * n
 
 
+def test_init_path_overflow_goes_to_stash(client):
+    oram = PathOram(PathOramConfig(num_data=4, data_size=10, client=client, bucket_size=1))
+    oram._pos_map = dict.fromkeys(range(4), 0)
+    oram.init_server_storage(data_map={i: f"v{i}" for i in range(4)})
+
+    assert [data.key for data in oram._stash] == [3]
+    for i in range(4):
+        assert oram.operate_on_key(key=i) == f"v{i}"
+
+
 @pytest.mark.parametrize(("cls", "config_cls"), RECURSIVE_POS_MAP_ORAMS)
 def test_num_data_at_most_on_chip_raises(cls, config_cls, client):
     with pytest.raises(ValueError):

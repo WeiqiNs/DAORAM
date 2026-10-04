@@ -45,7 +45,7 @@ class CountingServer(InteractLocalServer):
 
 def _live_blocks(omap):
     """All live ORAM blocks {block_key: Data} from storage + stash + local (plaintext only)."""
-    tree = omap._client._storage[omap._name]
+    tree = omap._client._require_tree(omap._name)
     blocks = {}
     for index in range(tree.size):
         for data in tree.storage[index]:

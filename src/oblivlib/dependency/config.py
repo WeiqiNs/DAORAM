@@ -22,7 +22,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True)
 class OramConfig:
-    """Shared construction parameters for every tree-based ORAM."""
+    """Shared construction parameters for every tree-based ORAM.
+
+    - ``num_data``: number of logical blocks, keys ``0 .. num_data - 1``. The tree gets the smallest
+      power-of-two leaf count that covers it.
+    - ``data_size``: byte length that bounds a value, measured as a ``data_size``-byte ``bytes`` object.
+      Encrypted and file-backed storage size each fixed-width slot to the pickle of a block holding such
+      a value; a value whose pickle is larger raises. Memory plaintext storage keeps live objects and
+      does not enforce it.
+    - ``client``: the ``InteractServer`` handle to server storage; required before any I/O.
+    - ``name``: this scheme's storage label on ``client``; distinct per scheme sharing one client.
+    - ``filename``: back the tree with this file instead of memory. The file is truncated on
+      construction, so it must be distinct per scheme.
+    - ``bucket_size``: blocks per tree node.
+    - ``stash_scale``: the stash holds at most ``stash_scale * max(1, level - 1)`` blocks; exceeding it
+      raises ``StashOverflowError``.
+    - ``encryptor``: seals each bucket into one ciphertext; ``None`` stores plaintext.
+    """
 
     num_data: int
     data_size: int
@@ -56,12 +72,17 @@ class StaticOramConfig(OramConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class MulPathOramConfig(OramConfig):
+    """``stash_scale_multiplier`` multiplies ``stash_scale`` to absorb a batch of paths per access."""
+
     name: str = "mul_path_oram"
     stash_scale_multiplier: int = 1
 
 
 @dataclass(frozen=True, kw_only=True)
 class RecursiveOramConfig(OramConfig):
+    """``on_chip_mem``: target size of the position map kept on the client; ``num_data`` must exceed it.
+    ``compression_ratio``: child leaves stored per position-map block."""
+
     name: str = "rc"
     on_chip_mem: int = 10
     compression_ratio: int = 4
@@ -76,7 +97,11 @@ class RecursiveOramConfig(OramConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class CounterOramConfig(OramConfig):
-    """Shared structure for the counter-based recursive schemes (DA, Freecursive)."""
+    """Shared structure for the counter-based recursive schemes (DA, Freecursive).
+
+    ``num_ic``: children per position-map block. ``ic_length`` / ``gc_length``: bit widths of the
+    individual and group counters. ``prf_key``: key of the leaf-deriving PRF; random when ``None``.
+    """
 
     num_ic: int = 64
     ic_length: int = 6
@@ -95,6 +120,8 @@ class CounterOramConfig(OramConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class DaOramConfig(CounterOramConfig):
+    """``on_chip_mem``: target size of the position map kept on the client; ``num_data`` must exceed it."""
+
     name: str = "da"
     on_chip_mem: int = 10
 
@@ -106,6 +133,11 @@ class DaOramConfig(CounterOramConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class FreecursiveOramConfig(CounterOramConfig):
+    """``on_chip_size``: target size of the position map kept on the client; ``num_data`` must exceed it.
+    ``reset_method``: ``"prob"`` (secure) resets a block with probability ``reset_prob`` (default
+    ``1 / num_ic``) and treats a counter overflow as an error; ``"hard"`` (the insecure original scheme)
+    resets only on overflow."""
+
     name: str = "fc"
     num_ic: int = 48
     ic_length: int = 10
@@ -124,7 +156,12 @@ class FreecursiveOramConfig(CounterOramConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class OmapConfig(OramConfig):
-    """Base config for oblivious maps; adds the key size (kw_only lets it be required here)."""
+    """Base config for oblivious maps.
+
+    ``key_size``: byte length that bounds a key, used to size node blocks like ``data_size``.
+    ``distinguishable``: when ``True`` each op pads to its own round bound, so the op type leaks;
+    the default ``False`` pads every op to the largest bound.
+    """
 
     name: str = "omap"
     key_size: int
@@ -148,6 +185,8 @@ class AvlOmapCachedConfig(AvlOmapConfig):
 
 @dataclass(frozen=True, kw_only=True)
 class BPlusOmapConfig(OmapConfig):
+    """``order``: maximum children per internal node (at least 3)."""
+
     name: str = "bplus"
     order: int
 

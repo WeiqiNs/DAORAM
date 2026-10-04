@@ -3,7 +3,7 @@ reassigned on each access."""
 
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, BinaryTree, Blake2Prf, Data, DataMap, PseudoRandomFunction
+from oblivlib.dependency import UNSET, Blake2Prf, Data, DataMap, PseudoRandomFunction
 from oblivlib.dependency.config import StaticOramConfig
 from oblivlib.oram.path_oram import PathOram
 
@@ -20,26 +20,11 @@ class StaticOram(PathOram[StaticOramConfig]):
         return self._prf.digest_mod_n(str(key).encode(), pow(2, self._level - 1))
 
     @override
-    def _init_storage_on_pos_map(self, data_map: DataMap | None = None) -> BinaryTree:
-        """Build the tree using fixed PRF leaf positions (overrides parent's random positions)."""
-        tree = BinaryTree(
-            filename=self._filename,
-            num_data=self._num_data,
-            data_size=self._dumped_data_size,
-            bucket_size=self._bucket_size,
-            disk_size=self._disk_size,
-            encryption=self._encryptor is not None,
-        )
-
-        for key in range(self._num_data):
-            leaf = self._get_path_number(key)
-            value = data_map.get(key) if data_map else None
-            tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
-
-        if self._encryptor:
-            tree.storage.encrypt(encryptor=self._encryptor)
-
-        return tree
+    def _initial_blocks(self, data_map: DataMap | None = None) -> list[Data]:
+        return [
+            Data(key=key, leaf=self._get_path_number(key), value=data_map.get(key) if data_map else None)
+            for key in range(self._num_data)
+        ]
 
     @override
     def operate_on_key(self, key: int, value: Any = UNSET) -> Any:

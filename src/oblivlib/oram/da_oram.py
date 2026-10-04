@@ -11,8 +11,9 @@ from dataclasses import replace
 from functools import cached_property
 from typing import Any, NamedTuple, override
 
-from oblivlib.dependency import UNSET, BinaryTree, Blake2Prf, Data, DataMap, Helper, PathData, ServerStorage
+from oblivlib.dependency import UNSET, Blake2Prf, Data, DataMap, PathData, ServerStorage
 from oblivlib.dependency.config import DaOramConfig
+from oblivlib.oram.bit_string import binary_str_to_bytes, bytes_to_binary_str
 from oblivlib.oram.tree_base_oram import TreeBaseOram
 
 
@@ -117,7 +118,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
     def _get_leaf_from_prf(self, key: int, gc: int, ic: int) -> int:
         """Leaf for (key, gc, ic) in this oram, computed as PRF(KEY||GC||IC) mod 2^L."""
         return self._prf.digest_mod_n(
-            Helper.binary_str_to_bytes(
+            binary_str_to_bytes(
                 bin(key)[2:].zfill(self._level - 1)
                 + bin(gc)[2:].zfill(self._gc_length)
                 + bin(ic)[2:].zfill(self._ic_length)
@@ -129,7 +130,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         """Leaf for (key, gc, ic) in the previous (larger) oram, as PRF(KEY||GC||IC) mod 2^LAST_L."""
         assert self._last_oram_level is not None
         return self._prf.digest_mod_n(
-            Helper.binary_str_to_bytes(
+            binary_str_to_bytes(
                 bin(key)[2:].zfill(self._last_oram_level - 1)
                 + bin(gc)[2:].zfill(self._gc_length)
                 + bin(ic)[2:].zfill(self._ic_length)
@@ -147,7 +148,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         server_storage: ServerStorage = {}
 
-        value = Helper.binary_str_to_bytes("0" * self._count_length)
+        value = binary_str_to_bytes("0" * self._count_length)
 
         last_oram_data = self._num_data
         last_oram_level = self._level
@@ -175,20 +176,9 @@ class DAOram(TreeBaseOram[DaOramConfig]):
                 _last_oram_level=last_oram_level,
             )
 
-            tree = BinaryTree(
-                filename=pos_map_filename,
-                num_data=pos_map_size,
-                data_size=cur_pos_map_oram._dumped_data_size,
-                bucket_size=self._bucket_size,
-                disk_size=cur_pos_map_oram._disk_size,
-                encryption=self._encryptor is not None,
+            tree = cur_pos_map_oram._build_tree(
+                [Data(key=key, leaf=leaf, value=value) for key, leaf in cur_pos_map_oram._pos_map.items()]
             )
-
-            for key, leaf in cur_pos_map_oram._pos_map.items():
-                tree.fill_data_to_storage_leaf(Data(key=key, leaf=leaf, value=value))
-
-            if self._encryptor:
-                tree.storage.encrypt(encryptor=self._encryptor)
 
             last_oram_data = pos_map_size
             last_oram_level = cur_pos_map_oram._level
@@ -209,7 +199,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
     @override
     def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage = self._init_storage_on_pos_map(data_map=data_map)
+        storage = self._build_tree(self._initial_blocks(data_map=data_map))
 
         pos_map_storage_dict = self._compress_pos_map()
         pos_map_storage_dict[self._name] = storage
@@ -233,7 +223,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         offset is -1 (and a random cur_leaf, None new_leaf) when no reset is due.
         """
         assert self._last_oram_data is not None and self._last_oram_level is not None
-        data = Helper.bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
+        data = bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
 
         ic_indicators = data[-self._num_ic :]
         offset = ic_indicators.find("1")
@@ -251,12 +241,12 @@ class DAOram(TreeBaseOram[DaOramConfig]):
     def _perform_reset(self, key: int, data: Data) -> ResetLeaf:
         """Like _perform_reset_on_chip but reads the indicators from a stored Data block."""
         assert self._last_oram_data is not None and self._last_oram_level is not None
-        data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
+        data.value = bytes_to_binary_str(data.value).zfill(self._count_length)
 
         ic_indicators = data.value[-self._num_ic :]
         offset = ic_indicators.find("1")
 
-        data.value = Helper.binary_str_to_bytes(data.value)
+        data.value = binary_str_to_bytes(data.value)
 
         if key * self._num_ic + offset >= self._last_oram_data:
             offset = -1
@@ -270,7 +260,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
     def _update_data_on_chip(self, key: int, offset: int) -> tuple[int, int]:
         """Advance the on-chip counter at offset and return (cur_leaf, new_leaf) for the previous oram."""
-        data = Helper.bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
+        data = bytes_to_binary_str(self._on_chip_storage[key]).zfill(self._count_length)
 
         gc = int(data[: self._gc_length], 2)
 
@@ -299,7 +289,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
             next_ic = ic + 1
             next_gc = gc
 
-        self._on_chip_storage[key] = Helper.binary_str_to_bytes(
+        self._on_chip_storage[key] = binary_str_to_bytes(
             f"{data[:ic_start]}{bin(next_ic)[2:].zfill(self._ic_length)}{data[ic_end:]}"
         )
 
@@ -310,7 +300,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
     def _update_data(self, key: int, data: Data, offset: int) -> tuple[int, int]:
         """Like _update_data_on_chip but operates on a stored Data block's counter value."""
-        data.value = Helper.bytes_to_binary_str(data.value).zfill(self._count_length)
+        data.value = bytes_to_binary_str(data.value).zfill(self._count_length)
 
         gc = int(data.value[: self._gc_length], 2)
 
@@ -339,7 +329,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
             next_ic = ic + 1
             next_gc = gc
 
-        data.value = Helper.binary_str_to_bytes(
+        data.value = binary_str_to_bytes(
             f"{data.value[:ic_start]}{bin(next_ic)[2:].zfill(self._ic_length)}{data.value[ic_end:]}"
         )
 

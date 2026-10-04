@@ -91,8 +91,8 @@ class TestSearchTreeBehavior:
 
 class TestSearchTreeBatched:
     """The batched (multi-key) descent that the oblivious port will mirror: one level-synchronized
-    descent serves the whole key set rather than one descent per key. These pin the result -- it
-    matches the single-key path for every key, present or absent."""
+    descent serves the whole key set rather than one descent per key. The per-tree files cross-check it
+    against sequential single-key ops; this pins the empty and absent-key edges both trees share."""
 
     def test_multi_ops_handle_empty_inputs(self, make_search_tree):
         tree = make_search_tree(leaf_range=1000)
@@ -102,28 +102,3 @@ class TestSearchTreeBatched:
 
         tree.multi_insert([(5, 50), (6, 60)])
         assert tree.multi_search([5, 6, 7]) == {5: 50, 6: 60, 7: None}
-
-    def test_multi_insert_matches_repeated_single(self, make_search_tree):
-        pairs = [(k, k * 10) for k in random.Random(3).sample(range(100000), 500)]
-        batched = make_search_tree(leaf_range=200000)
-        single = make_search_tree(leaf_range=200000)
-        batched.multi_insert(pairs)
-        for k, v in pairs:
-            single.insert(k, v)
-
-        assert batched.height == single.height
-        for k, v in pairs:
-            assert batched.search(k) == v
-
-    def test_multi_search_matches_single(self, make_search_tree):
-        tree = make_search_tree(leaf_range=200000)
-        present = random.Random(5).sample(range(100000), 400)
-        for k in present:
-            tree.insert(k, k + 1)
-
-        query = present + [100001, 100002, 100003]
-        results = tree.multi_search(query)
-        for k in present:
-            assert results[k] == k + 1
-        for k in (100001, 100002, 100003):
-            assert results[k] is None

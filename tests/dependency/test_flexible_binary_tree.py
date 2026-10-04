@@ -1,208 +1,167 @@
-"""Characterization tests for the revived FlexibleBinaryTree.
-
-The module had no prior working spec (it could not even be constructed), so these tests pin the
-behavior the revived code exhibits -- the scale_up/scale_down assertions in particular CHARACTERIZE
-current behavior rather than enforce an external contract. Leaf labels are (leaf, level) tuples whose
-storage index is 2 ** (level - 1) - 1 + leaf.
-"""
-
-from typing import Any, cast
+import random
 
 import pytest
 
+from oblivlib.dependency import AesGcm, Data, PathData, ScaleDownError
+from oblivlib.dependency.codec import DefaultCodec
 from oblivlib.dependency.flexible_binary_tree import FlexibleBinaryTree
-from oblivlib.dependency.helper import Data
-from oblivlib.dependency.types import Block, Buckets
+from oblivlib.dependency.types import Bucket
+
+_CODEC = DefaultCodec(block_size=128)
 
 
-def _fdata(key: Any = None, leaf: Any = None, value: Any = None) -> Data:
-    """Build flexible-tree Data whose leaf is a (leaf, level) tuple; Data.leaf is typed int|None,
-    so cast at this boundary the same way the source does (see fill_data_to_storage_leaf)."""
-    return Data(key=key, leaf=cast("int | None", leaf), value=value)
+@pytest.fixture(params=["memory", "file"])
+def make_tree(request, test_file):
+    def make(num_data: int, bucket_size: int = 2) -> FlexibleBinaryTree:
+        filename = str(test_file) if request.param == "file" else None
+        return FlexibleBinaryTree(num_data=num_data, bucket_size=bucket_size, codec=_CODEC, filename=filename)
+
+    return make
 
 
-def _as_data(block: Block) -> Data:
-    """Narrow a read Block to Data; these plaintext trees only ever store Data."""
-    assert isinstance(block, Data)
-    return block
+def _naive_path(leaf: int, level: int) -> list[int]:
+    index, path = leaf + (1 << (level - 1)) - 1, []
+    while index >= 0:
+        path.append(index)
+        index = (index - 1) // 2
+    return path
+
+
+def _block(key: int, leaf: int = 0) -> Data:
+    return Data(key=key, leaf=leaf, value=f"v{key}")
 
 
 class TestFlexibleBinaryTree:
-    def test_fill_buckets_with_dummy_data(self):
-        buckets: Buckets = [[], [_fdata(key=1, leaf=(0, 4), value="x")]]
-        FlexibleBinaryTree.fill_buckets_with_dummy_data(buckets, bucket_size=3)
-        assert all(len(b) == 3 for b in buckets)
-        assert buckets[0] == [Data(), Data(), Data()]
-
-    def test_get_cross_index(self):
-        assert FlexibleBinaryTree.get_cross_index(leaf_a=1023, leaf_b=1024) == 511
-        assert FlexibleBinaryTree.get_cross_index(leaf_a=1023, leaf_b=1023) == 1023
-        assert FlexibleBinaryTree.get_cross_index(leaf_a=7, leaf_b=12) == FlexibleBinaryTree.get_cross_index(
-            leaf_a=12, leaf_b=7
-        )
-
-    def test_get_cross_index_level(self):
-        assert FlexibleBinaryTree.get_cross_index_level(leaf_a=1023, leaf_b=1024) == 9
-        assert FlexibleBinaryTree.get_cross_index_level(leaf_a=1023, leaf_b=1023) == 10
-        assert FlexibleBinaryTree.get_cross_index_level(leaf_a=0, leaf_b=0) == 0
-
-    def test_fill_data_to_path_single(self):
-        level = 4
-        leaf = (0, 4)
-        path = [[] for _ in range(level)]
-        assert FlexibleBinaryTree.fill_data_to_path(
-            _fdata(key=1, leaf=(0, 4), value="same"), path, leaf, bucket_size=1, level=level
-        )
-        assert [i for i, b in enumerate(path) if b] == [3]
-        assert FlexibleBinaryTree.fill_data_to_path(
-            _fdata(key=2, leaf=(1, 4), value="sib"), path, leaf, bucket_size=1, level=level
-        )
-        assert [i for i, b in enumerate(path) if b] == [2, 3]
-
-    def test_fill_data_to_path_returns_false_when_full(self):
-        level = 4
-        leaf = (0, 4)
-        path = [[] for _ in range(level)]
-        for i in range(level):
-            assert FlexibleBinaryTree.fill_data_to_path(
-                _fdata(key=i, leaf=(0, 4), value=i), path, leaf, bucket_size=1, level=level
-            )
-        assert not FlexibleBinaryTree.fill_data_to_path(
-            _fdata(key=99, leaf=(0, 4), value=99), path, leaf, bucket_size=1, level=level
-        )
-
-    def test_fill_data_to_path_dict(self):
-        path = {i: [] for i in [7, 3, 1, 0]}
-        assert FlexibleBinaryTree.fill_data_to_path_dict(
-            _fdata(key=1, leaf=(0, 4), value="x"), path, (0, 4), bucket_size=1
-        )
-        assert [k for k, v in path.items() if v] == [7]
-
-    def test_fill_data_to_mul_path(self):
-        path = {i: [] for i in [7, 8, 3, 4, 1, 0]}
-        assert FlexibleBinaryTree.fill_data_to_mul_path(
-            Data(key=1, leaf=7, value="m"), path, leaves=[7, 8], bucket_size=1
-        )
-        assert [k for k, v in path.items() if v] == [7]
-
-    def test_adjust_to_same_level(self):
-        assert FlexibleBinaryTree.adjust_to_same_level(1023, 3, 11, 3) == (3, 3)
-        assert FlexibleBinaryTree.adjust_to_same_level(3, 1023, 3, 11) == (3, 3)
-
-    def test_adjust_to_lowest_level(self):
-        assert FlexibleBinaryTree.adjust_to_lowest_level(0, old_level=1, level=11) == 1023
-        assert FlexibleBinaryTree.adjust_to_lowest_level(1023, old_level=11, level=11) == 1023
-        assert FlexibleBinaryTree.adjust_to_lowest_level(7, old_level=4, level=3) == 3
-
-    def test_get_actual_leaf_index(self):
-        assert FlexibleBinaryTree.get_actual_leaf_index((0, 11)) == 1023
-        assert FlexibleBinaryTree.get_actual_leaf_index((2, 11)) == 1025
-        assert FlexibleBinaryTree.get_actual_leaf_index((0, 1)) == 0
-        assert FlexibleBinaryTree.get_actual_leaf_index((1, 4)) == 8
-
-    def test_get_actual_leaf_index_rejects_non_tuple(self):
-        not_a_tuple: Any = 5
-        with pytest.raises(TypeError):
-            FlexibleBinaryTree.get_actual_leaf_index(not_a_tuple)
-
-    def test_scale_up_changes_level_and_preserves_data(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=4)
-        before = (tree.level, tree.size, tree.start_leaf)
-        assert before == (4, 15, 7)
-        tree.fill_data_to_storage_leaf(_fdata(key=1, leaf=(0, 4), value="A"))
-
-        tree.scale_up()
-        assert (tree.level, tree.size, tree.start_leaf) == (5, 31, 15)
-        assert _as_data(tree.storage[7][0]).value == "A"
-        retrieved = [d for bucket in tree.read_path((0, 4)) for d in map(_as_data, bucket) if d.value == "A"]
-        assert retrieved and retrieved[0].key == 1
-
-    def test_scale_down_changes_level_and_preserves_data(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=4)
-        tree.fill_data_to_storage_leaf(_fdata(key=1, leaf=(0, 4), value="A"))
-        assert _as_data(tree.storage[7][0]).value == "A"
-
-        assert tree.scale_down() is True
-        assert (tree.level, tree.size, tree.start_leaf) == (3, 7, 3)
-        assert _as_data(tree.storage[3][0]).value == "A"
-        retrieved = [d for bucket in tree.read_path((0, 4)) for d in map(_as_data, bucket) if d.value == "A"]
-        assert retrieved and retrieved[0].key == 1
-
-    def test_scale_down_refuses_when_data_would_not_fit(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=1)
-        for i in range(4):
-            assert tree.fill_data_to_storage_leaf(_fdata(key=i, leaf=(0, 4), value=i))
-        assert tree.scale_down() is False
-        assert (tree.level, tree.size) == (4, 15)
-
-    def test_scale_down_boundary_is_feasible(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=1)
-        for i in range(3):
-            assert tree.fill_data_to_storage_leaf(_fdata(key=i, leaf=(0, 4), value=i))
-        assert tree.scale_down() is True
+    def test_init_all_nodes_present(self, make_tree):
+        tree = make_tree(num_data=4)
         assert tree.level == 3
+        assert tree.read_path(list(range(4))) == {index: [] for index in range(7)}
 
-    def test_scale_up_then_scale_down_round_trips(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=4)
-        tree.fill_data_to_storage_leaf(_fdata(key=1, leaf=(0, 4), value="A"))
-        original = (tree.level, tree.size, tree.start_leaf)
+    def test_fill_data_to_storage_leaf(self, make_tree):
+        tree = make_tree(num_data=4)
+        for key in range(6):
+            assert tree.fill_data_to_storage_leaf(_block(key, leaf=1))
+        assert not tree.fill_data_to_storage_leaf(_block(9, leaf=1))
+
+        assert tree.read_path([1]) == {
+            0: [_block(4, 1), _block(5, 1)],
+            1: [_block(2, 1), _block(3, 1)],
+            4: [_block(0, 1), _block(1, 1)],
+        }
+
+    def test_read_path_root_down_skips_empty(self, make_tree):
+        tree = make_tree(num_data=4)
+        tree.write_path([0], {0: [_block(0)], 3: [_block(3)]})
+
+        path = tree.read_path([0, 1])
+        assert list(path) == [0, 3, 4]
+        assert path == {0: [_block(0)], 3: [_block(3)], 4: []}
+
+    def test_write_path_clears_omitted_nodes(self, make_tree):
+        tree = make_tree(num_data=4)
+        tree.write_path([2], {0: [_block(0)], 2: [_block(2)], 5: [_block(5)]})
+        tree.write_path([2], {5: [_block(6)]})
+
+        assert tree.read_path([2]) == {5: [_block(6)]}
+        assert tree.read_path([3]) == {6: []}
+
+    def test_write_path_rejects_off_path_index(self, make_tree):
+        tree = make_tree(num_data=4)
+        with pytest.raises(ValueError, match=r"\[4\]"):
+            tree.write_path([0], {0: [_block(0)], 4: [_block(4)]})
+        assert tree.read_path([0]) == {0: [], 1: [], 3: []}
+
+    def test_scale_up_adds_empty_layer(self, make_tree):
+        tree = make_tree(num_data=2)
+        tree.write_path([1], {0: [_block(0)], 2: [_block(2)]})
+
         tree.scale_up()
-        assert tree.scale_down() is True
-        assert (tree.level, tree.size, tree.start_leaf) == original
-        retrieved = [d for bucket in tree.read_path((0, 4)) for d in map(_as_data, bucket) if d.value == "A"]
-        assert retrieved and retrieved[0].key == 1
+        assert tree.level == 3
+        assert tree.read_path(list(range(4))) == {0: [_block(0)], 1: [], 2: [_block(2)]}
 
-    def test_fill_data_to_storage_leaf(self):
-        tree = FlexibleBinaryTree(num_data=pow(2, 10), bucket_size=4)
-        for i in range(10):
-            assert tree.fill_data_to_storage_leaf(_fdata(key=i, leaf=(0, 11), value=i))
-        path = tree.read_path((0, 11))
-        assert _as_data(path[0][0]).key == 0
-        assert _as_data(path[1][0]).key == 4
-        assert _as_data(path[2][1]).key == 9
+    def test_scale_down_frees_empty_layer(self, make_tree):
+        tree = make_tree(num_data=4)
+        tree.write_path([0, 1, 2, 3], {0: [_block(0)], 2: [_block(2)]})
 
-    def test_get_leaf_path(self):
-        tree = FlexibleBinaryTree(num_data=pow(2, 10), bucket_size=4)
-        assert tree.get_leaf_path(leaf=(0, 11)) == [1023, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
-        assert tree.get_leaf_path(leaf=(0, 1)) == tree.get_leaf_path(leaf=(0, 11))
+        tree.scale_down()
+        assert tree.level == 2
+        assert tree.read_path([0, 1]) == {0: [_block(0)], 2: [_block(2)]}
 
-    def test_get_mul_leaf_path(self):
-        tree = FlexibleBinaryTree(num_data=pow(2, 10), bucket_size=4)
-        assert tree.get_mul_leaf_path(leaves=[(0, 11), (1, 11)]) == [1024, 1023, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
+    def test_scale_down_raises_when_bottom_occupied(self, make_tree):
+        tree = make_tree(num_data=4)
+        tree.write_path([0, 1, 2], {0: [_block(0)], 5: [_block(5)]})
 
-    def test_get_leaf_block(self):
-        tree = FlexibleBinaryTree(num_data=pow(2, 10), bucket_size=4)
-        assert tree.get_leaf_block(leaf=(0, 11), index=0) == 0
-        assert tree.get_leaf_block(leaf=(0, 11), index=1) == 1
-        assert tree.get_leaf_block(leaf=(0, 11), index=tree.level - 1) == 1023
+        with pytest.raises(ScaleDownError):
+            tree.scale_down()
+        assert tree.level == 3
+        assert tree.read_path([2]) == {0: [_block(0)], 5: [_block(5)]}
 
-    def test_read_write_path_round_trip(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=2)
-        leaf = (0, 4)
-        path = tree.read_path(leaf)
-        assert len(path) == tree.level
-        new_path: Buckets = [[_fdata(key=i, leaf=leaf, value=f"v{i}")] for i in range(len(path))]
-        tree.write_path(leaf, new_path)
-        reread = tree.read_path(leaf)
-        assert [_as_data(b[0]).value for b in reread] == ["v0", "v1", "v2", "v3"]
+    def test_scale_down_at_level_one_raises(self, make_tree):
+        tree = make_tree(num_data=1)
+        tree.write_path([0], {})
+        with pytest.raises(ScaleDownError):
+            tree.scale_down()
 
-    def test_read_path_rejects_bad_leaf(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=2)
-        bad_leaf: Any = 5
-        with pytest.raises(TypeError):
-            tree.read_path(bad_leaf)
+    def test_file_backed_resize_preserves_prefix(self, test_file):
+        tree = FlexibleBinaryTree(num_data=4, bucket_size=2, codec=_CODEC, filename=str(test_file))
+        for key in range(4):
+            tree.fill_data_to_storage_leaf(_block(key, leaf=key))
+        before = tree.read_path(list(range(4)))
 
-    def test_write_path_wrong_length_raises(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=2)
-        with pytest.raises(ValueError):
-            tree.write_path([(0, 4), (1, 4)], data=[[]])
+        tree.scale_up()
+        tree.write_path(list(range(8)), before)
+        tree.scale_down()
+        assert tree.read_path(list(range(4))) == before
 
-    def test_read_write_block_round_trip(self):
-        tree = FlexibleBinaryTree(num_data=8, bucket_size=2)
-        leaf = (0, 4)
-        new_path: Buckets = [[_fdata(key=i, leaf=leaf, value=f"v{i}")] for i in range(tree.level)]
-        tree.write_path(leaf, new_path)
-        assert _as_data(tree.read_block(leaf, bucket_id=0, block_id=0)).value == "v3"
-        tree.write_block(leaf, bucket_id=0, block_id=0, data=_fdata(key=42, leaf=leaf, value="blk"))
-        assert _as_data(tree.read_block(leaf, bucket_id=0, block_id=0)).key == 42
-        assert _as_data(tree.read_block(leaf, bucket_id=0, block_id=0)).value == "blk"
+    @pytest.mark.parametrize("on_disk", [False, True], ids=["memory-enc", "file-enc"])
+    def test_sealed_blobs_survive_resize(self, test_file, on_disk):
+        encryptor = AesGcm()
+        filename = str(test_file) if on_disk else None
+        tree = FlexibleBinaryTree(num_data=2, bucket_size=2, codec=_CODEC, encryptor=encryptor, filename=filename)
+        tree.fill_data_to_storage_leaf(_block(1, leaf=1))
+        tree.storage.seal(encryptor=encryptor)
+        sealed = tree.read_path([0, 1])
+
+        tree.scale_up()
+        assert tree.read_path(list(range(4))) == sealed
+        tree.scale_down()
+        path = tree.read_path([1])
+        blob = path[2][0]
+        assert isinstance(blob, bytes)
+        assert _CODEC.open_bucket(encryptor, blob) == [_block(1, leaf=1)]
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_random_ops_match_model(self, make_tree, seed):
+        rng = random.Random(seed)
+        tree = make_tree(num_data=4)
+        level = 3
+        model: PathData = {index: [] for index in range(7)}
+
+        for step in range(300):
+            all_leaves = list(range(1 << (level - 1)))
+            bottom = range((1 << (level - 1)) - 1, (1 << level) - 1)
+            leaves = rng.sample(all_leaves, rng.randint(1, min(3, len(all_leaves))))
+            nodes = sorted({index for leaf in leaves for index in _naive_path(leaf, level)})
+            roll = rng.random()
+            if roll < 0.35:
+                data: dict[int, Bucket] = {index: [_block(step * 100 + index)] for index in nodes if rng.random() < 0.5}
+                tree.write_path(leaves, data)
+                for index in nodes:
+                    model.pop(index, None)
+                model.update(data)
+            elif roll < 0.65:
+                assert tree.read_path(leaves) == {index: model[index] for index in nodes if index in model}
+            elif roll < 0.75:
+                kept = {index: bucket for index, bucket in model.items() if index not in bottom}
+                tree.write_path(all_leaves, kept)
+                model = kept
+            elif roll < 0.85 and level < 6:
+                tree.scale_up()
+                level += 1
+            elif level == 1 or any(index in model for index in bottom):
+                with pytest.raises(ScaleDownError):
+                    tree.scale_down()
+            else:
+                tree.scale_down()
+                level -= 1
+            assert tree.level == level

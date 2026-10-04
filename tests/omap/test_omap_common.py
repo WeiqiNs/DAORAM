@@ -85,18 +85,7 @@ class TestOmapBehavior:
         for i in range(60):
             assert omap.search(key=i) == i * 3
 
-    @pytest.mark.parametrize(
-        "encrypted",
-        [
-            True,
-            pytest.param(
-                False,
-                marks=pytest.mark.xfail(
-                    reason="plaintext file slots are sized for byte-encoded nodes; Storage must serialize via the codec"
-                ),
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("encrypted", [True, False])
     def test_file_backend_round_trip(self, omap_spec, client, test_file, encryptor, encrypted):
         omap = omap_spec.make(
             client=client, num_data=128, filename=str(test_file), encryptor=encryptor if encrypted else None

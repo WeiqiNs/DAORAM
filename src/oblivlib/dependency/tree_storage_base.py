@@ -1,32 +1,26 @@
-"""Shared core of the tree-structured schemes: config accessors, leaf math, stash, eviction, path crypto."""
-
 import os
 import secrets
+from functools import cached_property
 
 from oblivlib.dependency.binary_tree import BinaryTree
 from oblivlib.dependency.codec import BlockCodec, DefaultCodec
 from oblivlib.dependency.config import OramConfig
 from oblivlib.dependency.crypto import Encryptor
-from oblivlib.dependency.helper import Data, Helper
+from oblivlib.dependency.errors import MissingClientError, StashOverflowError
+from oblivlib.dependency.heap_index import compute_level, empty_path, fill_data_to_path
 from oblivlib.dependency.interact_server import InteractServer
-from oblivlib.dependency.types import Block, PathData
+from oblivlib.dependency.types import Block, Data, PathData
 
 
 class TreeStorageBase[ConfigT: OramConfig]:
     def __init__(self, config: ConfigT):
         self._config: ConfigT = config
 
-        self._level: int = BinaryTree.compute_level(config.num_data)
+        self._level: int = compute_level(config.num_data)
         self._leaf_range: int = 1 << (self._level - 1)
         self._stash_capacity: int = config.stash_scale * max(1, self._level - 1)
 
         self._stash: list = []
-
-        self._dumped_data_size: int | None = None
-        if config.encryptor or config.filename:
-            self._dumped_data_size = len(
-                Data(key=config.num_data - 1, leaf=config.num_data - 1, value=os.urandom(config.data_size)).dump()
-            )
 
     @property
     def _name(self) -> str:
@@ -54,26 +48,13 @@ class TreeStorageBase[ConfigT: OramConfig]:
 
     @property
     def _client(self) -> InteractServer:
-        assert self._config.client is not None
+        if self._config.client is None:
+            raise MissingClientError(f"{type(self).__name__} {self._name!r} has no client; pass client= in its config")
         return self._config.client
 
-    @property
-    def _disk_size(self) -> int | None:
-        """Bytes per file row: one ciphertext per bucket when encrypted, else one block slot."""
-        if not self._filename:
-            return None
-        block_size = self._codec.block_size
-        if self._encryptor:
-            return self._encryptor.ciphertext_length(self._bucket_size * block_size)
-        return block_size
-
-    @property
-    def stash(self) -> list:
-        return self._stash
-
-    @stash.setter
-    def stash(self, value: list):
-        self._stash = value
+    @cached_property
+    def _dumped_data_size(self) -> int:
+        return len(Data(key=self._num_data - 1, leaf=self._num_data - 1, value=os.urandom(self._data_size)).dump())
 
     @property
     def stash_size(self) -> int:
@@ -84,57 +65,66 @@ class TreeStorageBase[ConfigT: OramConfig]:
 
     def _check_stash(self) -> None:
         if len(self._stash) > self._stash_capacity:
-            raise MemoryError("Stash overflow!")
+            raise StashOverflowError(
+                f"{type(self).__name__} {self._name!r}: stash holds {len(self._stash)} blocks, "
+                + f"capacity {self._stash_capacity}"
+            )
 
     def _evict_stash(self, leaves: list[int]) -> PathData:
-        """Evict stash blocks onto the given paths; blocks that don't fit stay in the stash."""
-        path = BinaryTree.get_mul_path_dict(level=self._level, indices=leaves)
+        path = empty_path(level=self._level, leaves=leaves)
         remaining = []
         for data in self._stash:
-            if not BinaryTree.fill_data_to_path(
-                data=data, path=path, leaves=leaves, level=self._level, bucket_size=self._bucket_size
-            ):
+            if not fill_data_to_path(data, path, leaves=leaves, level=self._level, bucket_size=self._bucket_size):
                 remaining.append(data)
         self._stash = remaining
         return self._encrypt_path_data(path=path)
 
     @property
     def _codec(self) -> BlockCodec:
-        assert self._dumped_data_size is not None
         return DefaultCodec(self._dumped_data_size)
 
+    def _build_tree(self, blocks: list[Data]) -> BinaryTree:
+        tree = BinaryTree(
+            num_data=self._num_data,
+            bucket_size=self._bucket_size,
+            codec=self._codec,
+            encryptor=self._encryptor,
+            filename=self._filename,
+        )
+        for block in blocks:
+            if not tree.fill_data_to_storage_leaf(data=block):
+                self._stash.append(block)
+        self._check_stash()
+
+        if self._encryptor:
+            tree.storage.seal(encryptor=self._encryptor)
+
+        return tree
+
     def _encrypt_path_data(self, path: PathData) -> PathData:
-        """Encrypt each bucket into a single ciphertext blob, padding to bucket_size with dummies."""
-        if not self._encryptor:
+        encryptor = self._encryptor
+        if not encryptor:
             return path
 
         codec = self._codec
-        dummy = codec.dummy_block()
         return {
-            idx: [
-                Helper.encrypt_bucket(
-                    self._encryptor,
-                    [codec.dump_block(data) for data in bucket if isinstance(data, Data)],
-                    dummy,
-                    self._bucket_size,
-                )
-            ]
+            idx: [codec.seal_bucket(encryptor, [data for data in bucket if isinstance(data, Data)], self._bucket_size)]
             for idx, bucket in path.items()
         }
 
     def _decrypt_path_data(self, path: PathData) -> dict[int, list[Data]]:
-        """Decrypt each bucket's blob and drop dummy blocks; returns plaintext Data per bucket."""
         encryptor = self._encryptor
         if not encryptor:
-            return {idx: [data for data in bucket if isinstance(data, Data)] for idx, bucket in path.items()}
+            return {
+                idx: [data for data in bucket if isinstance(data, Data) and data.is_real()]
+                for idx, bucket in path.items()
+            }
 
         codec = self._codec
-        block_size = codec.block_size
 
-        def _dec_bucket(bucket: list[Block]) -> list[Data]:
+        def _open(bucket: list[Block]) -> list[Data]:
             blob = bucket[0]
             assert isinstance(blob, bytes)
-            blocks = Helper.decrypt_bucket(encryptor, blob, block_size)
-            return [data for block in blocks if (data := codec.load_block(block)).is_real()]
+            return codec.open_bucket(encryptor, blob)
 
-        return {idx: _dec_bucket(bucket) for idx, bucket in path.items()}
+        return {idx: _open(bucket) for idx, bucket in path.items()}

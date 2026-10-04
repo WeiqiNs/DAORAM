@@ -7,7 +7,7 @@ slot's ODS tree. An op fetches the root from the ORAM, runs the ODS op against i
 
 from typing import Any, override
 
-from oblivlib.dependency import Blake2Prf, Helper
+from oblivlib.dependency import Blake2Prf, hash_data_to_leaf, hash_data_to_map
 from oblivlib.dependency.config import OramOstOmapConfig
 from oblivlib.omap.base_omap import BaseOmap
 from oblivlib.omap.ost_base_omap import OstBaseOmap
@@ -33,7 +33,7 @@ class OramOstOmap(BaseOmap):
         if data is None:
             data = []
 
-        data_map = Helper.hash_data_to_map(prf=self._prf, data=data, map_size=self._num_data)
+        data_map = hash_data_to_map(prf=self._prf, data=data, map_size=self._num_data)
         data_list = [data_map[key] for key in range(self._num_data)]
 
         roots = self._ost.init_mul_tree_server_storage(data_list=data_list)
@@ -42,7 +42,7 @@ class OramOstOmap(BaseOmap):
     @override
     def search(self, key: str | int | bytes, value: Any = None) -> Any:
         """Search for ``key``, writing ``value`` first when given; returns the old value."""
-        oram_key = Helper.hash_data_to_leaf(prf=self._prf, data=key, map_size=self._num_data)
+        oram_key = hash_data_to_leaf(prf=self._prf, data=key, map_size=self._num_data)
         root = self._oram.operate_on_key_without_eviction(key=oram_key)
         self._ost.root = root
         value = self._ost.search(key=key, value=value)
@@ -51,7 +51,7 @@ class OramOstOmap(BaseOmap):
 
     @override
     def insert(self, key: str | int | bytes, value: Any):
-        oram_key = Helper.hash_data_to_leaf(prf=self._prf, data=key, map_size=self._num_data)
+        oram_key = hash_data_to_leaf(prf=self._prf, data=key, map_size=self._num_data)
         root = self._oram.operate_on_key_without_eviction(key=oram_key)
         self._ost.root = root
         self._ost.insert(key=key, value=value)

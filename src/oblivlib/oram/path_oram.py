@@ -23,7 +23,7 @@ class PathOram[ConfigT: OramConfig](TreeBaseOram[ConfigT]):
 
     @override
     def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage: ServerStorage = {self._name: self._init_storage_on_pos_map(data_map=data_map)}
+        storage: ServerStorage = {self._name: self._build_tree(self._initial_blocks(data_map=data_map))}
         self._client.init_storage(storage=storage)
 
     @override

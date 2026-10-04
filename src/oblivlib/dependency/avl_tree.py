@@ -1,21 +1,14 @@
-"""Defines the AVL tree; note that inserting repeated keys may cause unexpected behavior."""
-
 from __future__ import annotations
 
-import pickle
 import secrets
-from dataclasses import dataclass, fields
-from typing import Any, Self
+from dataclasses import dataclass
+from typing import Any
 
-from oblivlib.dependency.helper import Data
-from oblivlib.dependency.types import KVPair
+from oblivlib.dependency.types import Data, FieldTuplePickle, KVPair
 
 
 @dataclass
-class AVLData:
-    """The payload stored in an ORAM block for one AVL node: its value plus each child's (key, leaf,
-    height), so the tree can be traversed obliviously. All fields default to None for a dummy block."""
-
+class AVLData(FieldTuplePickle):
     value: Any = None
     r_key: Any = None
     r_leaf: int | None = None
@@ -23,13 +16,6 @@ class AVLData:
     l_key: Any = None
     l_leaf: int | None = None
     l_height: int = 0
-
-    @classmethod
-    def from_pickle(cls, data: bytes) -> Self:
-        return cls(*pickle.loads(data))
-
-    def dump(self) -> bytes:
-        return pickle.dumps(tuple(getattr(self, f.name) for f in fields(self)))
 
 
 class AVLTreeNode:
@@ -43,8 +29,6 @@ class AVLTreeNode:
 
 
 class AVLTree:
-    """AVL tree used to initialize the OMAP storage from a list of key-value pairs."""
-
     def __init__(self, leaf_range: int):
         self._leaf_range = leaf_range
 
@@ -63,7 +47,6 @@ class AVLTree:
         node.height = 1 + max(self._get_height(node.left_node), self._get_height(node.right_node))
 
     def _rotate_left(self, in_node: AVLTreeNode) -> AVLTreeNode:
-        """Left-rotate at in_node and return the new subtree root (its former right child)."""
         assert in_node.right_node is not None
         p_node = in_node.right_node
         tmp_node = p_node.left_node
@@ -77,7 +60,6 @@ class AVLTree:
         return p_node
 
     def _rotate_right(self, in_node: AVLTreeNode) -> AVLTreeNode:
-        """Right-rotate at in_node and return the new subtree root (its former left child)."""
         assert in_node.left_node is not None
         p_node = in_node.left_node
         tmp_node = p_node.right_node
@@ -91,7 +73,6 @@ class AVLTree:
         return p_node
 
     def _balance(self, node: AVLTreeNode) -> AVLTreeNode:
-        """Re-balance a node if it is unbalanced, returning the new subtree root."""
         self._update_height(node)
         balance = self._get_balance(node)
 
@@ -111,7 +92,6 @@ class AVLTree:
 
     @staticmethod
     def search(key: Any, root: AVLTreeNode | None) -> Any:
-        """Return the value stored under key, or None if it is not present."""
         while root:
             if key < root.key:
                 root = root.left_node
@@ -124,13 +104,6 @@ class AVLTree:
 
     @staticmethod
     def multi_search(keys: list[Any], root: AVLTreeNode | None) -> dict[Any, Any]:
-        """Look up many keys in a single level-synchronized descent; returns {key: value or None}.
-
-        All cursors start at the root and advance one level per round; within a round we hold exactly
-        the nodes a batched ODS read would fetch for that layer (one per still-active key). A cursor
-        stops when it matches its key or falls off the tree -- one descent serving the whole key set,
-        not one per key. Absent keys map to None.
-        """
         results: dict[Any, Any] = dict.fromkeys(keys)
         if root is None:
             return results
@@ -150,7 +123,6 @@ class AVLTree:
         return results
 
     def insert(self, root: AVLTreeNode | None, kv_pair: KVPair) -> AVLTreeNode:
-        """Insert kv_pair into the tree rooted at root and return the updated root."""
         if not root:
             return AVLTreeNode(kv_pair)
 
@@ -188,7 +160,6 @@ class AVLTree:
         raise ValueError("The node was not successfully inserted.")
 
     def recursive_insert(self, root: AVLTreeNode | None, kv_pair: KVPair) -> AVLTreeNode:
-        """Recursive variant of insert; kept to validate the non-recursive implementation."""
         if root is None:
             return AVLTreeNode(kv_pair)
         elif kv_pair.key < root.key:
@@ -200,13 +171,6 @@ class AVLTree:
 
     @staticmethod
     def _collect_insert_paths(root: AVLTreeNode | None, keys: list[Any]) -> set[AVLTreeNode]:
-        """Batched insertion descent: fetch every key's root-to-insertion path into one local partial tree.
-
-        All cursors start at the root and advance one level per round (left on a smaller key, right
-        otherwise), each round fetching the whole layer at once -- a single descent serving the whole
-        key set, not one per key. Returns ``local``, the set of fetched nodes (the partial tree phase 2
-        mutates).
-        """
         local: set[AVLTreeNode] = set()
         if root is None:
             return local
@@ -223,13 +187,6 @@ class AVLTree:
         return local
 
     def _insert_into_local(self, root: AVLTreeNode | None, local: set[AVLTreeNode], kv_pair: KVPair) -> AVLTreeNode:
-        """Insert one pair operating only on the local partial tree ``local`` (multi_insert's engine).
-
-        Same shape as the single-key ``insert`` -- descend, link, rebalance bottom-up via ``_balance``
-        -- but every node stepped onto must already be in ``local`` (else the batched paths were
-        incomplete and we raise), and each newly created node joins ``local``. Rebalancing needs no
-        guard: rotations only re-point nodes already on the descended path.
-        """
         if root is None:
             new_node = AVLTreeNode(kv_pair)
             local.add(new_node)
@@ -271,26 +228,12 @@ class AVLTree:
         raise ValueError("The node was not successfully inserted.")
 
     def multi_insert(self, root: AVLTreeNode | None, kv_pairs: list[KVPair]) -> AVLTreeNode | None:
-        """Insert many pairs against a single fetched partial tree; returns the new root.
-
-        Phase 1 (``_collect_insert_paths``) is the only storage access: one batched descent over all
-        keys (not one per key) gathering the union of their insertion paths into ``local``. Phase 2
-        replays single-key inserts against ``local`` only, raising if it ever needs an unfetched node.
-        Inserts rebalance per key (AVL can't be batch-rebalanced in one pass), so the result equals
-        sequential single inserts -- the shape the oblivious port mirrors.
-        """
         local = self._collect_insert_paths(root=root, keys=[kv_pair.key for kv_pair in kv_pairs])
         for kv_pair in kv_pairs:
             root = self._insert_into_local(root=root, local=local, kv_pair=kv_pair)
         return root
 
     def delete(self, root: AVLTreeNode | None, key: Any) -> AVLTreeNode | None:
-        """Delete the node with the given key (non-recursive); returns the new root, or None if empty.
-
-        This serves as a template for the oblivious version: it tracks the visited path in a
-        ``local`` list with clear phases, and for the two-children case uses the in-order successor
-        (go right, then keep going left) or predecessor depending on subtree heights.
-        """
         if not root:
             return None
 
@@ -374,11 +317,6 @@ class AVLTree:
         return root
 
     def recursive_delete(self, root: AVLTreeNode | None, key: Any) -> AVLTreeNode | None:
-        """Recursive variant of delete; kept to validate the non-recursive implementation.
-
-        It makes the same two-children choice as ``delete`` (replace with the in-order predecessor when
-        the left subtree is taller, otherwise the successor), so both produce structurally identical trees.
-        """
         if root is None:
             return None
 
@@ -408,11 +346,7 @@ class AVLTree:
 
         return self._balance(root)
 
-    def get_data_list(self, root: AVLTreeNode, encryption: bool = False) -> list[Data]:
-        """Expand the tree rooted at root into a list of Data blocks, sampling a leaf per node.
-
-        With encryption enabled, each block's value is the pickled AVLData rather than the object.
-        """
+    def get_data_list(self, root: AVLTreeNode) -> list[Data]:
         root.leaf = self._get_new_leaf()
         stack = [root]
 
@@ -436,9 +370,6 @@ class AVLTree:
                 avl_data.r_height = node.right_node.height
                 stack.append(node.right_node)
 
-            if encryption:
-                result.append(Data(key=node.key, leaf=node.leaf, value=avl_data.dump()))
-            else:
-                result.append(Data(key=node.key, leaf=node.leaf, value=avl_data))
+            result.append(Data(key=node.key, leaf=node.leaf, value=avl_data))
 
         return result

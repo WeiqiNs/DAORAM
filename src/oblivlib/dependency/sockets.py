@@ -22,6 +22,12 @@ class BaseSocket(ABC):
 
 
 class ZMQSocket(BaseSocket):
+    """ZeroMQ ``REQ`` (client) / ``REP`` (server) socket with pickle framing.
+
+    ``recv`` unpickles whatever the peer sends, which can execute arbitrary code: connect only to a
+    trusted peer (the honest-but-curious model).
+    """
+
     def __init__(self, ip: str, port: int, is_server: bool):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REP if is_server else zmq.REQ)

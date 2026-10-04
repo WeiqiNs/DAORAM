@@ -11,18 +11,6 @@ from typing import ClassVar, override
 import pytest
 
 from oblivlib.dependency import AVLTree, BPlusTree, BPlusTreeNode, KVPair
-from oblivlib.dependency.binary_tree import BinaryTree
-from oblivlib.dependency.flexible_binary_tree import FlexibleBinaryTree
-
-
-@pytest.fixture(params=[BinaryTree, FlexibleBinaryTree], ids=["binary", "flexible"])
-def binary_tree_cls(request):
-    """Return a binary-tree class (BinaryTree or FlexibleBinaryTree) for the shared index-math suite.
-
-    Both classes share an identical constructor signature and identical implementations of the
-    level/size index math and the static path helpers exercised in `test_binary_tree_common.py`.
-    """
-    return request.param
 
 
 class _SearchTreeAdapter(ABC):
@@ -55,12 +43,6 @@ class _SearchTreeAdapter(ABC):
     @property
     @abstractmethod
     def is_empty(self) -> bool:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def height(self) -> int:
-        """Number of node levels on a root-to-leaf path (0 when empty); the single-op descent cost."""
         raise NotImplementedError
 
 
@@ -96,11 +78,6 @@ class _AVLAdapter(_SearchTreeAdapter):
     @override
     def is_empty(self) -> bool:
         return self._root is None
-
-    @property
-    @override
-    def height(self) -> int:
-        return self._root.height if self._root is not None else 0
 
 
 class _BPlusAdapter(_SearchTreeAdapter):
@@ -143,17 +120,6 @@ class _BPlusAdapter(_SearchTreeAdapter):
     @override
     def is_empty(self) -> bool:
         return self._root is None
-
-    @property
-    @override
-    def height(self) -> int:
-        node, levels = self._root, 0
-        while node is not None:
-            levels += 1
-            if node.is_leaf:
-                break
-            node = node.values[0]
-        return levels
 
 
 @pytest.fixture(params=["avl", "bplus"])

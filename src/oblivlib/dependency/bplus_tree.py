@@ -1,30 +1,16 @@
-"""Defines the B+ tree; note that the minimum order is 3 and inserting repeated keys may cause unexpected behavior."""
-
 from __future__ import annotations
 
-import pickle
 import secrets
-from dataclasses import dataclass, field, fields
-from typing import Any, Self
+from dataclasses import dataclass, field
+from typing import Any
 
-from oblivlib.dependency.helper import Data
-from oblivlib.dependency.types import KVPair
+from oblivlib.dependency.types import Data, FieldTuplePickle, KVPair
 
 
 @dataclass
-class BPlusData:
-    """The payload stored in an ORAM block for one B+ tree node: parallel lists of keys and values
-    (values are child (id, leaf) pairs for internal nodes, or the actual values for leaves)."""
-
+class BPlusData(FieldTuplePickle):
     keys: list[Any] = field(default_factory=list)
     values: list[Any] = field(default_factory=list)
-
-    @classmethod
-    def from_pickle(cls, data: bytes) -> Self:
-        return cls(*pickle.loads(data))
-
-    def dump(self) -> bytes:
-        return pickle.dumps(tuple(getattr(self, f.name) for f in fields(self)))
 
 
 class BPlusTreeNode:
@@ -36,7 +22,6 @@ class BPlusTreeNode:
         self.is_leaf: bool = True
 
     def add_kv_pair(self, kv_pair: KVPair):
-        """Insert a key-value pair into this leaf node, keeping keys sorted ascending."""
         key, value = kv_pair.key, kv_pair.value
 
         if self.keys:
@@ -62,7 +47,6 @@ class BPlusTree:
 
     @staticmethod
     def _child_index(node: BPlusTreeNode, key: Any) -> int:
-        """Index of the child to descend into for ``key``: equal-or-larger keys go right, smaller left."""
         for index, each_key in enumerate(node.keys):
             if key == each_key:
                 return index + 1
@@ -79,7 +63,6 @@ class BPlusTree:
 
     @staticmethod
     def _find_leaf_path(key: Any, root: BPlusTreeNode) -> list[BPlusTreeNode]:
-        """Like ``_find_leaf`` but return the full root-to-leaf path of nodes."""
         result = [root]
         cur_node = root
         while not cur_node.is_leaf:
@@ -88,7 +71,6 @@ class BPlusTree:
         return result
 
     def search(self, key: Any, root: BPlusTreeNode) -> Any:
-        """Return the value stored under the key, or raise KeyError if absent."""
         leaf = self._find_leaf(root=root, key=key)
 
         for index, each_key in enumerate(leaf.keys):
@@ -98,13 +80,6 @@ class BPlusTree:
         raise KeyError(f"The key {key} is not found.")
 
     def multi_search(self, keys: list[Any], root: BPlusTreeNode) -> dict[Any, Any]:
-        """Look up many keys in a single level-synchronized descent; returns {key: value or None}.
-
-        All cursors descend together, one batched layer-fetch per level; since every leaf sits at the
-        same depth, this is a single descent serving the whole key set, not one per key. Absent keys
-        map to None (unlike single-key ``search``, which raises, a batch lookup reports per-key misses
-        rather than aborting).
-        """
         if not keys:
             return {}
 
@@ -119,8 +94,6 @@ class BPlusTree:
         return results
 
     def _split_node(self, node: BPlusTreeNode) -> BPlusTreeNode:
-        """Split a full node about its midpoint, modifying it in place to keep the left half
-        and returning a new node holding the right half. Leaves and internal nodes split differently."""
         right_node = BPlusTreeNode()
 
         if node.is_leaf:
@@ -139,7 +112,6 @@ class BPlusTree:
         return right_node
 
     def _insert_in_parent(self, child_node: BPlusTreeNode, parent_node: BPlusTreeNode) -> None:
-        """Split the full child node and insert the promoted median key (and new right node) into the parent."""
         insert_key = child_node.keys[self._mid]
         right_node = self._split_node(node=child_node)
 
@@ -154,7 +126,6 @@ class BPlusTree:
                 return
 
     def _create_parent(self, child_node: BPlusTreeNode) -> BPlusTreeNode:
-        """Split a full root node and return a fresh parent holding the two halves (grows the tree's height)."""
         insert_key = child_node.keys[self._mid]
         right_node = self._split_node(node=child_node)
 
@@ -166,7 +137,6 @@ class BPlusTree:
         return parent_node
 
     def insert(self, root: BPlusTreeNode, kv_pair: KVPair) -> BPlusTreeNode:
-        """Insert a key-value pair into the tree and return the (possibly new) root."""
         leaves = self._find_leaf_path(root=root, key=kv_pair.key)
         leaves[-1].add_kv_pair(kv_pair=kv_pair)
 
@@ -184,14 +154,12 @@ class BPlusTree:
         return root
 
     def recursive_insert(self, root: BPlusTreeNode, kv_pair: KVPair) -> BPlusTreeNode:
-        """Recursive variant of insert; kept to validate the non-recursive implementation."""
         self._recursive_insert(node=root, kv_pair=kv_pair)
         if len(root.keys) >= self._order:
             return self._create_parent(child_node=root)
         return root
 
     def _recursive_insert(self, node: BPlusTreeNode, kv_pair: KVPair) -> None:
-        """Insert into the subtree at ``node``, splitting a child into ``node`` if it overflowed."""
         if node.is_leaf:
             node.add_kv_pair(kv_pair=kv_pair)
             return
@@ -203,13 +171,6 @@ class BPlusTree:
 
     @staticmethod
     def _collect_insert_paths(root: BPlusTreeNode | None, keys: list[Any]) -> set[BPlusTreeNode]:
-        """Batched root-to-leaf descent: fetch every key's path into one local partial tree.
-
-        Every cursor descends together, one batched fetch per level; since all B+ leaves sit at the
-        same depth, the cursors reach the leaf layer on the same round -- a single descent serving the
-        whole key set, not one per key. Returns ``local``, the set of fetched nodes (the partial tree
-        phase 2 mutates).
-        """
         local: set[BPlusTreeNode] = set()
         if root is None or not keys:
             return local
@@ -223,11 +184,6 @@ class BPlusTree:
             cursors = [(key, node.values[BPlusTree._child_index(node=node, key=key)]) for key, node in cursors]
 
     def _split_and_promote_local(self, child: BPlusTreeNode, parent: BPlusTreeNode, local: set[BPlusTreeNode]) -> None:
-        """Split the overflowed ``child`` and promote the median into ``parent`` (multi_insert helper).
-
-        Reuses the pure ``_split_node`` (which returns the new right node) and adds that node to
-        ``local`` so a later insert in the batch may descend onto this fresh sibling.
-        """
         insert_key = child.keys[self._mid]
         right = self._split_node(node=child)
         local.add(right)
@@ -237,8 +193,6 @@ class BPlusTree:
         parent.values.insert(position + 1, right)
 
     def _grow_root_local(self, child: BPlusTreeNode, local: set[BPlusTreeNode]) -> BPlusTreeNode:
-        """Split the overflowed root ``child`` and return a fresh parent over the two halves (multi_insert
-        helper). Both the new right node and the new root join ``local``."""
         insert_key = child.keys[self._mid]
         right = self._split_node(node=child)
         local.add(right)
@@ -251,13 +205,6 @@ class BPlusTree:
         return parent
 
     def _insert_into_local(self, root: BPlusTreeNode, local: set[BPlusTreeNode], kv_pair: KVPair) -> BPlusTreeNode:
-        """Insert one pair operating only on the local partial tree ``local`` (multi_insert's engine).
-
-        Same shape as the single-key ``insert`` -- add to the target leaf, then split overflowed nodes
-        bottom-up -- but every node on the descended path must already be in ``local`` (else the batched
-        paths were incomplete and we raise), and each node a split creates joins ``local`` via the
-        ``_*_local`` helpers.
-        """
         leaves = self._find_leaf_path(root=root, key=kv_pair.key)
         if any(node not in local for node in leaves):
             raise ValueError("multi_insert stepped onto an unfetched node; the batched paths were incomplete.")
@@ -276,29 +223,12 @@ class BPlusTree:
         return root
 
     def multi_insert(self, root: BPlusTreeNode, kv_pairs: list[KVPair]) -> BPlusTreeNode:
-        """Insert many pairs against a single fetched partial tree; returns the new root.
-
-        Phase 1 (``_collect_insert_paths``) is the only storage access: one batched descent over all
-        keys (not one per key) gathering the union of their root-to-leaf paths into ``local``. Phase 2
-        replays single-key inserts against ``local`` only, raising if it ever needs an unfetched node;
-        each split adds its new nodes to ``local`` so later inserts can descend onto them. The result
-        equals sequential single inserts -- the shape the oblivious port mirrors.
-        """
         local = self._collect_insert_paths(root=root, keys=[kv_pair.key for kv_pair in kv_pairs])
         for kv_pair in kv_pairs:
             root = self._insert_into_local(root=root, local=local, kv_pair=kv_pair)
         return root
 
     def _fix_underflow(self, parent: BPlusTreeNode, child_index: int) -> None:
-        """Repair the underflowed child ``parent.values[child_index]`` against a single sibling --
-        the left one when it exists, otherwise the right -- by borrowing a key from it when it can
-        spare one, else merging the two. Mutates ``parent`` in place.
-
-        Considering exactly one sibling (rather than the better of the two) is the standard the
-        oblivious map follows: it pre-fetches just this sibling, so the work per level is fixed and
-        independent of the borrow/merge outcome. ``delete`` and ``recursive_delete`` both route
-        through here, so they make identical structural choices and can be cross-checked.
-        """
         is_left = child_index > 0
         sibling_index = child_index - 1 if is_left else child_index + 1
         node = parent.values[child_index]
@@ -341,12 +271,6 @@ class BPlusTree:
             parent.values.pop(child_index + 1)
 
     def delete(self, root: BPlusTreeNode | None, key: Any) -> BPlusTreeNode | None:
-        """Delete a key from the B+ tree (non-recursive); returns the new root, or None if empty.
-
-        Serves as the template for the oblivious version: it records the visited path as
-        (node, child_index) pairs in a ``local`` list, removes the key from the leaf, then repairs
-        any underflow bottom-up. ``recursive_delete`` mirrors it for cross-verification.
-        """
         if root is None:
             return None
 
@@ -379,7 +303,6 @@ class BPlusTree:
         return root
 
     def recursive_delete(self, root: BPlusTreeNode | None, key: Any) -> BPlusTreeNode | None:
-        """Recursive variant of delete; kept to validate the non-recursive implementation."""
         if root is None:
             return None
         self._recursive_delete(node=root, key=key)
@@ -388,7 +311,6 @@ class BPlusTree:
         return root
 
     def _recursive_delete(self, node: BPlusTreeNode, key: Any) -> None:
-        """Delete ``key`` from the subtree at ``node``, repairing the descended child if it underflows."""
         if node.is_leaf:
             key_index = next((i for i, k in enumerate(node.keys) if k == key), None)
             if key_index is not None:
@@ -402,11 +324,7 @@ class BPlusTree:
         if len(child.keys) < self._min_keys:
             self._fix_underflow(parent=node, child_index=child_index)
 
-    def get_data_list(self, root: BPlusTreeNode, block_id: int = 0, encryption: bool = False) -> list[Data]:
-        """Flatten the B+ tree into ORAM ``Data`` blocks, assigning each node a block id and random leaf.
-
-        ``encryption=True`` stores the value as pickled bytes rather than a live ``BPlusData``.
-        """
+    def get_data_list(self, root: BPlusTreeNode, block_id: int = 0) -> list[Data]:
         root.id = block_id
         root.leaf = self._get_new_leaf()
         block_id += 1
@@ -429,9 +347,6 @@ class BPlusTree:
             else:
                 bplus_data = BPlusData(keys=node.keys, values=node.values)
 
-            if encryption:
-                result.append(Data(key=node.id, leaf=node.leaf, value=bplus_data.dump()))
-            else:
-                result.append(Data(key=node.id, leaf=node.leaf, value=bplus_data))
+            result.append(Data(key=node.id, leaf=node.leaf, value=bplus_data))
 
         return result

@@ -9,7 +9,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, BinaryTree, Data, DataMap, OramConfig, PathData, PosMap
+from oblivlib.dependency import UNSET, Data, DataMap, OramConfig, PathData, PosMap
 from oblivlib.dependency.tree_storage_base import TreeStorageBase
 
 
@@ -41,25 +41,11 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
 
         return self._pos_map[key]
 
-    def _init_storage_on_pos_map(self, data_map: DataMap | None = None) -> BinaryTree:
-        """Build the binary tree storage from the position map (and optional {key: data} map)."""
-        tree = BinaryTree(
-            filename=self._filename,
-            num_data=self._num_data,
-            disk_size=self._disk_size,
-            bucket_size=self._bucket_size,
-            data_size=self._dumped_data_size,
-            encryption=self._encryptor is not None,
-        )
-
-        for key, leaf in self._pos_map.items():
-            value = data_map[key] if data_map else os.urandom(self._data_size)
-            tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
-
-        if self._encryptor:
-            tree.storage.encrypt(encryptor=self._encryptor)
-
-        return tree
+    def _initial_blocks(self, data_map: DataMap | None = None) -> list[Data]:
+        return [
+            Data(key=key, leaf=leaf, value=data_map[key] if data_map else os.urandom(self._data_size))
+            for key, leaf in self._pos_map.items()
+        ]
 
     @override
     def _check_stash(self) -> None:

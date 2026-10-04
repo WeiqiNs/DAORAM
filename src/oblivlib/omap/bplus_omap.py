@@ -5,9 +5,10 @@ import os
 from functools import cached_property
 from typing import Any, Protocol, cast, override
 
-from oblivlib.dependency import BPlusData, BPlusTree, BPlusTreeNode, Data, Helper, KVPair
+from oblivlib.dependency import BPlusData, BPlusTree, BPlusTreeNode, Data, KVPair
 from oblivlib.dependency.codec import BlockCodec, NodeCodec
 from oblivlib.dependency.config import BPlusOmapConfig
+from oblivlib.dependency.load_bound import max_bucket_load
 from oblivlib.omap.ost_base_omap import ROOT, LocalNodesBase, OstBaseOmap
 
 
@@ -105,7 +106,7 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
 
     @override
     def update_mul_tree_height(self, num_tree: int) -> None:
-        tree_size = Helper.max_bucket_load(num_tree)
+        tree_size = max_bucket_load(num_tree)
         self._max_height = max(1, math.ceil(math.log(tree_size, math.ceil(self._order / 2))))
 
     @property
@@ -156,7 +157,7 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         for kv_pair in data:
             root = bplus_tree.insert(root=root, kv_pair=kv_pair)
 
-        blocks = bplus_tree.get_data_list(root=root, block_id=self._block_id, encryption=self._encryptor is not None)
+        blocks = bplus_tree.get_data_list(root=root, block_id=self._block_id)
         self._block_id += len(blocks)
         assert root.id is not None and root.leaf is not None
         return blocks, (root.id, root.leaf)

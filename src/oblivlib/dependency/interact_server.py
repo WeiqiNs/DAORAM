@@ -2,41 +2,44 @@
 
 import pickle
 from abc import ABC, abstractmethod
-from typing import Any, cast, override
+from collections.abc import Sequence
+from typing import Any, override
 
 from oblivlib.dependency.binary_tree import BinaryTree
+from oblivlib.dependency.errors import DuplicateLabelError, UnknownLabelError
 from oblivlib.dependency.sockets import BaseSocket
-from oblivlib.dependency.types import BlockData, BlockKey, BucketData, BucketKey, ExecuteResult, PathData
+from oblivlib.dependency.types import (
+    ExecuteResult,
+    ListOp,
+    ListPopBack,
+    ListPushFront,
+    ListWrite,
+    PathData,
+    Request,
+)
 
-SERVER_DEFAULT_RESPONSE = "Done!"
 PORT = 10000
 ServerStorage = dict[str, BinaryTree | list]
 
 
 class InteractServer(ABC):
+    """Client-side handle to server storage; every scheme does all its I/O through one.
+
+    Batching contract: ``add_*`` calls only stage queries, keyed by storage label. ``execute()`` ships
+    them as one ``Request`` and clears the staging buffers whether or not it succeeds. Within one
+    execute the server applies path writes, then list ops in staging order, then reads (deduplicated).
+    Results and stored writes are copies, never aliases of server storage. Bandwidth counts the pickled
+    ``Request`` and ``ExecuteResult``.
+    """
+
     def __init__(self):
         self._read_paths: dict[str, list[int]] = {}
-        self._read_buckets: dict[str, list[BucketKey]] = {}
-        self._read_blocks: dict[str, list[BlockKey]] = {}
         self._read_lists: dict[str, list[int] | None] = {}
-
         self._write_paths: dict[str, PathData] = {}
-        self._write_buckets: dict[str, BucketData] = {}
-        self._write_blocks: dict[str, BlockData] = {}
-        self._write_lists: dict[str, dict[int, Any]] = {}
+        self._write_lists: dict[str, list[ListOp]] = {}
 
         self._bytes_read: int = 0
         self._bytes_written: int = 0
-
-    def clear_queries(self) -> None:
-        self._read_paths.clear()
-        self._read_buckets.clear()
-        self._read_blocks.clear()
-        self._read_lists.clear()
-        self._write_paths.clear()
-        self._write_buckets.clear()
-        self._write_blocks.clear()
-        self._write_lists.clear()
 
     def get_bandwidth(self) -> tuple[int, int]:
         """Return (bytes_read, bytes_written)."""
@@ -48,12 +51,6 @@ class InteractServer(ABC):
 
     def add_read_path(self, label: str, leaves: list[int]) -> None:
         self._read_paths.setdefault(label, []).extend(leaves)
-
-    def add_read_bucket(self, label: str, keys: list[BucketKey]) -> None:
-        self._read_buckets.setdefault(label, []).extend(keys)
-
-    def add_read_block(self, label: str, keys: list[BlockKey]) -> None:
-        self._read_blocks.setdefault(label, []).extend(keys)
 
     def add_read_list(self, label: str, indices: list[int] | None) -> None:
         """``indices=None`` reads the whole list; otherwise index calls accumulate."""
@@ -69,14 +66,21 @@ class InteractServer(ABC):
     def add_write_path(self, label: str, data: PathData) -> None:
         self._write_paths.setdefault(label, {}).update(data)
 
-    def add_write_bucket(self, label: str, data: BucketData) -> None:
-        self._write_buckets.setdefault(label, {}).update(data)
+    def add_write_list(self, label: str, ops: Sequence[ListOp]) -> None:
+        self._write_lists.setdefault(label, []).extend(ops)
 
-    def add_write_block(self, label: str, data: BlockData) -> None:
-        self._write_blocks.setdefault(label, {}).update(data)
-
-    def add_write_list(self, label: str, data: dict[int, Any]) -> None:
-        self._write_lists.setdefault(label, {}).update(data)
+    def _take_request(self) -> Request:
+        request = Request(
+            read_paths=self._read_paths,
+            read_lists=self._read_lists,
+            write_paths=self._write_paths,
+            write_lists=self._write_lists,
+        )
+        self._read_paths = {}
+        self._read_lists = {}
+        self._write_paths = {}
+        self._write_lists = {}
+        return request
 
     @abstractmethod
     def init_connection(self, client: BaseSocket) -> None:
@@ -97,11 +101,17 @@ class InteractServer(ABC):
 
 
 class InteractLocalServer(InteractServer):
-    """Local server: storage lives in the same process."""
+    """In-process server storage, used by tests and local runs.
+
+    It pickles each request and result exactly as the wire would, so a scheme sees the same copies and
+    bandwidth numbers as against ``InteractRemoteServer``. ``init_storage`` takes ownership of the
+    given trees and lists without copying and raises ``DuplicateLabelError`` for a hosted label.
+    """
 
     def __init__(self):
         super().__init__()
-        self._storage: ServerStorage = {}
+        self._trees: dict[str, BinaryTree] = {}
+        self._lists: dict[str, list] = {}
 
     @override
     def init_connection(self, client: BaseSocket | None = None) -> None:
@@ -113,83 +123,70 @@ class InteractLocalServer(InteractServer):
 
     @override
     def init_storage(self, storage: ServerStorage) -> None:
-        self._storage.update(storage)
+        trees = {label: store for label, store in storage.items() if isinstance(store, BinaryTree)}
+        lists = {label: store for label, store in storage.items() if isinstance(store, list)}
+        if len(trees) + len(lists) != len(storage):
+            raise TypeError(f"{type(self).__name__}: every hosted store must be a BinaryTree or a list.")
+        for label in storage:
+            if label in self._trees or label in self._lists:
+                raise DuplicateLabelError(f"{type(self).__name__}: label {label!r} is already hosted.")
 
-    def _hosted(self, label: str) -> BinaryTree | list:
-        if label not in self._storage:
-            raise KeyError(f"Label {label} is not hosted in the server storage.")
-        return self._storage[label]
+        self._trees.update(trees)
+        self._lists.update(lists)
 
-    def _get_tree(self, label: str) -> BinaryTree:
-        return cast(BinaryTree, self._hosted(label))
+    def _require_tree(self, label: str) -> BinaryTree:
+        if label not in self._trees:
+            raise UnknownLabelError(f"{type(self).__name__}: tree label {label!r} is not hosted.")
+        return self._trees[label]
 
-    def _get_list(self, label: str) -> list:
-        return cast(list, self._hosted(label))
+    def _require_list(self, label: str) -> list:
+        if label not in self._lists:
+            raise UnknownLabelError(f"{type(self).__name__}: list label {label!r} is not hosted.")
+        return self._lists[label]
+
+    def _run(self, request: Request) -> ExecuteResult:
+        try:
+            for label, data in request.write_paths.items():
+                self._require_tree(label).write_path(data)
+
+            for label, ops in request.write_lists.items():
+                lst = self._require_list(label)
+                for op in ops:
+                    match op:
+                        case ListWrite(index=index, value=value):
+                            lst[index] = value
+                        case ListPushFront(value=value):
+                            lst.insert(0, value)
+                        case ListPopBack():
+                            lst.pop()
+
+            results: dict[str, Any] = {}
+            for label, leaves in request.read_paths.items():
+                results[label] = self._require_tree(label).read_path(list(set(leaves)))
+
+            for label, indices in request.read_lists.items():
+                lst = self._require_list(label)
+                results[label] = lst if indices is None else {i: lst[i] for i in set(indices)}
+
+            return ExecuteResult(results=results)
+
+        except Exception as e:
+            return ExecuteResult(error=e)
 
     @override
     def execute(self) -> ExecuteResult:
-        try:
-            results = {}
+        blob = pickle.dumps(self._take_request())
+        self._bytes_written += len(blob)
 
-            request = (
-                self._read_paths,
-                self._read_buckets,
-                self._read_blocks,
-                self._read_lists,
-                self._write_paths,
-                self._write_buckets,
-                self._write_blocks,
-                self._write_lists,
-            )
-            self._bytes_written += len(pickle.dumps(request))
-
-            for label, data in self._write_paths.items():
-                self._get_tree(label).write_path(data)
-
-            for label, data in self._write_buckets.items():
-                self._get_tree(label).write_bucket(data)
-
-            for label, data in self._write_blocks.items():
-                self._get_tree(label).write_block(data)
-
-            for label, data in self._write_lists.items():
-                lst = self._get_list(label)
-                for idx, val in data.items():
-                    if idx > -1:
-                        lst[idx] = val
-                    elif idx == -1:
-                        lst.insert(0, val)
-                    elif idx == -2:
-                        lst.pop()
-                    else:
-                        raise ValueError(f"Invalid list index: {idx}")
-
-            for label, leaves in self._read_paths.items():
-                results[label] = self._get_tree(label).read_path(list(set(leaves)))
-
-            for label, keys in self._read_buckets.items():
-                results[label] = self._get_tree(label).read_bucket(list(set(keys)))
-
-            for label, keys in self._read_blocks.items():
-                results[label] = self._get_tree(label).read_block(list(set(keys)))
-
-            for label, indices in self._read_lists.items():
-                lst = self._get_list(label)
-                results[label] = lst if indices is None else {i: lst[i] for i in set(indices)}
-
-            result = ExecuteResult(success=True, results=results)
-            self._bytes_read += len(pickle.dumps(result))
-            return result
-
-        except Exception as e:
-            return ExecuteResult(success=False, error=str(e))
-
-        finally:
-            self.clear_queries()
+        out = pickle.dumps(self._run(pickle.loads(blob)))
+        self._bytes_read += len(out)
+        return pickle.loads(out)
 
 
 class InteractRemoteServer(InteractServer):
-    """Remote client that sends queries to a remote server."""
+    """Client side of a remote deployment: ships each ``Request`` over a ``BaseSocket`` to a
+    ``RemoteServer`` and returns its ``ExecuteResult``. ``init_storage`` pickles the trees (file-backed
+    trees cannot be shipped) and re-raises the server's error."""
 
     def __init__(self):
         super().__init__()
@@ -212,66 +209,44 @@ class InteractRemoteServer(InteractServer):
     def init_storage(self, storage: ServerStorage) -> None:
         client = self._check_client()
         client.send(("init", storage))
-        response = client.recv()
-        if response != SERVER_DEFAULT_RESPONSE:
-            raise ValueError("Server failed to initialize storage.")
+        reply: ExecuteResult = client.recv()
+        if reply.error is not None:
+            raise reply.error
 
     @override
     def execute(self) -> ExecuteResult:
-        try:
-            client = self._check_client()
+        request = self._take_request()
+        client = self._check_client()
+        self._bytes_written += len(pickle.dumps(request))
 
-            request = {
-                "read_paths": self._read_paths,
-                "read_buckets": self._read_buckets,
-                "read_blocks": self._read_blocks,
-                "read_lists": self._read_lists,
-                "write_paths": self._write_paths,
-                "write_buckets": self._write_buckets,
-                "write_blocks": self._write_blocks,
-                "write_lists": self._write_lists,
-            }
+        client.send(("execute", request))
+        response: ExecuteResult = client.recv()
 
-            self._bytes_written += len(pickle.dumps(request))
-
-            client.send(("execute", request))
-            response = client.recv()
-
-            self._bytes_read += len(pickle.dumps(response))
-            return response
-
-        finally:
-            self.clear_queries()
+        self._bytes_read += len(pickle.dumps(response))
+        return response
 
 
 class RemoteServer(InteractLocalServer):
-    """Server that listens for and answers remote client requests."""
+    """Server side of a remote deployment: answers ``("init", storage)`` and ``("execute", Request)``
+    messages against in-process storage. Every failure is replied as ``ExecuteResult(error=...)``, so
+    the serving loop never dies on a bad request. It does not count bandwidth."""
 
     def __init__(self):
         super().__init__()
         self._server: BaseSocket | None = None
 
-    def _process_request(self, request: tuple[str, Any]) -> Any:
-        cmd, data = request
+    def _process_request(self, request: tuple[str, Any]) -> ExecuteResult:
+        try:
+            cmd, data = request
+            if cmd == "init":
+                self.init_storage(data)
+                return ExecuteResult()
+            if cmd == "execute":
+                return self._run(data)
+            raise ValueError(f"{type(self).__name__}: unknown command {cmd!r}.")
 
-        if cmd == "init":
-            self.init_storage(data)
-            return SERVER_DEFAULT_RESPONSE
-
-        elif cmd == "execute":
-            self._read_paths = data.get("read_paths", {})
-            self._read_buckets = data.get("read_buckets", {})
-            self._read_blocks = data.get("read_blocks", {})
-            self._read_lists = data.get("read_lists", {})
-            self._write_paths = data.get("write_paths", {})
-            self._write_buckets = data.get("write_buckets", {})
-            self._write_blocks = data.get("write_blocks", {})
-            self._write_lists = data.get("write_lists", {})
-
-            return self.execute()
-
-        else:
-            raise ValueError(f"Unknown command: {cmd}")
+        except Exception as e:
+            return ExecuteResult(error=e)
 
     def run(self, server: BaseSocket) -> None:
         """Listen for client queries on a bound socket (e.g. ZMQSocket with is_server=True)."""

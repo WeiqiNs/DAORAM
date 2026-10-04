@@ -243,35 +243,16 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         and the (key, leaf) pointer to its root."""
         raise NotImplementedError
 
-    def _new_ods_tree(self) -> BinaryTree:
-        """Build the empty binary-tree storage every scheme fills (shared construction args)."""
-        return BinaryTree(
-            filename=self._filename,
-            num_data=self._num_data,
-            disk_size=self._disk_size,
-            bucket_size=self._bucket_size,
-            data_size=self._max_block_size,
-            encryption=self._encryptor is not None,
-        )
-
     @staticmethod
     def _normalize_pairs(data: KV_LIST) -> list[KVPair]:
         return [KVPair(key=pair[0], value=pair[1]) for pair in data]
 
     def _init_ods_storage(self, data: KV_LIST | None) -> BinaryTree:
         """Build the ODS-tree binary storage for the input key-value pairs."""
-        tree = self._new_ods_tree()
-
+        blocks: list[Data] = []
         if data:
-            blocks, root = self._build_ods_blocks(data=self._normalize_pairs(data))
-            for block in blocks:
-                tree.fill_data_to_storage_leaf(data=block)
-            self.root = root
-
-        if self._encryptor:
-            tree.storage.encrypt(encryptor=self._encryptor)
-
-        return tree
+            blocks, self.root = self._build_ods_blocks(data=self._normalize_pairs(data))
+        return self._build_tree(blocks)
 
     @override
     def init_server_storage(self, data: KV_LIST | None = None) -> None:
@@ -279,22 +260,17 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
 
     def _init_mul_tree_ods_storage(self, data_list: list[KV_LIST] | None) -> tuple[BinaryTree, list[ROOT | None]]:
         """Build one ODS tree per pair-list into shared storage; return it plus each tree's root."""
-        tree = self._new_ods_tree()
-
+        blocks: list[Data] = []
         root_list: list[ROOT | None] = []
         for data in data_list or []:
             if data:
-                blocks, root = self._build_ods_blocks(data=self._normalize_pairs(data))
-                for block in blocks:
-                    tree.fill_data_to_storage_leaf(data=block)
+                tree_blocks, root = self._build_ods_blocks(data=self._normalize_pairs(data))
+                blocks.extend(tree_blocks)
                 root_list.append(root)
             else:
                 root_list.append(None)
 
-        if self._encryptor:
-            tree.storage.encrypt(encryptor=self._encryptor)
-
-        return tree, root_list
+        return self._build_tree(blocks), root_list
 
     def init_mul_tree_server_storage(self, data_list: list[KV_LIST] | None = None) -> list[ROOT | None]:
         """Store an ODS holding multiple trees; return the list of their roots."""

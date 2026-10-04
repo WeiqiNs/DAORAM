@@ -25,7 +25,7 @@ def _duplicate_blocks(omap):
     placeholder beside the real block) can shadow the real value on a read.
     """
     low = omap._lower_oram
-    tree = low._client._storage[low._name]
+    tree = low._client._require_tree(low._name)
     counts = {}
     for i in range(tree.size):
         for data in tree.storage[i]:
@@ -89,3 +89,12 @@ class TestGroupOmap:
         for key in range(n):
             assert omap.search(key=key) == model[key]
         assert not _duplicate_blocks(omap)
+
+    def test_negative_int_keys_round_trip(self, client):
+        n = 128
+        upper = _make_upper("path", n, client, None)
+        omap = GroupOmap(GroupOmapConfig(num_data=n, key_size=10, data_size=64, client=client), upper_oram=upper)
+        omap.init_server_storage(data=[(-1, -3)])
+
+        assert omap.search(key=-1, value=7) == -3
+        assert omap.search(key=-1) == 7

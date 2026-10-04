@@ -104,3 +104,17 @@ class TestOramOstOmapInit:
             omap.insert(key=i, value=i)
         for i in range(n):
             assert omap.search(key=i) == i
+
+
+def test_negative_int_keys_round_trip(client):
+    n = 64
+    omap = OramOstOmap(
+        OramOstOmapConfig(num_data=n), ost=_make_ods("avl", n, client), oram=_make_oram("path", n, client)
+    )
+    keys = list(range(-n, n, 2))
+    omap.init_server_storage(data=[(key, key * 3) for key in keys[: len(keys) // 2]])
+    for key in keys[len(keys) // 2 :]:
+        omap.insert(key=key, value=key * 3)
+
+    for key in keys:
+        assert omap.search(key=key) == key * 3

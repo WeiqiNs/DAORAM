@@ -3,12 +3,28 @@
 import hashlib
 import os
 from abc import ABC, abstractmethod
-from typing import override
+from typing import Any, override
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
+def key_to_bytes(key: object) -> bytes:
+    if isinstance(key, int):
+        return key.to_bytes(16, byteorder="big", signed=True)
+    if isinstance(key, str):
+        return key.encode("utf-8")
+    if isinstance(key, bytes):
+        return key
+    raise TypeError(f"key_to_bytes expects str, int, or bytes, got {type(key).__name__}.")
+
+
 class Encryptor(ABC):
+    """Authenticated encryption of whole buckets.
+
+    ``ciphertext_length(n)`` must be the exact length ``enc`` returns for an ``n``-byte plaintext: file
+    storage sizes its fixed rows from it, and a longer ciphertext is rejected.
+    """
+
     @property
     @abstractmethod
     def key(self) -> bytes:
@@ -28,6 +44,10 @@ class Encryptor(ABC):
 
 
 class AesGcm(Encryptor):
+    """AES-GCM with a fresh random 96-bit nonce per call: ``enc`` returns ``nonce ‖ ciphertext ‖ tag``,
+    exactly 28 bytes longer than the plaintext. The key is random unless given. Random nonces cap safe
+    use at about 2**32 encryptions per key. Instances are not picklable, and storage never keeps one."""
+
     NONCE_SIZE = 12
     TAG_SIZE = 16
 
@@ -78,6 +98,9 @@ class PseudoRandomFunction(ABC):
 
 
 class Blake2Prf(PseudoRandomFunction):
+    """Keyed BLAKE2b with a 64-byte digest. The 32-byte key is random unless given; schemes that must
+    re-derive the same leaves (DA, Freecursive position maps) share one key."""
+
     KEY_SIZE = 32
     DIGEST_SIZE = 64
 
@@ -99,6 +122,19 @@ class Blake2Prf(PseudoRandomFunction):
     @override
     def digest_mod_n(self, message: bytes, mod: int) -> int:
         return int.from_bytes(self.digest(message), "big") % mod
+
+
+def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: str | int | bytes) -> int:
+    return prf.digest_mod_n(message=key_to_bytes(data), mod=map_size)
+
+
+def hash_data_to_map(
+    prf: PseudoRandomFunction, map_size: int, data: list[tuple[str | int | bytes, Any]]
+) -> dict[int, list[tuple[str | int | bytes, Any]]]:
+    data_map: dict[int, list[tuple[str | int | bytes, Any]]] = {i: [] for i in range(map_size)}
+    for pair in data:
+        data_map[hash_data_to_leaf(prf=prf, map_size=map_size, data=pair[0])].append(pair)
+    return data_map
 
 
 class PseudoRandomPermutation(ABC):

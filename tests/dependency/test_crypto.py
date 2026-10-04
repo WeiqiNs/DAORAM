@@ -1,23 +1,24 @@
 import os
-import pickle
+from typing import Any
 
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from oblivlib.dependency import AesGcm, Blake2Prf, FeistelPrp
+from oblivlib.dependency import AesGcm, Blake2Prf, FeistelPrp, hash_data_to_leaf, key_to_bytes
+
+
+def test_key_to_bytes_matches_unsigned_encoding_for_non_negative_keys():
+    for key in (0, 1, 255, 2**64, 2**127 - 1):
+        assert key_to_bytes(key) == key.to_bytes(16, byteorder="big")
+    assert key_to_bytes(-1) == b"\xff" * 16
+    with pytest.raises(OverflowError):
+        key_to_bytes(2**127)
 
 
 class TestAesGcm:
     def test_round_trip(self):
         aesgcm = AesGcm()
         assert aesgcm.dec(aesgcm.enc(b"Hello")) == b"Hello"
-
-    def test_round_trip_with_pickle(self):
-        aesgcm = AesGcm()
-        data = [0, 1, [2, 3, 4, 5], os.urandom(100)]
-        pickle_data = pickle.dumps(data)
-        assert aesgcm.dec(aesgcm.enc(pickle_data)) == pickle_data
-        assert pickle.loads(aesgcm.dec(aesgcm.enc(pickle_data))) == data
 
     def test_ciphertext_length(self):
         aesgcm = AesGcm()
@@ -46,10 +47,6 @@ class TestAesGcm:
 
 
 class TestPrf:
-    def test_deterministic(self):
-        prf = Blake2Prf()
-        assert prf.digest(b"Hello") == prf.digest(b"Hello")
-
     def test_same_key_same_digest(self):
         key = os.urandom(Blake2Prf.KEY_SIZE)
         assert Blake2Prf(key=key).digest(b"msg") == Blake2Prf(key=key).digest(b"msg")
@@ -58,6 +55,20 @@ class TestPrf:
         prf = Blake2Prf()
         for i in range(100):
             assert 0 <= prf.digest_mod_n(message=str(i).encode(), mod=17) < 17
+
+
+def test_hash_data_to_leaf_in_range_and_deterministic():
+    prf = Blake2Prf()
+    for data in (42, -42, "key", b"bytes"):
+        first = hash_data_to_leaf(prf=prf, map_size=64, data=data)
+        assert 0 <= first < 64
+        assert hash_data_to_leaf(prf=prf, map_size=64, data=data) == first
+
+
+def test_hash_data_to_leaf_rejects_unsupported_type():
+    unsupported: Any = 3.14
+    with pytest.raises(TypeError):
+        hash_data_to_leaf(prf=Blake2Prf(), map_size=64, data=unsupported)
 
 
 class TestPrp:

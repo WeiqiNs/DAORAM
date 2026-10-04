@@ -12,7 +12,7 @@ from dataclasses import replace
 from functools import cached_property
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, BinaryTree, Data, DataMap, PathData, PosMap, ServerStorage
+from oblivlib.dependency import UNSET, Data, DataMap, PathData, PosMap, ServerStorage
 from oblivlib.dependency.config import RecursiveOramConfig
 from oblivlib.oram.tree_base_oram import TreeBaseOram
 
@@ -93,24 +93,19 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
                 _is_pos_map=True,
             )
 
-            tree = BinaryTree(
-                filename=pos_map_filename,
-                num_data=pos_map_size,
-                data_size=cur_pos_map_oram._dumped_data_size,
-                bucket_size=self._bucket_size,
-                disk_size=cur_pos_map_oram._disk_size,
-                encryption=self._encryptor is not None,
-            )
-
-            for key, leaf in cur_pos_map_oram._pos_map.items():
-                value = [
-                    last_pos_map[i] if i < last_pos_map_size else secrets.randbelow(pos_map_size)
-                    for i in range(key * self._compression_ratio, (key + 1) * self._compression_ratio)
+            tree = cur_pos_map_oram._build_tree(
+                [
+                    Data(
+                        key=key,
+                        leaf=leaf,
+                        value=[
+                            last_pos_map[i] if i < last_pos_map_size else secrets.randbelow(pos_map_size)
+                            for i in range(key * self._compression_ratio, (key + 1) * self._compression_ratio)
+                        ],
+                    )
+                    for key, leaf in cur_pos_map_oram._pos_map.items()
                 ]
-                tree.fill_data_to_storage_leaf(data=Data(key=key, leaf=leaf, value=value))
-
-            if self._encryptor:
-                tree.storage.encrypt(encryptor=self._encryptor)
+            )
 
             last_pos_map = cur_pos_map_oram._pos_map
             cur_pos_map_oram._pos_map = {}
@@ -126,7 +121,7 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
     @override
     def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage: ServerStorage = {self._name: self._init_storage_on_pos_map(data_map=data_map)}
+        storage: ServerStorage = {self._name: self._build_tree(self._initial_blocks(data_map=data_map))}
 
         pos_map_storage = self._compress_pos_map()
         storage.update(pos_map_storage)
