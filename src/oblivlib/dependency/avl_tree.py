@@ -4,11 +4,11 @@ import secrets
 from dataclasses import dataclass
 from typing import Any
 
-from oblivlib.dependency.types import Data, FieldTuplePickle, KVPair
+from oblivlib.dependency.types import Data, FieldTuple, KVPair
 
 
 @dataclass
-class AVLData(FieldTuplePickle):
+class AVLData(FieldTuple):
     value: Any = None
     r_key: Any = None
     r_leaf: int | None = None

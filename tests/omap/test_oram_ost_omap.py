@@ -1,4 +1,5 @@
 import random
+from typing import Any
 
 import pytest
 
@@ -8,6 +9,7 @@ from oblivlib.dependency import (
     AvlOmapConfig,
     BPlusOmapCachedConfig,
     BPlusOmapConfig,
+    ContractError,
     DaOramConfig,
     PathOramConfig,
     RecursiveOramConfig,
@@ -33,11 +35,18 @@ def _make_ods(kind, n, client, encryptor=None):
 
 
 def _make_oram(kind, n, client, encryptor=None):
+    data_size = OramOstOmap.oram_data_size(key_size=10)
     if kind == "da":
-        return DAOram(DaOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
+        return DAOram(DaOramConfig(num_data=n, data_size=data_size, client=client, encryptor=encryptor))
     if kind == "path":
-        return PathOram(PathOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
-    return RecursivePathOram(RecursiveOramConfig(num_data=n, data_size=20, client=client, encryptor=encryptor))
+        return PathOram(PathOramConfig(num_data=n, data_size=data_size, client=client, encryptor=encryptor))
+    return RecursivePathOram(RecursiveOramConfig(num_data=n, data_size=data_size, client=client, encryptor=encryptor))
+
+
+def _make_omap(ods_kind, oram_kind, client, n=64):
+    return OramOstOmap(
+        OramOstOmapConfig(num_data=n), ost=_make_ods(ods_kind, n, client), oram=_make_oram(oram_kind, n, client)
+    )
 
 
 class TestOramOstOmapOracle:
@@ -46,22 +55,19 @@ class TestOramOstOmapOracle:
 
     @pytest.mark.parametrize("ods_kind", ["avl", "avl_cached", "bplus", "bplus_cached"])
     @pytest.mark.parametrize("oram_kind", ["da", "path", "recursive"])
-    @pytest.mark.parametrize("key_str", [False, True])
-    def test_oracle(self, ods_kind, oram_kind, key_str, client):
+    def test_oracle(self, ods_kind, oram_kind, client):
         n = 64
-        omap = OramOstOmap(
-            OramOstOmapConfig(num_data=n), ost=_make_ods(ods_kind, n, client), oram=_make_oram(oram_kind, n, client)
-        )
+        omap = _make_omap(ods_kind, oram_kind, client, n)
         omap.init_server_storage()
-        rng = random.Random(hash((ods_kind, oram_kind, key_str)) & 0xFFFF)
+        rng = random.Random(hash((ods_kind, oram_kind)) & 0xFFFF)
         model = {}
-        keyspace = [(f"k{i}" if key_str else i) for i in range(n)]
+        keyspace = [b"k%d" % i for i in range(n)]
         for _ in range(n * 4):
             key = rng.choice(keyspace)
             roll = rng.random()
             if roll < 0.5:
                 if key not in model:
-                    value = f"v{rng.randint(0, 10**6)}" if key_str else rng.randint(0, 10**6)
+                    value = b"v%d" % rng.randint(0, 10**6)
                     omap.insert(key=key, value=value)
                     model[key] = value
             else:
@@ -75,14 +81,11 @@ class TestOramOstOmapInit:
 
     @pytest.mark.parametrize("ods_kind", ["avl", "avl_cached", "bplus", "bplus_cached"])
     @pytest.mark.parametrize("oram_kind", ["da", "path", "recursive"])
-    @pytest.mark.parametrize("key_str", [False, True])
-    def test_with_init(self, ods_kind, oram_kind, key_str, client):
+    def test_with_init(self, ods_kind, oram_kind, client):
         n = 64
-        omap = OramOstOmap(
-            OramOstOmapConfig(num_data=n), ost=_make_ods(ods_kind, n, client), oram=_make_oram(oram_kind, n, client)
-        )
-        keys = [(f"k{i}" if key_str else i) for i in range(n)]
-        values = [(f"v{i}" if key_str else i * 2) for i in range(n)]
+        omap = _make_omap(ods_kind, oram_kind, client, n)
+        keys = [b"k%d" % i for i in range(n)]
+        values = [b"v%d" % i for i in range(n)]
 
         omap.init_server_storage(data=list(zip(keys[: n // 2], values[: n // 2], strict=True)))
         for key, value in zip(keys[n // 2 :], values[n // 2 :], strict=True):
@@ -100,21 +103,43 @@ class TestOramOstOmapInit:
             oram=_make_oram("da", n, client, encryptor=AesGcm()),
         )
         omap.init_server_storage()
-        for i in range(n):
-            omap.insert(key=i, value=i)
-        for i in range(n):
-            assert omap.search(key=i) == i
+        keys = [bytes([i]) * 10 for i in range(n)]
+        for key in keys:
+            omap.insert(key=key, value=key)
+        for key in keys:
+            assert omap.search(key=key) == key
 
 
-def test_negative_int_keys_round_trip(client):
-    n = 64
-    omap = OramOstOmap(
-        OramOstOmapConfig(num_data=n), ost=_make_ods("avl", n, client), oram=_make_oram("path", n, client)
-    )
-    keys = list(range(-n, n, 2))
-    omap.init_server_storage(data=[(key, key * 3) for key in keys[: len(keys) // 2]])
-    for key in keys[len(keys) // 2 :]:
-        omap.insert(key=key, value=key * 3)
+def test_undersized_oram_raises(client):
+    oram = PathOram(PathOramConfig(num_data=64, data_size=OramOstOmap.oram_data_size(10) - 1, client=client))
+    with pytest.raises(ValueError, match="too small"):
+        OramOstOmap(OramOstOmapConfig(num_data=64), ost=_make_ods("avl", 64, client), oram=oram)
 
-    for key in keys:
-        assert omap.search(key=key) == key * 3
+
+def test_rejects_contract_violations(client):
+    omap = _make_omap("avl", "path", client)
+    omap.init_server_storage(data=[(b"k", b"kept")])
+    rounds = client.metrics.rounds
+
+    cases: list[tuple[Any, Any]] = [("k", b"v"), (b"x" * 11, b"v"), (b"k", "v"), (b"k", b"x" * 11)]
+    for key, value in cases:
+        with pytest.raises(ContractError, match="OramOstOmap 'avl'"):
+            omap.search(key=key, value=value)
+        with pytest.raises(ContractError, match="OramOstOmap 'avl'"):
+            omap.insert(key=key, value=value)
+
+    assert client.metrics.rounds == rounds
+    assert omap.search(key=b"k") == b"kept"
+
+
+def test_write_deferral_preserves_access_sequence(assert_deferral_preserves_access):
+    def workload(client):
+        omap = _make_omap("avl", "da", client)
+        omap.init_server_storage(data=[(b"%d" % i, b"%d" % i) for i in range(0, 64, 2)])
+        for i in range(1, 20, 2):
+            omap.insert(key=b"%d" % i, value=b"%d" % i)
+        for i in range(0, 30, 3):
+            omap.search(key=b"%d" % i)
+
+    rounds_off, rounds_on = assert_deferral_preserves_access(workload)
+    assert rounds_on * 2 == rounds_off

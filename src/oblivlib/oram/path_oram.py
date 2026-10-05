@@ -6,7 +6,7 @@ Call ``init_server_storage`` once after construction to build the server storage
 
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, DataMap, OramConfig, ServerStorage
+from oblivlib.dependency import InitData, OramConfig
 from oblivlib.oram.tree_base_oram import TreeBaseOram
 
 
@@ -22,12 +22,11 @@ class PathOram[ConfigT: OramConfig](TreeBaseOram[ConfigT]):
         self._init_pos_map()
 
     @override
-    def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage: ServerStorage = {self._name: self._build_tree(self._initial_blocks(data_map=data_map))}
-        self._client.init_storage(storage=storage)
+    def init_server_storage(self, data: InitData | None = None) -> None:
+        self._host_tree(self._build_tree(self._initial_blocks(data)))
 
     @override
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         leaf = self._look_up_pos_map(key=key)
 
         new_leaf = self._get_new_leaf()
@@ -46,7 +45,7 @@ class PathOram[ConfigT: OramConfig](TreeBaseOram[ConfigT]):
         return read_value
 
     @override
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         leaf = self._look_up_pos_map(key=key)
 
         new_leaf = self._get_new_leaf()
@@ -63,7 +62,7 @@ class PathOram[ConfigT: OramConfig](TreeBaseOram[ConfigT]):
         return read_value
 
     @override
-    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
+    def _eviction_with_update_stash(self, key: int, value: Any, execute: bool) -> None:
         found = False
         for data in self._stash:
             if data.key == key:

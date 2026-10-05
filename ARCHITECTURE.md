@@ -16,92 +16,164 @@ client/server deployment:
 - The **server** is **honest-but-curious**: it follows the protocol, stores only encrypted blocks, and
   answers batched read/write requests. It must not learn the access pattern.
 
-Because the server is not malicious, the wire format does not defend against hostile responses (§8).
+Because the server is not malicious, the protocol does not defend against hostile responses beyond
+decoding every message as plain data (§2): a peer can lie, but it cannot run code.
 
 ---
 
-## 2. The storage seam (`InteractServer`)
+## 2. Client, protocol, and server (the wire spec)
 
-`src/oblivlib/dependency/interact_server.py`. Every storage access goes through this interface. Schemes
-receive it as `client=`: it is the client-side handle *to* the server, not the server.
+Every storage access goes through a `Client` (`src/oblivlib/dependency/client.py`). Schemes receive it
+as `client=` in their config: it is the client-side handle *to* the server, not the server. The layers
+under it, each owning one concern:
 
-| Class | Role |
-|---|---|
-| `InteractLocalServer` | Storage in-process. Used by tests and local runs. |
-| `InteractRemoteServer` | Client side: ships batched queries over a socket. |
-| `RemoteServer` | Server side: runs received queries on local storage. Subclasses `InteractLocalServer`. |
+| Layer | Owner | Role |
+|---|---|---|
+| Scheme-facing API | `Client` | Stages queries, defers writes, hosts trees, keeps metrics. |
+| Messages | `Backend` (`LocalBackend`, `TransportBackend`) | Delivers one request and returns its reply. |
+| Bytes | `Transport` (`transport.py`) | Moves an encoded request; `ZmqTransport`, `LoopbackTransport`, `SimulatedNetwork`. |
+| Engine | `StorageServer` (`storage_server.py`) | Answers requests; no transport of its own. |
+| Stores | `server_stores.py` | Fixed-row trees (memory or file), variable-row trees (memory), lists. |
 
-**Query batching.** No call does I/O immediately. Queries accumulate in four label-keyed buffers:
-`add_read_path`, `add_read_list`, `add_write_path`, and `add_write_list`. `execute()` takes them as one
-`Request` (`_take_request` snapshots the buffers and rebinds them empty, so a failed `execute()` never
-leaks queries into the next one) and returns `ExecuteResult(results, error)`: results keyed by label,
-and `error` holding the exception a failed `execute()` caught (else `None`).
+`Client.local(storage_dir=None)` wires a `LocalBackend` straight to a `StorageServer`: rows are
+immutable `bytes`, so nothing is copied or encoded in process. `Client.connect(endpoint)` wires a
+`TransportBackend` over a `ZmqTransport`; the server side runs `serve(ZmqListener(endpoint), server)`
+until it has answered a `Shutdown`. A client is not thread-safe: use one per thread.
 
-- Within one `execute()` the server applies path writes, then list ops, then reads. A later path write to
-  the same bucket overwrites an earlier one.
-- Reads are deduplicated. `add_read_list(label, None)` reads the whole list.
-- List writes are an ordered sequence of `ListOp`s (`ListWrite(index, value)`, `ListPushFront(value)`,
-  `ListPopBack()`, in `types.py`), applied in staging order, so several pushes in one batch all land.
-  `ListWrite` rejects a negative index at construction.
-- The local server pickles the `Request` on the way in and the `ExecuteResult` on the way out, exactly as
-  the wire does. Results and stored writes are therefore copies: a client edit to a read bucket or a
-  written block never reaches server storage, and a scheme that only works through that aliasing is
-  broken under `InteractRemoteServer`.
-- Bandwidth (`get_bandwidth`/`reset_bandwidth`) is `len(pickle.dumps(...))` of the `Request` and the
-  `ExecuteResult`, counted by the client-side handle, so local and remote report identical numbers.
-  `RemoteServer` does not count. For experiments only.
-- Read results through `ExecuteResult.require(label)`: on a failed `execute()` it re-raises the original
-  error object (e.g. `UnknownLabelError` for a label the server does not host), and a label with no result
-  raises `MissingResultError`. Library errors subclass `OblivlibError` (`errors.py`) and keep the default
-  single-message constructor so they survive the pickle trip back from a remote server.
+### Framing and decoding
 
-`init_storage` takes `dict[label, BinaryTree | list]` and routes each store into the server's tree or
-list table; it takes ownership without copying. It validates the whole batch before hosting anything:
-a label already hosted raises `DuplicateLabelError`, and a store of any other type raises `TypeError`.
-Schemes sharing one client must use distinct names and distinct `filename`s: a file-backed `Storage`
-truncates its file on construction.
+Every message is a frozen, slotted dataclass in `protocol.py`, framed as the msgpack array
+`[ClassName, *fields in declaration order]`; nested ops are framed the same way. Fields hold only ints,
+str, bytes, None, lists, and nested ops. Decoding (`decode_request`, `decode_reply`) is the trust
+boundary: it checks the tag against the direction's union, the arity, and every field's type against
+the dataclass annotations (an int never accepts a bool), and raises `ProtocolError` for anything else,
+including a pickle payload. Nothing is ever unpickled. The message set is the `Request`, `Reply`,
+`WriteOp`, and `ReadOp` unions in `protocol.py`; read those for the current members. `PROTOCOL_VERSION`
+is checked by `Hello`.
 
-**Transport.** `sockets.py`: `ZMQSocket` (ZeroMQ `REQ`/`REP`, pickle framing). Two messages, both
-answered with an `ExecuteResult`: `("init", storage)` and `("execute", Request)`.
-`RemoteServer._process_request` turns any failure (init, execute, or an unknown command) into an
-`ExecuteResult(error=...)` reply, so `run()` never dies and the `REQ` client never blocks;
-`InteractRemoteServer.init_storage` re-raises a reply's error.
+### Sessions and store lifecycle
+
+Every request except `Hello` and `Shutdown` carries its session first. The client sends `Hello` lazily,
+on its first request; the reply carries the session id (`secrets.token_hex(16)`) and the server's
+`max_message_bytes`. Labels are namespaced per session. `CreateTree(level, row_bytes)` makes a tree of
+`2**level - 1` rows: fixed-size rows when `row_bytes` is an int, variable-size (plaintext) rows when it
+is `None`, which a disk-backed server refuses. `Resize` grows or shrinks a tree in place, refusing to
+drop a present row (`ScaleDownError`). `WriteRange(start, rows)` writes consecutive rows (bulk
+hosting). `Close` releases the session and deletes its files; `StorageServer.close()` closes every
+session. A disk server keeps a tree at `storage_dir/<session>/<label as hex>.tree` and reads and writes
+it with `os.pread`/`os.pwrite`.
+
+### Batches
+
+`Batch(session, writes, reads)` puts "writes first, then reads" in the message's structure.
+
+- **Client side.** Path writes merge per label, a later write to a node winning; list ops append in
+  staging order; path reads union per label (leaves sorted); a whole-list read absorbs index reads.
+  `add_write_path` checks that the rows cover exactly the paths to their leaves, and staging an unknown
+  label raises `UnknownLabelError` at once.
+- **Canonical row order.** A path read or write carries its leaves, and its rows follow ascending heap
+  index (root first) over the deduplicated union of their paths: `heap_index.path_indices`.
+- **Absent rows.** `b""` on the wire is an absent node. A fixed-row store keeps it as an all-zero row
+  and reads an all-zero row back as `b""`; a sealed row is never all zeros.
+- **All or nothing.** The server validates the whole batch (`_validate_batch`) before applying any of
+  it: every label exists with the right kind, every leaf is in range, each write carries one row per
+  path node, every row fits its store, list ops are simulated against the running length, and list
+  read indices are checked against the post-write length. Then it applies the writes in order and
+  answers the reads, aligned with `Batch.reads`.
+- **An empty `execute()` is still a round trip**, so the round count never depends on what was staged.
+
+### Write deferral
+
+`Client(defer_writes=True)`, the default, does not send an `execute()` that staged only writes: its
+writes stay pending and ride on the next batch, which applies them before its own reads. Every read
+therefore sees the state it would have seen undeferred, and the batch sequence is exactly the
+undeferred one with each run of read-less batches folded into the next batch (leaves unioned per
+label); `assert_deferral_preserves_access` in `tests/conftest.py` checks this for every scheme family.
+For schemes whose operations alternate a read round and a write-back round (all of them today) the
+round count halves, the same for every key and value. `flush()` sends pending writes on their own,
+every lifecycle call flushes first, and `close()` flushes. An error from a deferred write surfaces on
+whichever call sends it. `defer_writes=False` sends every `execute()`.
+
+### Errors
+
+A failure comes back as `ErrorReply(kind, message)`; `handle` never raises. `ERROR_KINDS` in
+`protocol.py` maps each kind to its class in `errors.py`; `error_reply` maps an `OSError` to
+`StorageError` and anything unexpected to `ServerError`; `expect_reply` raises the mapped class and
+turns an unknown kind or the wrong reply type into `ProtocolError`. `Client.execute()` raises;
+`ExecuteResult` holds only results, and `require(label)` raises `MissingResultError` for a label with
+no result. A timeout or disconnect raises `TransportError`; `ZmqTransport` then recreates its `REQ`
+socket so it stays usable, and never resends the lost request.
+
+### Limits and metrics
+
+`DEFAULT_MAX_MESSAGE_BYTES`, `WRITE_RANGE_CHUNK_BYTES`, and `DEFAULT_TIMEOUT_MS` live in
+`protocol.py`. `handle_wire` answers an oversized message with `ErrorReply(ProtocolError)`, so a `REQ`
+peer never hangs, and the client chunks `WriteRange` by bytes at
+`min(WRITE_RANGE_CHUNK_BYTES, max_message_bytes // 2)`. `client.metrics` counts `rounds` (batches sent, empty ones
+included), `payload_bytes` (row and list-value bytes written and read, `WriteRange` included), and
+`wire_bytes` (encoded request and reply bytes, counted by `TransportBackend`; zero in process). Local
+and loopback clients report identical rounds and payload. `SimulatedNetwork` wraps a transport and
+accumulates modeled time, a round-trip time plus bytes over bandwidth per request, without sleeping.
+
+### Hosting a built tree
+
+`Client.host_tree(label, image)` hands over a tree built on the client (§3). A `MemoryImage` is
+created and streamed with `WriteRange`. A `FileImage` already has the server's on-disk format, so it
+can move without re-encryption: placed out of band by the client's `ship_file` (which returns its name
+inside the server's storage directory) and then attached, adopted in place when the backend exposes the
+server's `storage_dir` (the file is moved there and attached), or else streamed row by row. The local
+build file is gone afterwards in every case. `AttachTree` accepts only a plain file name directly in
+`storage_dir` (no separators, no `..`, not absolute), requires the exact size, and moves the file into
+the session's directory; an in-memory server refuses it.
 
 ---
 
 ## 3. Data and storage layer
 
-### Blocks
+### The data contract
 
-`Data(key, leaf, value)` (`types.py`). A dummy block has `key is None`. `UNSET` (`types.py`)
-distinguishes "read" from "write `None`": `None` is a writable value.
+ORAM keys are int addresses in `[0, num_data)`; OMAP keys are `bytes` of at most `key_size`, ordered by
+plain bytes comparison (OMAPs only search, insert, and delete exact keys); values are `bytes` of at most
+`data_size`. Users serialize their own data. `contract.py` checks keys and values at every public entry
+point, before any state changes, and raises `ContractError` (a `ValueError`) prefixed with the scheme's
+identity. An ORAM address never written reads `b""`; `None` is not a value. Internal structured values
+(position-map blocks, composed-map roots and metadata, ODS nodes) are msgpack; the library never pickles.
 
-`Data`, `AVLData`, and `BPlusData` share one serializer, the `FieldTuplePickle` mixin: `dump()` pickles
-the tuple of the dataclass's fields in declaration order and `load()` rebuilds the instance from it.
-Reordering, adding, or removing a field changes the stored byte format.
+### Blocks and codecs
 
-### Padding and sizing (encryption or file storage only)
+`Data(key, leaf, value)` (`types.py`) is a block. `Data`, `AVLData`, and `BPlusData` share the
+`FieldTuple` mixin: `to_fields()` lists the dataclass's fields in declaration order and `from_fields`
+rebuilds the instance, so reordering, adding, or removing a field changes the stored format.
 
-- `dump_pad(length)` = `pickle.dumps((key, leaf, value))` + zero padding. Fields are pickled shallowly
-  (not via `dataclasses.astuple`, which would flatten a dataclass value into a tuple). There is no length header:
-  pickle is self-delimiting and always ends in STOP (`0x2e`, never `0x00`), so a padded slot loads with
-  the plain `Data.load`.
-- `_dumped_data_size` (a cached property, always available) is the exact worst-case pickle for
-  keys/leaves/values at the configured sizes. A value whose pickle exceeds it makes `dump_pad` raise.
-- The scheme's codec fixes the slot width (`codec.block_size`); `Storage` derives its own row size from
-  it (below).
+A `BlockCodec` (`codec.py`) turns a block into the msgpack-ready `[key, leaf, value]` and back, never
+touching the live block. `DefaultCodec` stores the value as is; `NodeCodec(max_block_bytes, value_cls)`
+stores a node value as its field list and rebuilds it. msgpack returns lists where tuples went in, so
+decoders accept lists (B+ internal values come back as `[id, leaf]`). `max_block_bytes` bounds one packed
+block: `TreeStorageBase._max_block_bytes` for plain values, each ODS's `_max_block_size` for nodes, both
+computed with `codec.packed_size` on a widest-case block.
 
-Memory + plaintext mode stores `Data` objects as-is, so values may be any picklable object; the codec is
-unused there.
+### Path ciphers and rows
+
+A `PathCipher` (`path_cipher.py`) turns a bucket into a server row and back, and is the one path both
+initial building and per-op eviction go through (`TreeStorageBase._cipher`). A bucket packs as a msgpack
+array of its real blocks only; there are no dummy blocks.
+
+- `PlainPathCipher`: the row is the packed bucket, unpadded, so rows vary in length (memory servers
+  only). An empty bucket packs to a non-empty row, so a present empty node stays distinct from an absent
+  one.
+- `SealedPathCipher`: the row is `enc(u32_be(len) ‖ packed ‖ zero padding)`, padded to the capacity of a
+  full bucket of widest blocks (the largest msgpack array header plus `bucket_size * max_block_bytes`).
+  Every sealed row is therefore exactly `row_bytes` long, whatever it holds. A bucket with too many
+  blocks or bytes raises `RowSizeError` instead of producing a longer row.
 
 ### Heap-index math (`heap_index.py`)
 
 Trees are complete binary trees flattened into heap order: the root is index 0 and node `i`'s parent is
 `(i - 1) // 2`. All tree math is integer-only module functions in `heap_index.py` (imported from the
 submodule, not re-exported): `compute_level(num_data) = (num_data - 1).bit_length() + 1` (the smallest
-level whose `2**(level-1)` leaves cover `num_data`), `leaf_index(leaf, level) = leaf + 2**(level-1) - 1`,
-`parent`, `path_to_root` (node first), `union_of_paths` (deduplicated, deepest first),
-`empty_path`, and `fill_data_to_path`.
+level whose `2**(level-1)` leaves cover `num_data`), `tree_size`, `leaf_index`, `parent`, `path_to_root`
+(node first), `path_indices` (the canonical row order: deduplicated, root first), `empty_path`, and
+`fill_data_to_path`.
 
 - `leaf_lca(leaf_a, leaf_b, level)` is O(1). Two leaves at the same depth have 1-based heap indices
   `leaf + 2**(level-1)` of equal bit length, and an ancestor's 1-based index is a binary prefix of its
@@ -112,48 +184,39 @@ level whose `2**(level-1)` leaves cover `num_data`), `leaf_index(leaf, level) = 
 - `fill_data_to_path` places a block at the deepest bucket on both its own path and the target path
   set, bubbling up toward the root if full.
 
-### `BinaryTree` and `Storage`
+### Building the initial tree (`tree_builder.py`)
 
-`BinaryTree` is a fixed-level heap of `2**level - 1` buckets over `Storage`, read and written one set of
-leaf paths at a time.
+`build_tree(blocks, level, bucket_size, cipher, build_file)` places each block in the deepest non-full
+bucket on its leaf's path and seals every bucket. Without a `build_file` the result is a `MemoryImage`
+(all `2**level - 1` buckets in memory: never build one at large `num_data` just to read its level; use
+`heap_index.compute_level`). With one it is a `FileImage` in the server's format: the file is truncated,
+every row pre-sealed empty, and each placement reads, opens, appends, seals, and writes its row in
+place, so the file never holds plaintext. Blocks whose whole path is full come back as `overflow`.
 
-- Storage hands back bucket copies in file mode, so an in-place edit (`fill_data_to_storage_leaf`)
-  reads the bucket, mutates it, and writes it back explicitly.
-- `BinaryTree` allocates all `2**level - 1` buckets eagerly. Never construct one at large `num_data`
-  just to read its level; use `heap_index.compute_level`.
+`TreeStorageBase._build_tree` is the one construction path: it builds with the scheme's cipher and
+`build_file`, puts the overflow in the stash (as in Path ORAM), and checks the stash. Blocks stream in:
+`TreeBaseOram._initial_blocks` yields the supplied `(key, value)` pairs (a mapping or a one-shot
+iterator), tracking supplied keys in a `bytearray(num_data)` so a duplicate raises, then `b""` for every
+other address; `_initial_leaf` gives each address's leaf (`StaticOram` overrides it). The recursive
+schemes build and host each position-map tree with the child's own `_build_tree` and `_host_tree`, one at
+a time, so the children reuse the parent's `build_file` path in turn. The ODS init paths collect their
+blocks and build once.
 
-`Storage(size, bucket_size, codec, encryptor=None, filename=None)` owns the scheme's `BlockCodec` and
-fronts two backends: `_MemoryBackend` (a list of buckets) and `_FileBackend` (a pre-allocated
-fixed-row file, truncated on open).
+### Server stores (`server_stores.py`)
 
-- The encryptor is **never stored**. File mode uses it only to size a sealed row
-  (`ciphertext_length(bucket_size * codec.block_size)`); `seal(encryptor)` takes it again. A pickled
-  `Storage` (shipped to a remote server by `init_storage`) therefore never carries the key, and the
-  unpicklable `AesGcm` never needs to be.
-- The file backend is two-phase. While the tree is filled, rows hold `bucket_size` codec-encoded
-  plaintext slots. `seal()` then streams one row at a time, sealing each into a single blob through
-  `codec.seal_bucket` and flipping `_sealed`, so trees larger than RAM never materialize. Rows are sized
-  for the sealed form, so the file never grows.
-- Writes are bounded: a plaintext file row rejects more than `bucket_size` blocks or a block wider than
-  its slot (`dump_pad` raises), and a sealed row rejects a blob longer than the row, so an oversized
-  write raises instead of spilling into the neighbouring row.
-- `resize(size)` extends or truncates in place (memory: the list; file: `truncate`, so the heap prefix
-  stays put). New rows read as `[]`.
-
-`TreeStorageBase._build_tree(blocks)` is the one tree-construction path: it builds the `BinaryTree` with
-the scheme's codec, fills each block onto its leaf path (a block whose path is already full goes to the
-stash, as in Path ORAM), and seals when encrypted. `TreeBaseOram._initial_blocks` supplies the ORAM
-blocks (`StaticOram` overrides only that), the recursive schemes build each position-map tree with the
-child's own `_build_tree`, and the ODS init paths collect their blocks and call it once.
+A `TreeStore` holds `2**level - 1` rows. `FixedRowStore` keeps rows of exactly `row_bytes` in one
+region, a `bytearray` or a file, and rejects any other non-empty length (`RowSizeError`);
+`VariableRowStore` keeps rows of any length in memory. `resize` truncates or extends in place, so the heap
+prefix and its rows survive, and refuses to drop a present row. `ListStore` holds a list of `bytes`.
 
 ### Construction configs (`config.py`)
 
 Every ORAM/OMAP is built from a frozen, keyword-only config whose hierarchy mirrors the scheme
 hierarchy and holds each scheme's defaults:
 
-- `OramConfig` (`num_data, data_size, client, name, filename, bucket_size, stash_scale, encryptor`) →
-  `PathOramConfig`, `StaticOramConfig`, `MulPathOramConfig`, `RecursiveOramConfig`, `CounterOramConfig`
-  → `DaOramConfig`/`FreecursiveOramConfig`.
+- `OramConfig` (`num_data, data_size, client, name, build_file, bucket_size, stash_scale, encryptor`)
+  → `PathOramConfig`, `StaticOramConfig`, `MulPathOramConfig`, `RecursiveOramConfig`,
+  `CounterOramConfig` → `DaOramConfig`/`FreecursiveOramConfig`. `build_file` requires an `encryptor`.
 - `OmapConfig(OramConfig)` adds `key_size` and `distinguishable` → AVL/B+ configs (and their cached
   variants) and `GroupOmapConfig`. `OramOstOmapConfig` stands alone (only `num_data`).
 
@@ -180,19 +243,23 @@ own per-level I/O (`_access_pos_map_level`); the parent only samples leaves and 
 
 `src/oblivlib/dependency/tree_storage_base.py`, generic over its config type. It is the shared core of
 `TreeBaseOram` and the ODS base `OstBaseOmap`: config accessors, level/leaf-range/stash-size math,
-padded sizing, `_get_new_leaf`, the stash with its capacity check (`_check_stash`, raising
-`StashOverflowError`, which is also a `MemoryError`), tree construction (`_build_tree`), block-major
-eviction (`_evict_stash`), and per-bucket path encrypt/decrypt driven by a `BlockCodec` (§6). It lives in `dependency/` so both higher layers depend downward on it rather than on each other.
+block sizing (`_max_block_bytes`), `_get_new_leaf`, the stash with its capacity check (`_check_stash`,
+raising `StashOverflowError`, which is also a `MemoryError`), tree construction and hosting
+(`_build_tree`, `_host_tree`), block-major eviction (`_evict_stash`, which returns sealed `PathRows`),
+and the scheme's `PathCipher` (`_cipher`, built from its `_codec`; §3, §6). It lives in `dependency/` so
+both higher layers depend downward on it rather than on each other.
 
 ### `TreeBaseOram` and the access protocol
 
-Adds the position map and eviction. `operate_on_key(key, value=UNSET)` returns the value *before* any
-write:
+Adds the position map and eviction. The public `operate_on_key`, `operate_on_key_without_eviction`,
+and `eviction_with_update_stash` check the data contract and call the underscore methods each scheme
+implements. `operate_on_key(key, value=UNSET)` returns the value *before* any write:
 
 1. Look up the key's leaf and remap it to a fresh random leaf.
-2. Read the old leaf's path (round trip 1).
+2. Read the old leaf's path (one batch).
 3. Pull the path's real blocks into the stash; find the key, read it, optionally overwrite, and remap it.
-4. Evict the stash onto the same path and write it back (round trip 2).
+4. Evict the stash onto the same path and stage the write-back. With write deferral (§2) it rides on the
+   next operation's read batch, so an access costs one round instead of two.
 
 `operate_on_key_without_eviction` + `eviction_with_update_stash` split this so callers can defer or
 batch the write-back.
@@ -206,7 +273,7 @@ placements on a laminar matroid) and is ~15% faster at realistic stash sizes. Do
 | Scheme | Idea |
 |---|---|
 | `PathOram` | Random leaf reassignment on every access. |
-| `MulPathOram` | Reads/evicts several paths per batch (`operate_on_keys*`, `eviction_for_mul_keys`). `stash_scale_multiplier` is baked into `stash_scale` at construction. |
+| `MulPathOram` | Reads/evicts several paths per batch (`operate_on_keys*`, `eviction_for_mul_keys`, each checking the contract before its underscore twin). `stash_scale_multiplier` is baked into `stash_scale` at construction. |
 | `StaticOram` | Leaves fixed by `PRF(key)`: the "new" leaf equals the current one. |
 | `RecursivePathOram` | Position map compressed into a chain of smaller ORAMs, each block holding `compression_ratio` child leaves; only the smallest map (≤ `on_chip_mem`) stays on chip. A short final block is padded with random leaves. |
 | `DAOram`, `FreecursiveOram` | Leaves are `PRF(key ‖ GC ‖ IC)`; position-map blocks hold counters instead of leaves (below). |
@@ -243,22 +310,26 @@ is `offset` because a NamedTuple field cannot shadow `tuple.index`.
 - **ODS maps.** `OstBaseOmap` (a `TreeStorageBase`) with `AVLOmap`, `BPlusOmap`, and the cached
   `AVLOmapCached`/`BPlusOmapCached`. Each holds a `root` pointer `(key, leaf)`, a per-op `local` set of
   downloaded nodes (`LocalNodesBase` plus scheme `LocalNodes`), and the stash, and exposes `search`,
-  `insert`, and `delete`. `search(key, value)` returns the old value and writes `value` when it is not
-  `None`; unlike the ORAMs, an ODS cannot write `None`. Insert assumes the key is absent: duplicate keys
-  are undefined behaviour.
+  `insert`, and `delete`, which check the contract and call each scheme's `_search`/`_insert`/`_delete`.
+  `search(key, value)` returns the old value (`None` when absent) and writes `value` when it is not
+  `None`; `key=None` is a dummy op. Insert assumes the key is absent: duplicate keys are undefined
+  behaviour.
 - **Composed maps.** `OramOstOmap` (VLDB 2025) hashes each key with a PRF into an ORAM slot that stores
-  the root of that slot's ODS tree. An op fetches the root, runs the ODS op, and writes the root back.
-  It works with any `TreeBaseOram` × `OstBaseOmap`, and calls `update_mul_tree_height` so the ODS sizes
-  its budgets for one small tree per slot. `GroupOmap` hashes keys into buckets: an upper ORAM stores
-  per-bucket metadata `pickle((count, seed, keys))` and a lower `MulPathOram` stores pairs at
-  `PRF(seed ‖ key)`. A search reads the whole bucket and reshuffles it under a new seed. An insert
-  updates the key's single pre-existing lower block in place, because appending a second block would let
-  a later read return the stale placeholder. The upper ORAM must be at least
-  `GroupOmap.upper_oram_data_size(num_data, key_size)` wide; construction checks this.
-- **Key encoding.** Both composed maps hash keys through `crypto.key_to_bytes`: an int is 16-byte
-  big-endian two's complement (so negative keys work, and an int outside [-2¹²⁷, 2¹²⁷) raises
-  `OverflowError`), a str is UTF-8, and bytes pass through. `GroupOmap` falls back to `str(key)` for any
-  other key type.
+  the root of that slot's ODS tree, as `msgpack([key, leaf])` (`b""` for an empty tree). An op fetches
+  the root, runs the ODS op, and writes the root back. It works with any `TreeBaseOram` × `OstBaseOmap`,
+  and calls `update_mul_tree_height` so the ODS sizes its budgets for one small tree per slot. The ORAM
+  must be at least `OramOstOmap.oram_data_size(key_size)` wide; construction checks this.
+- **`GroupOmap`** hashes keys into buckets. An upper ORAM stores per-bucket metadata
+  `msgpack([seed, keys])`, and a lower `MulPathOram` stores each value in a block **named by its key**,
+  on the path `PRF(seed ‖ key)`. A search reads every block of the key's bucket in one batch and
+  reshuffles them under a new seed. An insert stashes a new block on its path through
+  `MulPathOram._insert_block`, which reads and evicts one uniformly random path, so the server sees the
+  same single-path access as before. GroupOmap drives the lower ORAM through its underscore
+  (contract-free) methods, since the lower ORAM is internal and keyed by bytes rather than addresses. The
+  lower ORAM sizes its slots for an int address, so its `data_size` is widened by `key_size` plus
+  `_KEY_SLOT_OVERHEAD` (`group_omap.py`): a msgpack byte string costs its length plus at most a 5-byte
+  header, against at least one byte for the int it replaces. Buckets hold at most `load_bound.max_bucket_load(num_data)` keys, and the upper ORAM must be
+  at least `GroupOmap.upper_oram_data_size(num_data, key_size)` wide; construction checks this.
 
 ### Obliviousness model
 
@@ -329,25 +400,23 @@ kept as templates and cross-check oracles even though only tests call them.
 ## 6. Crypto (`src/oblivlib/dependency/crypto.py`)
 
 - `AesGcm`: `nonce(12) ‖ ciphertext ‖ tag(16)`. GCM adds no padding, so length is plaintext + 28.
-- `Blake2Prf`: keyed BLAKE2b, with `digest_mod_n` for leaf derivation.
+- `Blake2Prf`: keyed BLAKE2b, with `digest_mod_n` for leaf derivation. `hash_data_to_leaf` and
+  `hash_data_to_map` hash `bytes` keys with it for the composed maps.
 - `FeistelPrp`: a 4-round balanced Feistel (the Luby–Rackoff bound for a strong PRP) over an even bit
   width. The SHA-256 round function clones a key-seeded hash per round, which is equivalent to hashing
   `key ‖ round ‖ value`. Non-power-of-2 domains use cycle-walking, which stays a bijection.
 
-**Encryption is per bucket.** The init seal (`Storage.seal`) and per-op `_encrypt_path_data` both go
-through `BlockCodec.seal_bucket`, which concatenates up to `bucket_size` codec-encoded blocks, pads with
-dummy blocks, and encrypts once, so there is one nonce+tag per bucket; `open_bucket` reverses it and
-keeps only real blocks. GCM authentication is defense in depth
-under the honest-but-curious model, not malicious-server integrity: it has no replay or freshness
-protection. Random 96-bit nonces cap safe use at ~2³² encryptions per key.
+**Encryption is per bucket.** Building the initial tree and evicting a path both seal through the
+scheme's one `SealedPathCipher` (§3): the bucket's real blocks are packed as one msgpack array, length
+prefixed, zero padded to the row capacity, and encrypted once, so there is one nonce+tag per bucket and
+every row has the same length whatever it holds. Only the client holds the encryptor; the server stores
+and returns sealed rows. GCM authentication is defense in depth under the honest-but-curious model, not
+malicious-server integrity: it has no replay or freshness protection. Random 96-bit nonces cap safe use
+at ~2³² encryptions per key.
 
-**Per-block serialization is a `BlockCodec`** (`codec.py`). `DefaultCodec` stores the value verbatim.
-`NodeCodec(block_size, AVLData | BPlusData)` stores a node value as its own pickle and rebuilds it on
-load, so `get_data_list` always emits live node values and the codec encodes them at seal or write
-time. Codecs never mutate the live block. A new value-carrying scheme overrides `_codec` instead of
-reimplementing path encryption.
-
-`encryptor=None` stores plaintext and skips both steps; the tests use this for speed.
+`encryptor=None` stores each bucket as its plaintext msgpack row, of varying length, on a memory server
+only; the tests use this for speed. A `build_file` always needs an encryptor, so plaintext never reaches
+disk.
 
 ---
 
@@ -356,14 +425,17 @@ reimplementing path encryption.
 - A block mapped to leaf `x` is on the root→`x` path or in the stash.
 - Recursive schemes require `num_data` > on-chip size (`on_chip_mem` for DA/Recursive, `on_chip_size`
   for Freecursive); the constructor raises otherwise.
-- In encrypted or file mode a value's pickle must fit `data_size`.
-- The init seal and `_encrypt_path_data` must produce identical per-bucket layouts. Both use the one
-  `BlockCodec.seal_bucket` with the scheme's `_codec` (`_dumped_data_size` for `DefaultCodec`,
-  `_max_block_size` for `NodeCodec`), and `_build_tree` hands that same codec to `Storage`.
-- Every scheme on a shared client has a distinct `name`, and every file-backed scheme a distinct `filename`.
-- ORAM: `operate_on_key(key)` reads, `operate_on_key(key, None)` writes `None`, and the return value is
-  always the pre-write value.
-- `FlexibleBinaryTree` absent nodes are zero rows and are skipped by `read_path`, so the server sees
+- Keys and values obey the data contract (§3); a violation raises `ContractError` before any client
+  state changes or any round is spent.
+- The accessed-path sequence and the round count depend only on the sequence of calls, never on keys or
+  values; write deferral folds read-less batches into the next batch the same way for every input (§2).
+- A sealed row is exactly `row_bytes` long whatever its occupancy or value lengths, and building and
+  per-op eviction seal through the same `PathCipher`, so an initial row is indistinguishable from an
+  evicted one.
+- Every scheme on a shared client has a distinct `name` (its storage label).
+- ORAM: `operate_on_key(key)` reads, `operate_on_key(key, value)` writes `value` (`bytes`), an address
+  never written reads `b""`, and the return value is always the pre-write value.
+- `FlexibleBinaryTree` absent nodes are empty rows and are skipped by `read_path`, so the server sees
   which nodes are empty versus present. That is the same information the write lengths already reveal,
   and the adopting scheme controls both.
 - A real op never exceeds its round budget: `_perform_dummy_operation` raises on a negative pad count,
@@ -374,44 +446,54 @@ reimplementing path encryption.
 ## 8. Known issues
 
 - **`FlexibleBinaryTree`** (`flexible_binary_tree.py`) has no callers yet; it is the resizable tree a
-  future scheme (e.g. SORAM) is meant to adopt. Its model is client-driven: leaves are int labels at
+  future scheme (e.g. SORAM) is meant to adopt. It is a client-side handle over a hosted tree
+  (`FlexibleBinaryTree.create` builds and hosts it). Its model is client-driven: leaves are int labels at
   the tree's current `level` (the caller keeps them in range), and every node is either present (a
-  bucket, possibly empty) or absent. The tree tracks presence itself in a `bytearray`, one byte per
-  node, that is not persisted; all nodes start present. `read_path(leaves)` returns the present nodes on
-  those paths, root first. `write_path(leaves, data)` rejects an index off those paths, writes each
-  bucket in `data` (marking it present), and clears every other node on the paths to `[]` (absent).
-  `scale_up()` adds an absent bottom layer and `scale_down()` drops the bottom layer, raising
-  `ScaleDownError` at level 1 or while any bottom node is present. Neither moves data: evacuating the
-  bottom layer before shrinking is the scheme's job, done through ordinary `write_path` calls. Both
-  resize `Storage` in place, so the heap prefix and its sealed blobs survive.
+  bucket, possibly empty) or absent (an empty row); all nodes start present. `read_path(leaves)` returns
+  the present nodes on those paths, root first. `write_path(leaves, data)` rejects an index off those
+  paths, writes each bucket in `data`, and writes every other node on the paths as absent. `scale_up()`
+  adds an absent bottom layer and `scale_down()` drops the bottom layer, both through the server's
+  `Resize`, which raises `ScaleDownError` at level 1 or while any bottom node is present. Neither moves
+  data: evacuating the bottom layer before shrinking is the scheme's job, done through ordinary
+  `write_path` calls.
 - **Type checking:** basedpyright `recommended` is clean across `dependency`/`oram`/`omap` with no
   `type: ignore`. `OstBaseOmap` is generic over its `LocalNodes` container rather than narrowing a base
-  attribute.
-- **Wire format is pickle:** fine under honest-but-curious, but an RCE vector against a malicious peer.
-  Bandwidth figures include pickle framing.
-- **Two round trips per ORAM access.** The deferred-eviction primitives could piggyback access N's
-  write-back on access N+1's read; the default path does not.
+  attribute. msgpack ships no stubs, so `typings/msgpack/__init__.pyi` declares the calls the library
+  makes.
+- **GroupOmap leaks bucket occupancy:** a search reads one lower path per key in the bucket, so the
+  number of lower paths depends on how full the bucket is.
+- **B+ block ids can outgrow their size bound:** `BPlusOmap._max_block_size` assumes ids below
+  `num_data`, but deletes never recycle ids. The row capacity's slack has absorbed it so far.
+- **Composed-map capacity errors** (a full GroupOmap bucket) raise a bare `MemoryError` after the upper
+  ORAM read, leaving that access half done.
+- **Not yet built:** a round driver and handle API for schemes, retrying or resending a lost batch, and
+  persistence (reattaching a server's trees after a restart). `GroupOmap` ignores `build_file`, and a
+  path or list read result is untyped (`ExecuteResult.require` returns `Any`).
 
 ---
 
 ## 9. Tests (`tests/`)
 
 - `tests/conftest.py`: the `num_data` fixture (default `2**12`, overridable via the `NUM_DATA` env var,
-  which avoids needing a rootdir `pytest_addoption`), `client`, `remote_client` (an
-  `InteractRemoteServer` wired to a real `RemoteServer` through an in-process pickling loopback),
-  `encryptor`, and `test_file`.
+  which avoids needing a rootdir `pytest_addoption`), `client` (`Client.local()`), `remote_client` (a
+  `Client` over `TransportBackend(LoopbackTransport(StorageServer()))`, the full wire path in process),
+  `recorded_client` (a factory for a client over a `RecordingBackend` that records every batch),
+  `assert_deferral_preserves_access` (runs a seeded workload with deferral off and on and compares the
+  batches), `encryptor`, and `test_file`.
 - `tests/dependency/`: `make_search_tree` parametrizes one behavioural suite
   (`test_search_tree_common.py`) over AVL and B+. Per-tree files hold the structural invariant validators
-  and recursive/iterative and batched/sequential cross-checks. Storage tests are parametrized over the
-  four backends. Test order mirrors source order. Trivial helpers covered transitively get no dedicated
-  test.
+  and recursive/iterative and batched/sequential cross-checks. The protocol, server, client, transport,
+  cipher, and builder each have their own file; `FlexibleBinaryTree` runs over memory-plain,
+  memory-encrypted, disk-encrypted, and loopback-encrypted servers. Test order mirrors source order.
+  Trivial helpers covered transitively get no dedicated test.
 - `tests/oram/`: `make_oram` parametrizes over `ORAM_SPECS` (Freecursive twice, prob/hard) and
-  `storage_kwargs` over the four backends. Adding one `ORAM_SPECS` line enrols a scheme in the whole
-  common suite. `MulPathOram`'s batch API, edge cases, and the remote protocol (through
-  `remote_client`) have their own files.
+  `storage_kwargs` over plaintext memory, encrypted memory, and an encrypted `build_file`. Adding one
+  `ORAM_SPECS` line enrols a scheme in the whole common suite. `MulPathOram`'s batch API, edge cases,
+  and the remote protocol and handover modes have their own files.
 - `tests/omap/`: `omap_spec` parametrizes over `OMAP_SPECS`, each entry declaring its guarantees
   (`per_op_oblivious`, `delete_oblivious`, …). The obliviousness tests draw from filtered fixtures, so
-  they are *collected* only for variants that claim the property. Cached variants are excluded by
-  construction, so there are no standing skips. Composed maps have their own files.
+  they are *collected* only for variants that claim the property, and count path reads through a
+  recording client. Cached variants are excluded by construction, so there are no standing skips.
+  Composed maps have their own files.
 
 Uncovered: an empty `operate_on_keys({})` batch.

@@ -1,79 +1,55 @@
-"""BlockCodec contract for the dependency-layer codecs.
+from pathlib import Path
 
-``DefaultCodec`` stores a block as its own padded pickle; ``NodeCodec`` packs an ODS node whose
-``value`` is a dataclass (``AVLData``/``BPlusData``) stored as its own pickle bytes, fixed-width. The
-key invariant both pin: ``dump_block`` builds the payload from a copy and never mutates the live block.
-"""
-
+import msgpack
 import pytest
 
-from oblivlib.dependency import AesGcm, AVLData, BPlusData, Data
+import oblivlib
+from oblivlib.dependency import AVLData, BPlusData, Data
 from oblivlib.dependency.codec import DefaultCodec, NodeCodec
 
 
-def test_default_codec_round_trips_to_fixed_width():
-    block = Data(key="k", leaf=7, value=[1, 2, 3])
-    codec = DefaultCodec(block_size=256)
-
-    payload = codec.dump_block(block)
-    assert len(payload) == codec.block_size == 256
-    assert block == Data(key="k", leaf=7, value=[1, 2, 3])
-
-    loaded = codec.load_block(payload)
-    assert loaded == block
-    assert loaded.value == [1, 2, 3]
+def _through_msgpack(fields: list) -> list:
+    return msgpack.unpackb(msgpack.packb(fields))
 
 
-def test_default_codec_loads_dummy_as_dummy():
-    codec = DefaultCodec(block_size=128)
-    dummy = codec.load_block(codec.dummy_block())
-    assert not dummy.is_real()
-    assert dummy.key is None and dummy.value is None
+def test_default_codec_round_trips_through_msgpack():
+    block = Data(key=3, leaf=7, value=b"v")
+    codec = DefaultCodec(max_block_bytes=64)
 
-
-def test_seal_open_bucket_round_trip():
-    encryptor = AesGcm()
-    codec = DefaultCodec(block_size=128)
-    blocks = [Data(key=1, leaf=0, value="a"), Data(key=2, leaf=1, value="b")]
-
-    blob = codec.seal_bucket(encryptor, blocks, bucket_size=3)
-    assert len(blob) == encryptor.ciphertext_length(3 * codec.block_size)
-    assert codec.open_bucket(encryptor, blob) == blocks
-    with pytest.raises(ValueError):
-        codec.seal_bucket(encryptor, blocks, bucket_size=1)
+    assert codec.pack(block) == [3, 7, b"v"]
+    assert codec.unpack(_through_msgpack(codec.pack(block))) == block
 
 
 _NODE_CASES = [
     pytest.param(
         AVLData,
         AVLData(value=b"v", r_key=b"rk", r_leaf=3, r_height=2, l_key=b"lk", l_leaf=1, l_height=2),
-        b"k",
-        7,
+        AVLData(value=b"v", r_key=b"rk", r_leaf=3, r_height=2, l_key=b"lk", l_leaf=1, l_height=2),
         id="avl",
     ),
-    pytest.param(BPlusData, BPlusData(keys=[1, 2], values=[(10, 0), (20, 1)]), 5, 4, id="bplus"),
+    pytest.param(
+        BPlusData,
+        BPlusData(keys=[b"a", b"b"], values=[(10, 0), (20, 1), (30, 2)]),
+        BPlusData(keys=[b"a", b"b"], values=[[10, 0], [20, 1], [30, 2]]),
+        id="bplus_internal",
+    ),
+    pytest.param(
+        BPlusData, BPlusData(keys=[b"a"], values=[b"x"]), BPlusData(keys=[b"a"], values=[b"x"]), id="bplus_leaf"
+    ),
 ]
 
 
-@pytest.mark.parametrize(("value_cls", "value", "key", "leaf"), _NODE_CASES)
-def test_node_codec_does_not_mutate_and_round_trips(value_cls, value, key, leaf):
-    block = Data(key=key, leaf=leaf, value=value)
-    codec = NodeCodec(block_size=512, value_cls=value_cls)
+@pytest.mark.parametrize(("value_cls", "value", "expected"), _NODE_CASES)
+def test_node_codec_round_trips_without_mutating(value_cls, value, expected):
+    block = Data(key=b"k", leaf=4, value=value)
+    codec = NodeCodec(max_block_bytes=256, value_cls=value_cls)
 
-    payload = codec.dump_block(block)
+    loaded = codec.unpack(_through_msgpack(codec.pack(block)))
+
     assert block.value is value
-    assert isinstance(block.value, value_cls)
-    assert len(payload) == 512
-
-    loaded = codec.load_block(payload)
-    assert loaded.key == key and loaded.leaf == leaf
-    assert isinstance(loaded.value, value_cls)
-    assert loaded.value.dump() == value.dump()
+    assert loaded == Data(key=b"k", leaf=4, value=expected)
 
 
-@pytest.mark.parametrize("value_cls", [AVLData, BPlusData], ids=["avl", "bplus"])
-def test_node_codec_loads_dummy_as_dummy(value_cls):
-    codec = NodeCodec(block_size=256, value_cls=value_cls)
-    dummy = codec.load_block(codec.dummy_block())
-    assert not dummy.is_real()
-    assert dummy.value is None
+def test_library_has_no_pickle():
+    sources = Path(oblivlib.__file__).parent.rglob("*.py")
+    assert [path.name for path in sources if "pickle" in path.read_text()] == []

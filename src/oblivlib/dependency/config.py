@@ -13,11 +13,12 @@ keyword-only internal arguments when a scheme builds its own position-map childr
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from oblivlib.dependency.client import Client
     from oblivlib.dependency.crypto import Encryptor
-    from oblivlib.dependency.interact_server import InteractServer
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -26,14 +27,13 @@ class OramConfig:
 
     - ``num_data``: number of logical blocks, keys ``0 .. num_data - 1``. The tree gets the smallest
       power-of-two leaf count that covers it.
-    - ``data_size``: byte length that bounds a value, measured as a ``data_size``-byte ``bytes`` object.
-      Encrypted and file-backed storage size each fixed-width slot to the pickle of a block holding such
-      a value; a value whose pickle is larger raises. Memory plaintext storage keeps live objects and
-      does not enforce it.
-    - ``client``: the ``InteractServer`` handle to server storage; required before any I/O.
+    - ``data_size``: the most bytes a value may hold; a longer value raises ``ContractError``. Sealed rows
+      are sized for a full bucket of blocks with values this long.
+    - ``client``: the ``Client`` handle to server storage; required before any I/O.
     - ``name``: this scheme's storage label on ``client``; distinct per scheme sharing one client.
-    - ``filename``: back the tree with this file instead of memory. The file is truncated on
-      construction, so it must be distinct per scheme.
+    - ``build_file``: build the initial tree on the client in this file instead of memory, for trees
+      larger than RAM. Requires an ``encryptor`` (the file holds only sealed rows); it is handed to the
+      server and gone from this path once hosted, so position-map children reuse it in turn.
     - ``bucket_size``: blocks per tree node.
     - ``stash_scale``: the stash holds at most ``stash_scale * max(1, level - 1)`` blocks; exceeding it
       raises ``StashOverflowError``.
@@ -42,9 +42,9 @@ class OramConfig:
 
     num_data: int
     data_size: int
-    client: InteractServer | None = None
+    client: Client | None = None
     name: str = "oram"
-    filename: str | None = None
+    build_file: str | Path | None = None
     bucket_size: int = 4
     stash_scale: int = 7
     encryptor: Encryptor | None = None
@@ -58,6 +58,8 @@ class OramConfig:
             raise ValueError(f"bucket_size must be >= 1, got {self.bucket_size}.")
         if self.stash_scale < 1:
             raise ValueError(f"stash_scale must be >= 1, got {self.stash_scale}.")
+        if self.build_file is not None and self.encryptor is None:
+            raise ValueError("build_file requires an encryptor; a build file never holds plaintext.")
 
 
 @dataclass(frozen=True, kw_only=True)

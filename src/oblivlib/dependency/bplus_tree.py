@@ -4,11 +4,11 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
-from oblivlib.dependency.types import Data, FieldTuplePickle, KVPair
+from oblivlib.dependency.types import Data, FieldTuple, KVPair
 
 
 @dataclass
-class BPlusData(FieldTuplePickle):
+class BPlusData(FieldTuple):
     keys: list[Any] = field(default_factory=list)
     values: list[Any] = field(default_factory=list)
 

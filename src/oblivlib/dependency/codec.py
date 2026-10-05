@@ -1,65 +1,55 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from typing import cast, override
+from typing import Any, override
 
-from oblivlib.dependency.crypto import Encryptor
-from oblivlib.dependency.types import Data, FieldTuplePickle
+import msgpack
+
+from oblivlib.dependency.types import Data, FieldTuple
+
+
+def packed_size(obj: Any) -> int:
+    return len(msgpack.packb(obj))
 
 
 class BlockCodec(ABC):
-    def __init__(self, block_size: int):
-        self._block_size = block_size
+    """Turns a block into the msgpack-ready ``[key, leaf, value]`` a bucket packs, and back.
+    ``max_block_bytes`` bounds one packed block; sealed rows are sized from it."""
+
+    def __init__(self, max_block_bytes: int):
+        self._max_block_bytes = max_block_bytes
 
     @property
-    def block_size(self) -> int:
-        return self._block_size
-
-    def dummy_block(self) -> bytes:
-        return Data().dump_pad(self._block_size)
-
-    def seal_bucket(self, encryptor: Encryptor, blocks: Sequence[Data], bucket_size: int) -> bytes:
-        if len(blocks) > bucket_size:
-            raise ValueError(f"{type(self).__name__}: {len(blocks)} blocks exceed the bucket capacity {bucket_size}.")
-        payload = b"".join(self.dump_block(data) for data in blocks)
-        return encryptor.enc(plaintext=payload + self.dummy_block() * (bucket_size - len(blocks)))
-
-    def open_bucket(self, encryptor: Encryptor, blob: bytes) -> list[Data]:
-        plaintext = encryptor.dec(ciphertext=blob)
-        size = self._block_size
-        blocks = (self.load_block(plaintext[i : i + size]) for i in range(0, len(plaintext), size))
-        return [data for data in blocks if data.is_real()]
+    def max_block_bytes(self) -> int:
+        return self._max_block_bytes
 
     @abstractmethod
-    def dump_block(self, data: Data) -> bytes:
+    def pack(self, data: Data) -> list[Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def load_block(self, payload: bytes) -> Data:
+    def unpack(self, fields: list[Any]) -> Data:
         raise NotImplementedError
 
 
 class DefaultCodec(BlockCodec):
     @override
-    def dump_block(self, data: Data) -> bytes:
-        return data.dump_pad(self._block_size)
+    def pack(self, data: Data) -> list[Any]:
+        return data.to_fields()
 
     @override
-    def load_block(self, payload: bytes) -> Data:
-        return Data.load(payload)
+    def unpack(self, fields: list[Any]) -> Data:
+        return Data.from_fields(fields)
 
 
 class NodeCodec(BlockCodec):
-    def __init__(self, block_size: int, value_cls: type[FieldTuplePickle]):
-        super().__init__(block_size)
+    def __init__(self, max_block_bytes: int, value_cls: type[FieldTuple]):
+        super().__init__(max_block_bytes)
         self._value_cls = value_cls
 
     @override
-    def dump_block(self, data: Data) -> bytes:
-        return Data(data.key, data.leaf, cast(FieldTuplePickle, data.value).dump()).dump_pad(self._block_size)
+    def pack(self, data: Data) -> list[Any]:
+        return [data.key, data.leaf, data.value.to_fields()]
 
     @override
-    def load_block(self, payload: bytes) -> Data:
-        data = Data.load(payload)
-        if data.is_real():
-            data.value = self._value_cls.load(data=cast(bytes, data.value))
-        return data
+    def unpack(self, fields: list[Any]) -> Data:
+        key, leaf, value = fields
+        return Data(key=key, leaf=leaf, value=self._value_cls.from_fields(value))

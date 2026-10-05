@@ -45,16 +45,22 @@ pip install .            # or: pip install -e ".[dev]" for pytest, basedpyright,
 ```
 
 ```python
-from oblivlib.dependency import InteractLocalServer, PathOramConfig
+from oblivlib.dependency import Client, PathOramConfig
 from oblivlib.oram import PathOram
 
-oram = PathOram(PathOramConfig(num_data=1024, data_size=16, client=InteractLocalServer()))
-oram.init_server_storage()
-oram.operate_on_key(3, b"hello")
-assert oram.operate_on_key(3) == b"hello"
+with Client.local() as client:
+    oram = PathOram(PathOramConfig(num_data=1024, data_size=16, client=client))
+    oram.init_server_storage()
+    oram.operate_on_key(3, b"hello")
+    assert oram.operate_on_key(3) == b"hello"
 ```
 
-For a remote deployment, start [`demo/server.py`](demo/server.py) on the server and run
-[`demo/oram_client.py`](demo/oram_client.py) or [`demo/omap_client.py`](demo/omap_client.py) on the
-client. The shared test suites ([`tests/oram/test_oram_common.py`](tests/oram/test_oram_common.py),
+ORAM keys are int addresses in `[0, num_data)` and OMAP keys are `bytes` of at most `key_size`; every
+value is `bytes` of at most `data_size`, so serialize your own data before storing it. A key or value
+outside that contract raises `ContractError` before anything touches the server.
+
+`Client.local()` keeps the server in process. For a remote deployment, run
+[`demo/server.py`](demo/server.py) on the server and connect with `Client.connect("tcp://host:5555")`, as
+[`demo/oram_client.py`](demo/oram_client.py) and [`demo/omap_client.py`](demo/omap_client.py) do. The
+shared test suites ([`tests/oram/test_oram_common.py`](tests/oram/test_oram_common.py),
 [`tests/omap/test_omap_common.py`](tests/omap/test_omap_common.py)) show every scheme in use.

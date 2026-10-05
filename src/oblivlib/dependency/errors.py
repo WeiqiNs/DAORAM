@@ -24,3 +24,27 @@ class StashOverflowError(OblivlibError, MemoryError):
 
 class ScaleDownError(OblivlibError):
     pass
+
+
+class ProtocolError(OblivlibError):
+    pass
+
+
+class RowSizeError(OblivlibError):
+    pass
+
+
+class StorageError(OblivlibError):
+    pass
+
+
+class ServerError(OblivlibError):
+    pass
+
+
+class TransportError(OblivlibError):
+    pass
+
+
+class ContractError(OblivlibError, ValueError):
+    pass

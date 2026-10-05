@@ -6,13 +6,13 @@ Call ``init_server_storage`` once, then use ``operate_on_key``.
 """
 
 import math
-import pickle
 import secrets
 from dataclasses import replace
 from functools import cached_property
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, Data, DataMap, PathData, PosMap, ServerStorage
+from oblivlib.dependency import Data, InitData, PathRows, PosMap
+from oblivlib.dependency.codec import packed_size
 from oblivlib.dependency.config import RecursiveOramConfig
 from oblivlib.oram.tree_base_oram import TreeBaseOram
 
@@ -49,8 +49,8 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
     @cached_property
     def _pos_map_oram_dummy_size(self) -> int:
-        """Byte size of the dummy value stored in position maps."""
-        return len(pickle.dumps([self._num_data - 1 - i for i in range(self._compression_ratio)]))
+        """Byte size bounding a position-map block's value, a list of ``compression_ratio`` leaves."""
+        return packed_size([self._leaf_range - 1] * self._compression_ratio)
 
     def _get_pos_map_keys(self, key: int) -> list[tuple[int, int]]:
         """For each position map (outermost first), the (block key, offset within block) for this key."""
@@ -65,20 +65,14 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
 
         return pos_map_keys
 
-    def _compress_pos_map(self) -> ServerStorage:
-        """Compress the flat position map into a chain of position-map orams; returns server storage."""
-        server_storage: ServerStorage = {}
-
+    def _compress_pos_map(self) -> None:
+        """Compress the flat position map into a chain of position-map orams, hosting each as it is built."""
         last_pos_map: PosMap = self._pos_map
         pos_map_size = self._num_data
 
         for i in range(self._num_oram_pos_map):
             last_pos_map_size = pos_map_size
             pos_map_size = math.ceil(pos_map_size / self._compression_ratio)
-
-            pos_map_filename = (
-                f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
-            )
 
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
@@ -88,7 +82,6 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
                     num_data=pos_map_size,
                     name=pos_map_name,
                     data_size=self._pos_map_oram_dummy_size,
-                    filename=pos_map_filename,
                 ),
                 _is_pos_map=True,
             )
@@ -110,25 +103,19 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
             last_pos_map = cur_pos_map_oram._pos_map
             cur_pos_map_oram._pos_map = {}
 
-            server_storage[pos_map_name] = tree
+            cur_pos_map_oram._host_tree(tree)
             self._pos_maps.append(cur_pos_map_oram)
 
         self._pos_map = last_pos_map
 
         self._pos_maps.reverse()
 
-        return server_storage
-
     @override
-    def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage: ServerStorage = {self._name: self._build_tree(self._initial_blocks(data_map=data_map))}
+    def init_server_storage(self, data: InitData | None = None) -> None:
+        self._host_tree(self._build_tree(self._initial_blocks(data)))
+        self._compress_pos_map()
 
-        pos_map_storage = self._compress_pos_map()
-        storage.update(pos_map_storage)
-
-        self._client.init_storage(storage=storage)
-
-    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, value: int, path: PathData) -> int:
+    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, value: int, path: PathRows) -> int:
         """Pull the path into the stash; read the leaf at offset for key, overwrite it with value, remap to new_leaf."""
         self._absorb_path(path=path)
         data = self._require_in_stash(key=key)
@@ -194,7 +181,7 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
         return cur_leaf, new_cur_leaf
 
     @override
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         leaf, new_leaf = self._get_leaf_from_pos_map(key=key)
 
         self._client.add_read_path(label=self._name, leaves=[leaf])
@@ -211,7 +198,7 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
         return read_value
 
     @override
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         leaf, new_leaf = self._get_leaf_from_pos_map(key=key)
 
         self._client.add_read_path(label=self._name, leaves=[leaf])
@@ -225,7 +212,7 @@ class RecursivePathOram(TreeBaseOram[RecursiveOramConfig]):
         return read_value
 
     @override
-    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
+    def _eviction_with_update_stash(self, key: int, value: Any, execute: bool) -> None:
         found = False
 
         for data in self._stash:

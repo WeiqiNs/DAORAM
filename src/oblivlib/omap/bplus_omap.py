@@ -1,12 +1,11 @@
 """OMAP constructed with the B+ tree ODS."""
 
 import math
-import os
 from functools import cached_property
 from typing import Any, Protocol, cast, override
 
 from oblivlib.dependency import BPlusData, BPlusTree, BPlusTreeNode, Data, KVPair
-from oblivlib.dependency.codec import BlockCodec, NodeCodec
+from oblivlib.dependency.codec import BlockCodec, NodeCodec, packed_size
 from oblivlib.dependency.config import BPlusOmapConfig
 from oblivlib.dependency.load_bound import max_bucket_load
 from oblivlib.omap.ost_base_omap import ROOT, LocalNodesBase, OstBaseOmap
@@ -116,33 +115,16 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
     @cached_property
     @override
     def _max_block_size(self) -> int:
+        keys = [bytes(self._key_size)] * (self._order - 1)
+        internal = BPlusData(keys=keys, values=[[self._num_data - 1, self._leaf_range - 1]] * self._order)
+        leaf = BPlusData(keys=keys, values=[bytes(self._data_size)] * (self._order - 1))
         return max(
-            len(
-                Data(
-                    key=self._num_data - 1,
-                    leaf=self._num_data - 1,
-                    value=BPlusData(
-                        keys=[os.urandom(self._key_size) for _ in range(self._order - 1)],
-                        values=[(self._num_data - 1, self._num_data - 1) for _ in range(self._order)],
-                    ).dump(),
-                ).dump()
-            ),
-            len(
-                Data(
-                    key=self._num_data - 1,
-                    leaf=self._num_data - 1,
-                    value=BPlusData(
-                        keys=[os.urandom(self._key_size) for _ in range(self._order - 1)],
-                        values=[os.urandom(self._data_size) for _ in range(self._order - 1)],
-                    ).dump(),
-                ).dump()
-            ),
+            packed_size([self._num_data - 1, self._leaf_range - 1, node.to_fields()]) for node in (internal, leaf)
         )
 
     @property
     @override
     def _codec(self) -> BlockCodec:
-        """B+ blocks store a BPlusData value, packed to a fixed _max_block_size width."""
         return NodeCodec(self._max_block_size, BPlusData)
 
     def _get_bplus_data(self, keys: Any = None, values: Any = None) -> Data:
@@ -519,7 +501,7 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         return {"search": 2 * h + 1, "insert": 2 * h + 1, "delete": 4 * h}
 
     @override
-    def search(self, key: Any, value: Any = None) -> Any:
+    def _search(self, key: Any, value: Any = None) -> Any:
         """Streaming search: descend to the leaf via _find_leaf (each visited node evicted before the
         next is read, so ``local`` holds O(1) nodes), then pad to the op budget. Oblivious when
         distinguishable=False (fixed read/evict round count); cheaper/depth-varying when True."""
@@ -551,7 +533,7 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         return search_value
 
     @override
-    def insert(self, key: Any, value: Any = None) -> None:
+    def _insert(self, key: Any, value: Any = None) -> None:
         """Mirrors plaintext ``BPlusTree.insert``: descend to the target leaf, add the pair, then split
         any overflowed node back up the path (splits add stash nodes, not new reads)."""
         self._op_rounds = 0
@@ -577,7 +559,8 @@ class BPlusOmap(OstBaseOmap[BPlusOmapConfig, LocalNodes]):
         self._flush_local_to_stash()
         self._pad_to(budget)
 
-    def delete(self, key: Any) -> Any:
+    @override
+    def _delete(self, key: Any) -> Any:
         """Delete ``key`` and return its value (or None if absent).
 
         Mirrors plaintext ``BPlusTree.delete`` / ``_fix_underflow`` (single sibling per underflow, prefer

@@ -11,7 +11,7 @@ from dataclasses import replace
 from functools import cached_property
 from typing import Any, NamedTuple, override
 
-from oblivlib.dependency import UNSET, Blake2Prf, Data, DataMap, PathData, ServerStorage
+from oblivlib.dependency import Blake2Prf, Data, InitData, PathRows
 from oblivlib.dependency.config import DaOramConfig
 from oblivlib.oram.bit_string import binary_str_to_bytes, bytes_to_binary_str
 from oblivlib.oram.tree_base_oram import TreeBaseOram
@@ -142,11 +142,9 @@ class DAOram(TreeBaseOram[DaOramConfig]):
     def _init_pos_map(self) -> None:
         self._pos_map = {i: self._get_leaf_from_prf(key=i, gc=0, ic=0) for i in range(self._num_data)}
 
-    def _compress_pos_map(self) -> ServerStorage:
-        """Compress the flat position map into a chain of position-map orams; returns server storage."""
+    def _compress_pos_map(self) -> None:
+        """Compress the flat position map into a chain of position-map orams, hosting each as it is built."""
         self._pos_map = {}
-
-        server_storage: ServerStorage = {}
 
         value = binary_str_to_bytes("0" * self._count_length)
 
@@ -155,10 +153,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         for i in range(self._num_oram_pos_map):
             pos_map_size = math.ceil(last_oram_data / self._num_ic)
-
-            pos_map_filename = (
-                f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
-            )
 
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
@@ -169,7 +163,6 @@ class DAOram(TreeBaseOram[DaOramConfig]):
                     num_data=pos_map_size,
                     name=pos_map_name,
                     data_size=self._pos_map_oram_dummy_size,
-                    filename=pos_map_filename,
                 ),
                 _is_pos_map=True,
                 _last_oram_data=last_oram_data,
@@ -183,7 +176,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
             last_oram_data = pos_map_size
             last_oram_level = cur_pos_map_oram._level
 
-            server_storage[pos_map_name] = tree
+            cur_pos_map_oram._host_tree(tree)
 
             cur_pos_map_oram._pos_map = {}
             self._pos_maps.append(cur_pos_map_oram)
@@ -195,16 +188,10 @@ class DAOram(TreeBaseOram[DaOramConfig]):
 
         self._pos_maps.reverse()
 
-        return server_storage
-
     @override
-    def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage = self._build_tree(self._initial_blocks(data_map=data_map))
-
-        pos_map_storage_dict = self._compress_pos_map()
-        pos_map_storage_dict[self._name] = storage
-
-        self._client.init_storage(storage=pos_map_storage_dict)
+    def init_server_storage(self, data: InitData | None = None) -> None:
+        self._host_tree(self._build_tree(self._initial_blocks(data)))
+        self._compress_pos_map()
 
     def _update_stash_leaf(self, key: int | None, new_leaf: int | None) -> None:
         if key is None:
@@ -339,7 +326,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         return cur_leaf, new_leaf
 
     def _retrieve_pos_map_block_with_reset(
-        self, key: int, offset: int, new_leaf: int, r_key: int | None, r_new_leaf: int | None, path: PathData
+        self, key: int, offset: int, new_leaf: int, r_key: int | None, r_new_leaf: int | None, path: PathRows
     ) -> ProcessedData:
         """Pull the path into the stash, advance key's counter and remap it to new_leaf, and remap the
         optional reset key r_key to r_new_leaf. The returned reset fields are r_index=-1, a random cur
@@ -408,7 +395,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         return ProcessedData(cur_leaf, new_leaf, r_index, r_cur_leaf, r_new_leaf)
 
     @override
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         cur_leaf, new_leaf, r_index, r_cur_leaf, r_new_leaf = self._get_leaf_from_pos_map(key=key)
 
         r_key = None if r_index == -1 else key // self._num_ic * self._num_ic + r_index
@@ -431,7 +418,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         return read_value
 
     @override
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         cur_leaf, new_leaf, r_index, r_cur_leaf, r_new_leaf = self._get_leaf_from_pos_map(key=key)
 
         r_key = None if r_index == -1 else key // self._num_ic * self._num_ic + r_index
@@ -451,7 +438,7 @@ class DAOram(TreeBaseOram[DaOramConfig]):
         return read_value
 
     @override
-    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
+    def _eviction_with_update_stash(self, key: int, value: Any, execute: bool) -> None:
         found = False
 
         for data in self._stash:

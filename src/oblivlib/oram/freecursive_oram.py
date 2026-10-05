@@ -11,7 +11,7 @@ from dataclasses import replace
 from functools import cached_property
 from typing import Any, NamedTuple, override
 
-from oblivlib.dependency import UNSET, Blake2Prf, Data, DataMap, PathData, ServerStorage
+from oblivlib.dependency import Blake2Prf, Data, InitData, PathRows
 from oblivlib.dependency.config import FreecursiveOramConfig
 from oblivlib.oram.bit_string import binary_str_to_bytes, bytes_to_binary_str
 from oblivlib.oram.tree_base_oram import TreeBaseOram
@@ -176,11 +176,9 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
     def _init_pos_map(self) -> None:
         self._pos_map = {i: self._get_leaf_from_prf(key=i, gc=0, ic=0) for i in range(self._num_data)}
 
-    def _compress_pos_map(self) -> ServerStorage:
-        """Compress the flat position map into a chain of position-map orams; returns server storage."""
+    def _compress_pos_map(self) -> None:
+        """Compress the flat position map into a chain of position-map orams, hosting each as it is built."""
         self._pos_map = {}
-
-        server_storage: ServerStorage = {}
 
         value = binary_str_to_bytes("0" * self._count_length)
 
@@ -189,10 +187,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         for i in range(self._num_oram_pos_map):
             pos_map_size = math.ceil(last_oram_data / self._num_ic)
-
-            pos_map_filename = (
-                f"{self._filename}_pos_map_{self._num_oram_pos_map - i - 1}.bin" if self._filename else None
-            )
 
             pos_map_name = f"{self._name}_pos_map_{self._num_oram_pos_map - i - 1}"
 
@@ -204,7 +198,6 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
                     name=pos_map_name,
                     data_size=self._pos_map_oram_dummy_size,
                     reset_prob=self._reset_prob,
-                    filename=pos_map_filename,
                 ),
                 _is_pos_map=True,
                 _last_oram_data=last_oram_data,
@@ -218,7 +211,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
             last_oram_data = pos_map_size
             last_oram_level = cur_pos_map_oram._level
 
-            server_storage[pos_map_name] = tree
+            cur_pos_map_oram._host_tree(tree)
 
             cur_pos_map_oram._pos_map = {}
             self._pos_maps.append(cur_pos_map_oram)
@@ -230,16 +223,10 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
 
         self._pos_maps.reverse()
 
-        return server_storage
-
     @override
-    def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        storage = self._build_tree(self._initial_blocks(data_map=data_map))
-
-        pos_map_storage_dict = self._compress_pos_map()
-        pos_map_storage_dict[self._name] = storage
-
-        self._client.init_storage(storage=pos_map_storage_dict)
+    def init_server_storage(self, data: InitData | None = None) -> None:
+        self._host_tree(self._build_tree(self._initial_blocks(data)))
+        self._compress_pos_map()
 
     def _update_stash_leaf(self, key: int | None, new_leaf: int | None) -> None:
         if key is None:
@@ -253,7 +240,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         raise KeyError(f"Key {key} not found.")
 
     def _update_block_leaves(
-        self, key_a: int | None, key_b: int | None, n_leaf_a: int | None, n_leaf_b: int | None, path: PathData
+        self, key_a: int | None, key_b: int | None, n_leaf_a: int | None, n_leaf_b: int | None, path: PathRows
     ) -> None:
         """Pull the path into the stash and remap key_a and key_b (a null op that hides the access)."""
         self._absorb_path(path=path)
@@ -390,7 +377,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         new_leaf = self._get_previous_leaf_from_prf(key=key * self._num_ic + offset, gc=gc, ic=ic + 1)
         return ProcessedData(cur_leaf, new_leaf, None)
 
-    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, path: PathData) -> ProcessedData:
+    def _retrieve_pos_map_block(self, key: int, offset: int, new_leaf: int, path: PathRows) -> ProcessedData:
         """Pull the path into the stash, advance key's counter, and remap it to new_leaf."""
         self._absorb_path(path=path)
         data = self._require_in_stash(key=key)
@@ -475,7 +462,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         return ProcessedData(cur_leaf, new_leaf, reset_leaves)
 
     @override
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         cur_leaf, next_leaf, reset_leaves = self._get_leaf_from_pos_map(key=key)
 
         read_value = None
@@ -523,7 +510,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         return read_value
 
     @override
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         """Like operate_on_key but defers eviction to a later eviction_with_update_stash call.
 
         On a reset, the key's own path is read and its eviction deferred; remaining reset paths are
@@ -584,7 +571,7 @@ class FreecursiveOram(TreeBaseOram[FreecursiveOramConfig]):
         return read_value
 
     @override
-    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
+    def _eviction_with_update_stash(self, key: int, value: Any, execute: bool) -> None:
         """Update key's block in the stash, then evict. If execute is False, queue the write for batching.
 
         With reset leaves outstanding, internal executes are always performed regardless of execute.

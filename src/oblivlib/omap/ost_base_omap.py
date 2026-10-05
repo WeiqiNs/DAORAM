@@ -8,8 +8,10 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import Any, cast, override
 
-from oblivlib.dependency import BinaryTree, Data, KVPair
+from oblivlib.dependency import Data, KVPair
 from oblivlib.dependency.config import OmapConfig
+from oblivlib.dependency.contract import require_omap_key, require_value
+from oblivlib.dependency.tree_builder import TreeImage
 from oblivlib.dependency.tree_storage_base import TreeStorageBase
 from oblivlib.omap.base_omap import BaseOmap
 
@@ -164,8 +166,7 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
         assert leaf is not None
         self._client.add_read_path(label=self._name, leaves=[leaf])
         result = self._client.execute()
-        path_data = result.require(self._name)
-        path = self._decrypt_path_data(path=path_data)
+        path = self._cipher.open_path(result.require(self._name))
 
         for bucket in path.values():
             for data in bucket:
@@ -196,8 +197,7 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
 
             self._client.add_read_path(label=self._name, leaves=[leaf])
             result = self._client.execute()
-            path_data = result.require(self._name)
-            path = self._decrypt_path_data(path=path_data)
+            path = self._cipher.open_path(result.require(self._name))
 
             for bucket in path.values():
                 for data in bucket:
@@ -247,7 +247,7 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
     def _normalize_pairs(data: KV_LIST) -> list[KVPair]:
         return [KVPair(key=pair[0], value=pair[1]) for pair in data]
 
-    def _init_ods_storage(self, data: KV_LIST | None) -> BinaryTree:
+    def _init_ods_storage(self, data: KV_LIST | None) -> TreeImage:
         """Build the ODS-tree binary storage for the input key-value pairs."""
         blocks: list[Data] = []
         if data:
@@ -256,9 +256,12 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
 
     @override
     def init_server_storage(self, data: KV_LIST | None = None) -> None:
-        self._client.init_storage(storage={self._name: self._init_ods_storage(data=data)})
+        for key, value in data or []:
+            require_omap_key(self._identity, key, self._key_size)
+            require_value(self._identity, value, self._data_size)
+        self._host_tree(self._init_ods_storage(data=data))
 
-    def _init_mul_tree_ods_storage(self, data_list: list[KV_LIST] | None) -> tuple[BinaryTree, list[ROOT | None]]:
+    def _init_mul_tree_ods_storage(self, data_list: list[KV_LIST] | None) -> tuple[TreeImage, list[ROOT | None]]:
         """Build one ODS tree per pair-list into shared storage; return it plus each tree's root."""
         blocks: list[Data] = []
         root_list: list[ROOT | None] = []
@@ -275,5 +278,41 @@ class OstBaseOmap[OmapConfigT: OmapConfig, LocalT: LocalNodesBase[Any]](TreeStor
     def init_mul_tree_server_storage(self, data_list: list[KV_LIST] | None = None) -> list[ROOT | None]:
         """Store an ODS holding multiple trees; return the list of their roots."""
         tree, root_list = self._init_mul_tree_ods_storage(data_list=data_list)
-        self._client.init_storage(storage={self._name: tree})
+        self._host_tree(tree)
         return root_list
+
+    @override
+    def search(self, key: bytes | None, value: bytes | None = None) -> bytes | None:
+        """Return ``key``'s value, or ``None`` when absent, writing ``value`` when one is given. ``key=None``
+        is a dummy op that looks like a real one."""
+        if key is not None:
+            require_omap_key(self._identity, key, self._key_size)
+            if value is not None:
+                require_value(self._identity, value, self._data_size)
+        return self._search(key, value)
+
+    @override
+    def insert(self, key: bytes | None, value: bytes | None = None) -> None:
+        """Insert an absent ``key``; ``key=None`` is a dummy op."""
+        if key is not None:
+            require_omap_key(self._identity, key, self._key_size)
+            require_value(self._identity, value, self._data_size)
+        self._insert(key, value)
+
+    def delete(self, key: bytes | None) -> bytes | None:
+        """Remove ``key`` and return its value, or ``None`` when absent; ``key=None`` is a dummy op."""
+        if key is not None:
+            require_omap_key(self._identity, key, self._key_size)
+        return self._delete(key)
+
+    @abstractmethod
+    def _search(self, key: Any, value: Any) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _insert(self, key: Any, value: Any) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _delete(self, key: Any) -> Any:
+        raise NotImplementedError

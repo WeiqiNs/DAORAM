@@ -10,47 +10,41 @@ Each spec records the behavioral guarantees the suite holds the scheme to:
   * search_none      -- search(None) is a supported dummy that must match a real search.
 """
 
-from typing import override
-
 import pytest
 
-from oblivlib.dependency import (
-    AvlOmapCachedConfig,
-    AvlOmapConfig,
-    BPlusOmapCachedConfig,
-    BPlusOmapConfig,
-    InteractLocalServer,
-)
+from oblivlib.dependency import AvlOmapCachedConfig, AvlOmapConfig, BPlusOmapCachedConfig, BPlusOmapConfig
+from oblivlib.dependency.protocol import ReadPath
 from oblivlib.omap import AVLOmap, AVLOmapCached, BPlusOmap, BPlusOmapCached
 
 
-class CountingServer(InteractLocalServer):
-    """Local server that counts path-read rounds, so tests can assert access-pattern uniformity."""
+class ReadCounter:
+    """Counts the path leaves read through a recording client, so tests can assert access-pattern
+    uniformity."""
 
-    def __init__(self):
-        super().__init__()
-        self.reads = 0
+    def __init__(self, recorder):
+        self._recorder = recorder
 
-    @override
-    def add_read_path(self, label, leaves):
-        self.reads += len(leaves)
-        return super().add_read_path(label, leaves)
+    def _leaves_read(self) -> int:
+        return sum(len(op.leaves) for batch in self._recorder.batches for op in batch.reads if isinstance(op, ReadPath))
 
     def rounds(self, fn, *args, **kwargs):
-        """Run fn and return (number of path-read rounds it triggered, fn's result)."""
-        before = self.reads
+        """Run fn and return (number of path reads it triggered, fn's result)."""
+        before = self._leaves_read()
         result = fn(*args, **kwargs)
-        return self.reads - before, result
+        return self._leaves_read() - before, result
+
+
+def _read_all_blocks(scheme):
+    """Every block in the scheme's server tree, read through its own client in one execute."""
+    client = scheme._client
+    client.add_read_path(scheme._name, range(scheme._leaf_range))
+    path = scheme._cipher.open_path(client.execute().require(scheme._name))
+    return [data for bucket in path.values() for data in bucket]
 
 
 def _live_blocks(omap):
-    """All live ORAM blocks {block_key: Data} from storage + stash + local (plaintext only)."""
-    tree = omap._client._require_tree(omap._name)
-    blocks = {}
-    for index in range(tree.size):
-        for data in tree.storage[index]:
-            if data is not None and getattr(data, "key", None) is not None:
-                blocks[data.key] = data
+    """All live ORAM blocks {block_key: Data} from storage + stash + local."""
+    blocks = {data.key: data for data in _read_all_blocks(omap)}
     for data in list(omap._stash) + omap._local.to_list():
         if data.key is not None:
             blocks[data.key] = data
@@ -60,7 +54,7 @@ def _live_blocks(omap):
 def verify_avl_invariants(omap, model):
     """Assert BST order, AVL balance, stored-height accuracy, and parent->child leaf links.
 
-    ``model`` is the key->value oracle; the AVL check only needs its key set. Plaintext only.
+    ``model`` is the key->value oracle; the AVL check only needs its key set.
     """
     nodes = _live_blocks(omap)
     assert set(nodes) == set(model), f"live keys mismatch: have {len(nodes)}, expected {len(model)}"
@@ -90,7 +84,7 @@ def verify_avl_invariants(omap, model):
 def verify_bplus_invariants(omap, model):
     """Assert parent->child leaf links, key routing/order, and that leaves hold exactly ``model``.
 
-    ``model`` is the key->value oracle; the B+ leaves must reproduce it exactly. Plaintext only.
+    ``model`` is the key->value oracle; the B+ leaves must reproduce it exactly.
     """
     if omap.root is None:
         assert not model
@@ -245,6 +239,13 @@ def delete_oblivious_omap_spec(request):
 
 
 @pytest.fixture
-def counting_server_cls():
-    """The CountingServer class, so tests can spin up fresh access-pattern-counting servers."""
-    return CountingServer
+def counting_client(recorded_client):
+    """A fresh ``(client, ReadCounter)`` pair for access-pattern assertions."""
+    client, recorder = recorded_client()
+    return client, ReadCounter(recorder)
+
+
+@pytest.fixture
+def read_all_blocks():
+    """``read_all_blocks(scheme)``: every block in a scheme's server tree, read through its client."""
+    return _read_all_blocks

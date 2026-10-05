@@ -57,7 +57,7 @@ class BPlusOmapCached(BPlusOmap):
         to_index = len(self._stash)
         self._client.add_read_path(label=self._name, leaves=leaves_to_read)
         result = self._client.execute()
-        path = self._decrypt_path_data(path=result.require(self._name))
+        path = self._cipher.open_path(result.require(self._name))
 
         keys_to_find = set(keys_to_read)
         for bucket in path.values():
@@ -153,13 +153,13 @@ class BPlusOmapCached(BPlusOmap):
         return path_nodes, child_indices, siblings, sibling_indices
 
     @override
-    def search(self, key: Any, value: Any = None) -> Any:
+    def _search(self, key: Any, value: Any = None) -> Any:
         """Flush local first so cache hits land in the stash, then run the base streaming search."""
         self._flush_local_to_stash()
-        return super().search(key=key, value=value)
+        return super()._search(key=key, value=value)
 
     @override
-    def insert(self, key: Any, value: Any = None) -> None:
+    def _insert(self, key: Any, value: Any = None) -> None:
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height)
             return
@@ -182,7 +182,7 @@ class BPlusOmapCached(BPlusOmap):
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved_nodes)
 
     @override
-    def delete(self, key: Any) -> Any:
+    def _delete(self, key: Any) -> Any:
         """Delete in h interaction rounds: each level's path child and one sibling are fetched together
         in a single batched read-write round (see ``_find_path_with_siblings_cached`` /
         ``_batch_move_nodes_to_local``), so the op is h rounds (1 root + h-1 batched) regardless of the

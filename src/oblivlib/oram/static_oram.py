@@ -3,7 +3,7 @@ reassigned on each access."""
 
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, Blake2Prf, Data, DataMap, PseudoRandomFunction
+from oblivlib.dependency import Blake2Prf, PseudoRandomFunction
 from oblivlib.dependency.config import StaticOramConfig
 from oblivlib.oram.path_oram import PathOram
 
@@ -20,14 +20,11 @@ class StaticOram(PathOram[StaticOramConfig]):
         return self._prf.digest_mod_n(str(key).encode(), pow(2, self._level - 1))
 
     @override
-    def _initial_blocks(self, data_map: DataMap | None = None) -> list[Data]:
-        return [
-            Data(key=key, leaf=self._get_path_number(key), value=data_map.get(key) if data_map else None)
-            for key in range(self._num_data)
-        ]
+    def _initial_leaf(self, key: int) -> int:
+        return self._get_path_number(key)
 
     @override
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         leaf = self._get_path_number(key)
 
         self._client.add_read_path(label=self._name, leaves=[leaf])
@@ -43,7 +40,7 @@ class StaticOram(PathOram[StaticOramConfig]):
         return read_value
 
     @override
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         leaf = self._get_path_number(key)
 
         self._client.add_read_path(label=self._name, leaves=[leaf])

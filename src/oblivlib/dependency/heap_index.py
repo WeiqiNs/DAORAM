@@ -5,6 +5,10 @@ def compute_level(num_data: int) -> int:
     return (num_data - 1).bit_length() + 1
 
 
+def tree_size(level: int) -> int:
+    return (1 << level) - 1
+
+
 def leaf_index(leaf: int, level: int) -> int:
     return leaf + (1 << (level - 1)) - 1
 
@@ -21,11 +25,11 @@ def path_to_root(index: int) -> list[int]:
     return path
 
 
-def union_of_paths(indices: list[int]) -> list[int]:
+def path_indices(leaves: list[int], level: int) -> list[int]:
     nodes: set[int] = set()
-    for index in indices:
-        nodes.update(path_to_root(index))
-    return sorted(nodes, reverse=True)
+    for leaf in leaves:
+        nodes.update(path_to_root(leaf_index(leaf, level)))
+    return sorted(nodes)
 
 
 def leaf_lca(leaf_a: int, leaf_b: int, level: int) -> int:
@@ -36,7 +40,7 @@ def leaf_lca(leaf_a: int, leaf_b: int, level: int) -> int:
 
 
 def empty_path(level: int, leaves: list[int]) -> PathData:
-    return {index: [] for index in union_of_paths([leaf_index(leaf, level) for leaf in leaves])}
+    return {index: [] for index in path_indices(leaves, level)}
 
 
 def fill_data_to_path(data: Data, path: PathData, *, leaves: list[int], level: int, bucket_size: int) -> bool:

@@ -5,12 +5,22 @@ shared ``TreeStorageBase`` (config accessors, level/stash math, random leaves, p
 Private members use single underscores (not name-mangled ``__``) so subclasses can access them.
 """
 
-import os
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, override
 
-from oblivlib.dependency import UNSET, Data, DataMap, OramConfig, PathData, PosMap
+from oblivlib.dependency import UNSET, Data, InitData, OramConfig, PathRows, PosMap
+from oblivlib.dependency.contract import require_oram_key, require_value
 from oblivlib.dependency.tree_storage_base import TreeStorageBase
+
+
+def _initial_pairs(data: InitData | None) -> Iterable[tuple[int, Any]]:
+    if data is None:
+        return ()
+    if isinstance(data, Mapping):
+        mapping: Mapping[Any, Any] = data
+        return mapping.items()
+    return data
 
 
 class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
@@ -41,11 +51,21 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
 
         return self._pos_map[key]
 
-    def _initial_blocks(self, data_map: DataMap | None = None) -> list[Data]:
-        return [
-            Data(key=key, leaf=leaf, value=data_map[key] if data_map else os.urandom(self._data_size))
-            for key, leaf in self._pos_map.items()
-        ]
+    def _initial_leaf(self, key: int) -> int:
+        return self._pos_map[key]
+
+    def _initial_blocks(self, data: InitData | None) -> Iterator[Data]:
+        supplied = bytearray(self._num_data)
+        for key, value in _initial_pairs(data):
+            require_oram_key(self._identity, key, self._num_data)
+            require_value(self._identity, value, self._data_size)
+            if supplied[key]:
+                raise ValueError(f"{self._identity}: initial key {key} is given twice.")
+            supplied[key] = 1
+            yield Data(key=key, leaf=self._initial_leaf(key), value=value)
+        for key in range(self._num_data):
+            if not supplied[key]:
+                yield Data(key=key, leaf=self._initial_leaf(key), value=b"")
 
     @override
     def _check_stash(self) -> None:
@@ -53,8 +73,8 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
         self._max_stash = max(self._max_stash, self.stash_size)
         super()._check_stash()
 
-    def _absorb_path(self, path: PathData) -> None:
-        for bucket in self._decrypt_path_data(path=path).values():
+    def _absorb_path(self, path: PathRows) -> None:
+        for bucket in self._cipher.open_path(path).values():
             self._stash.extend(data for data in bucket if data.key is not None)
         self._check_stash()
 
@@ -64,7 +84,7 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
                 return data
         raise KeyError(f"Key {key} not found.")
 
-    def _retrieve_data_block(self, key: int, new_leaf: int, path: PathData, value: Any = UNSET) -> Any:
+    def _retrieve_data_block(self, key: int, new_leaf: int, path: PathRows, value: Any = UNSET) -> Any:
         """Pull the path into the stash, read key (optionally writing value), and remap it to new_leaf."""
         self._absorb_path(path=path)
         data = self._require_in_stash(key=key)
@@ -75,21 +95,40 @@ class TreeBaseOram[ConfigT: OramConfig](TreeStorageBase[ConfigT], ABC):
         return read_value
 
     @abstractmethod
-    def init_server_storage(self, data_map: DataMap | None = None) -> None:
-        """Initialize the server storage for this oram from an optional {key: data} map."""
+    def init_server_storage(self, data: InitData | None = None) -> None:
+        """Build and host this oram's server storage. ``data`` gives initial values, as a mapping or a
+        one-shot stream of ``(key, value)`` pairs; every other key starts as ``b""``."""
+        raise NotImplementedError
+
+    def _require_access(self, key: Any, value: Any) -> None:
+        require_oram_key(self._identity, key, self._num_data)
+        if value is not UNSET:
+            require_value(self._identity, value, self._data_size)
+
+    def operate_on_key(self, key: int, value: Any = UNSET) -> bytes:
+        """Return key's current value (``b""`` until written); write ``value`` when one is given."""
+        self._require_access(key, value)
+        return self._operate_on_key(key, value)
+
+    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> bytes:
+        """Like ``operate_on_key`` but leaves the path's write-back to ``eviction_with_update_stash``."""
+        self._require_access(key, value)
+        return self._operate_on_key_without_eviction(key, value)
+
+    def eviction_with_update_stash(self, key: int, value: bytes, execute: bool = True) -> None:
+        """Set key's value in the stash, then evict; with ``execute=False`` the write-back is only staged."""
+        require_oram_key(self._identity, key, self._num_data)
+        require_value(self._identity, value, self._data_size)
+        self._eviction_with_update_stash(key, value, execute)
+
+    @abstractmethod
+    def _operate_on_key(self, key: int, value: Any) -> Any:
         raise NotImplementedError
 
     @abstractmethod
-    def operate_on_key(self, key: int, value: Any = UNSET) -> Any:
-        """Read key and return its current value; if value is not UNSET, write it."""
+    def _operate_on_key_without_eviction(self, key: int, value: Any) -> Any:
         raise NotImplementedError
 
     @abstractmethod
-    def operate_on_key_without_eviction(self, key: int, value: Any = UNSET) -> Any:
-        """Like operate_on_key but defers writing the stash back to the server."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def eviction_with_update_stash(self, key: int, value: Any, execute: bool = True) -> None:
-        """Update key's block in the stash then evict; if execute is False, queue the write."""
+    def _eviction_with_update_stash(self, key: int, value: Any, execute: bool) -> None:
         raise NotImplementedError

@@ -2,12 +2,11 @@
 
 import copy
 import math
-import os
 from functools import cached_property
 from typing import Any, Protocol, cast, override
 
 from oblivlib.dependency import AVLData, AVLTree, AVLTreeNode, Data, KVPair
-from oblivlib.dependency.codec import BlockCodec, NodeCodec
+from oblivlib.dependency.codec import BlockCodec, NodeCodec, packed_size
 from oblivlib.dependency.config import AvlOmapConfig
 from oblivlib.dependency.load_bound import max_bucket_load
 from oblivlib.omap.ost_base_omap import ROOT, LocalNodesBase, OstBaseOmap
@@ -100,26 +99,20 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
     @cached_property
     @override
     def _max_block_size(self) -> int:
-        return len(
-            Data(
-                key=os.urandom(self._key_size),
-                leaf=self._num_data - 1,
-                value=AVLData(
-                    value=os.urandom(self._data_size),
-                    r_key=os.urandom(self._key_size),
-                    r_leaf=self._num_data - 1,
-                    r_height=self._max_height,
-                    l_key=os.urandom(self._key_size),
-                    l_leaf=self._num_data - 1,
-                    l_height=self._max_height,
-                ).dump(),
-            ).dump()
+        node = AVLData(
+            value=bytes(self._data_size),
+            r_key=bytes(self._key_size),
+            r_leaf=self._leaf_range - 1,
+            r_height=self._max_height,
+            l_key=bytes(self._key_size),
+            l_leaf=self._leaf_range - 1,
+            l_height=self._max_height,
         )
+        return packed_size([bytes(self._key_size), self._leaf_range - 1, node.to_fields()])
 
     @property
     @override
     def _codec(self) -> BlockCodec:
-        """AVL blocks store an AVLData value, packed to a fixed _max_block_size width."""
         return NodeCodec(self._max_block_size, AVLData)
 
     def _get_avl_data(self, key: Any, value: Any) -> Data:
@@ -408,7 +401,7 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
         return {"search": 2 * h + 1, "insert": 2 * h + 1, "delete": 6 * h}
 
     @override
-    def search(self, key: Any, value: Any = None) -> Any:
+    def _search(self, key: Any, value: Any = None) -> Any:
         """Streaming search: descend one node at a time, re-homing and evicting each before reading the
         next, so ``local`` holds O(1) nodes (not the whole path). Pads to the op budget, so it is
         oblivious when distinguishable=False (fixed read/evict round count) and cheaper/depth-varying
@@ -470,7 +463,7 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
         return search_value
 
     @override
-    def insert(self, key: Any, value: Any = None) -> None:
+    def _insert(self, key: Any, value: Any = None) -> None:
         """Mirrors plaintext ``AVLTree.insert``: descend to the insertion point, link the new leaf, then
         rebalance bottom-up (at most one rotation, reusing the already-loaded path nodes)."""
         self._op_rounds = 0
@@ -496,7 +489,8 @@ class AVLOmap(OstBaseOmap[AvlOmapConfig, LocalNodes]):
         self._flush_local_to_stash()
         self._pad_to(budget)
 
-    def delete(self, key: Any) -> Any:
+    @override
+    def _delete(self, key: Any) -> Any:
         """Delete ``key`` and return its value (or None if absent)."""
         self._op_rounds = 0
         budget = self._op_budget("delete")

@@ -11,14 +11,7 @@ Examples:
 import argparse
 import time
 
-from oblivlib.dependency import (
-    DaOramConfig,
-    FreecursiveOramConfig,
-    InteractRemoteServer,
-    PathOramConfig,
-    RecursiveOramConfig,
-    ZMQSocket,
-)
+from oblivlib.dependency import AesGcm, Client, DaOramConfig, FreecursiveOramConfig, PathOramConfig, RecursiveOramConfig
 from oblivlib.oram import DAOram, FreecursiveOram, PathOram, RecursivePathOram
 
 # Available ORAM types, each mapping to a (scheme, config) builder.
@@ -33,23 +26,22 @@ ORAM_TYPES = {
 def run_demo(oram_type: str, num_data: int, ip: str, port: int):
     """Run ORAM demo: write all values, then read and verify."""
     # Connect to server.
-    client = InteractRemoteServer()
-    client.init_connection(client=ZMQSocket(ip=ip, port=port, is_server=False))
+    client = Client.connect(f"tcp://{ip}:{port}")
 
     # Create and initialize ORAM.
-    oram = ORAM_TYPES[oram_type](num_data=num_data, data_size=10, client=client)
+    oram = ORAM_TYPES[oram_type](num_data=num_data, data_size=10, client=client, encryptor=AesGcm())
     oram.init_server_storage()
     print(f"Initialized {oram_type} ORAM with {num_data} entries.")
 
     # Write phase.
     start = time.time()
     for i in range(num_data):
-        oram.operate_on_key(key=i, value=i)
+        oram.operate_on_key(key=i, value=str(i).encode())
     write_time = time.time() - start
 
     # Read phase.
     start = time.time()
-    errors = sum(1 for i in range(num_data) if oram.operate_on_key(key=i) != i)
+    errors = sum(1 for i in range(num_data) if oram.operate_on_key(key=i) != str(i).encode())
     read_time = time.time() - start
 
     # Summary.
@@ -57,7 +49,7 @@ def run_demo(oram_type: str, num_data: int, ip: str, port: int):
     print(f"Read:  {read_time:.2f}s ({num_data / read_time:.0f} ops/s)")
     print(f"Errors: {errors}")
 
-    client.close_connection()
+    client.close()
 
 
 def main():

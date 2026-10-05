@@ -8,16 +8,6 @@ from typing import Any, override
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-def key_to_bytes(key: object) -> bytes:
-    if isinstance(key, int):
-        return key.to_bytes(16, byteorder="big", signed=True)
-    if isinstance(key, str):
-        return key.encode("utf-8")
-    if isinstance(key, bytes):
-        return key
-    raise TypeError(f"key_to_bytes expects str, int, or bytes, got {type(key).__name__}.")
-
-
 class Encryptor(ABC):
     """Authenticated encryption of whole buckets.
 
@@ -124,14 +114,14 @@ class Blake2Prf(PseudoRandomFunction):
         return int.from_bytes(self.digest(message), "big") % mod
 
 
-def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: str | int | bytes) -> int:
-    return prf.digest_mod_n(message=key_to_bytes(data), mod=map_size)
+def hash_data_to_leaf(prf: PseudoRandomFunction, map_size: int, data: bytes) -> int:
+    return prf.digest_mod_n(message=data, mod=map_size)
 
 
 def hash_data_to_map(
-    prf: PseudoRandomFunction, map_size: int, data: list[tuple[str | int | bytes, Any]]
-) -> dict[int, list[tuple[str | int | bytes, Any]]]:
-    data_map: dict[int, list[tuple[str | int | bytes, Any]]] = {i: [] for i in range(map_size)}
+    prf: PseudoRandomFunction, map_size: int, data: list[tuple[bytes, Any]]
+) -> dict[int, list[tuple[bytes, Any]]]:
+    data_map: dict[int, list[tuple[bytes, Any]]] = {i: [] for i in range(map_size)}
     for pair in data:
         data_map[hash_data_to_leaf(prf=prf, map_size=map_size, data=pair[0])].append(pair)
     return data_map

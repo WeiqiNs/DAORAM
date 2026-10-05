@@ -7,15 +7,9 @@ from oblivlib.dependency.heap_index import (
     fill_data_to_path,
     leaf_lca,
     parent,
+    path_indices,
     path_to_root,
-    union_of_paths,
 )
-from oblivlib.dependency.types import Block
-
-
-def _as_data(block: Block) -> Data:
-    assert isinstance(block, Data)
-    return block
 
 
 @pytest.mark.parametrize("p", list(range(0, 32)))
@@ -36,10 +30,10 @@ def test_path_to_root():
     assert path_to_root(99)[1:] == path_to_root(100)[1:]
 
 
-def test_union_of_paths_dedup_deepest_first():
-    assert union_of_paths([15, 16]) == [16, 15, 7, 3, 1, 0]
-    assert union_of_paths([1023, 1025]) == [1025, 1023, 512, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
-    assert union_of_paths([]) == []
+def test_path_indices_dedup_root_first():
+    assert path_indices([0, 1], level=5) == [0, 1, 3, 7, 15, 16]
+    assert path_indices([2, 0], level=11) == [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 512, 1023, 1025]
+    assert path_indices([], level=11) == []
 
 
 def test_leaf_lca_known_values():
@@ -61,7 +55,7 @@ def test_leaf_lca_known_values():
 
 def test_empty_path():
     path = empty_path(level=11, leaves=[0, 2])
-    assert sorted(path, reverse=True) == [1025, 1023, 512, 511, 255, 127, 63, 31, 15, 7, 3, 1, 0]
+    assert list(path) == [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 512, 1023, 1025]
     assert all(bucket == [] for bucket in path.values())
 
 
@@ -74,10 +68,10 @@ def test_fill_data_to_path_places_at_deepest_legal_bucket():
         Data(key=2, leaf=10, value="Common"),
     ):
         assert fill_data_to_path(data, path, leaves=[0, 2], level=11, bucket_size=1)
-    assert _as_data(path[1023][0]).value == "Path0"
-    assert _as_data(path[1025][0]).value == "Path2"
-    assert _as_data(path[511][0]).value == "Up"
-    assert _as_data(path[63][0]).value == "Common"
+    assert path[1023][0].value == "Path0"
+    assert path[1025][0].value == "Path2"
+    assert path[511][0].value == "Up"
+    assert path[63][0].value == "Common"
 
 
 def test_fill_data_to_path_returns_false_when_full():

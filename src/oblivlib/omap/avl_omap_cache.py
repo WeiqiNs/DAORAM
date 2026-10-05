@@ -30,7 +30,7 @@ class AVLOmapCached(AVLOmap):
             super()._move_node_to_local(key=key, leaf=leaf, parent_key=parent_key, child_index=child_index)
 
     @override
-    def search(self, key: Any, value: Any = None) -> Any:
+    def _search(self, key: Any, value: Any = None) -> Any:
         if self._short_circuit_read(key=key, num_round=self._max_height):
             return None
 
@@ -52,7 +52,7 @@ class AVLOmapCached(AVLOmap):
         return search_value
 
     @override
-    def insert(self, key: Any, value: Any = None) -> None:
+    def _insert(self, key: Any, value: Any = None) -> None:
         if key is None:
             self._perform_dummy_operation(num_round=self._max_height)
             return
@@ -74,7 +74,7 @@ class AVLOmapCached(AVLOmap):
         self._perform_dummy_operation(num_round=self._max_height - num_retrieved)
 
     @override
-    def delete(self, key: Any) -> Any:
+    def _delete(self, key: Any) -> Any:
         if self._short_circuit_read(key=key, num_round=2 * self._max_height):
             return None
 

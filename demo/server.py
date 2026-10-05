@@ -1,32 +1,36 @@
 """ORAM/OMAP Server Demo.
 
 Usage:
-    python server.py [--ip IP] [--port PORT]
+    python server.py [--ip IP] [--port PORT] [--storage-dir DIR]
 
 Examples:
     python server.py
-    python server.py --port 6666
+    python server.py --port 6666 --storage-dir /tmp/oblivlib-store
 """
 
 import argparse
 
-from oblivlib.dependency import RemoteServer, ZMQSocket
+from oblivlib.dependency import StorageServer, ZmqListener, serve
 
 
 def main():
     parser = argparse.ArgumentParser(description="ORAM/OMAP Server")
     parser.add_argument("--ip", default="*", help="IP to bind (default: *)")
     parser.add_argument("--port", type=int, default=5555, help="Port (default: 5555)")
+    parser.add_argument("--storage-dir", default=None, help="Keep hosted trees in files here (default: memory)")
     args = parser.parse_args()
 
     print(f"Server listening on {args.ip}:{args.port}...")
-    socket = ZMQSocket(ip=args.ip, port=args.port, is_server=True)
-    server = RemoteServer()
+    listener = ZmqListener(f"tcp://{args.ip}:{args.port}")
+    server = StorageServer(storage_dir=args.storage_dir)
 
     try:
-        server.run(server=socket)
+        serve(listener, server)
     except KeyboardInterrupt:
         print("\nShutting down.")
+    finally:
+        server.close()
+        listener.close()
 
 
 if __name__ == "__main__":
